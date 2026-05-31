@@ -1,0 +1,52 @@
+{
+  "team_name": "Apex",
+  "roles": {
+    "tpm": {
+      "skill_path": "skills/tpm",
+      "description": "Technical Program Manager — coordinates tasks, tracks timelines, delegates to specialists"
+    },
+    "test_engineer": {
+      "skill_path": "skills/test_engineer",
+      "description": "Test Engineer — runs simulation environments, learns flag systems, documents results"
+    },
+    "sim_engineer": {
+      "skill_path": "skills/sim_engineer",
+      "description": "Simulation Modeling Engineer — writes and validates Python simulation models"
+    },
+    "data_analyst": {
+      "skill_path": "skills/data_analyst",
+      "description": "Data Analyst — SQL queries, statistical analysis, data visualization"
+    },
+    "tech_writer": {
+      "skill_path": "skills/tech_writer",
+      "description": "Technical Writer — generates clear, concise reports and documents from specialist inputs"
+    },
+    "sys_eng_a": {
+      "skill_path": "skills/sys_eng_a",
+      "description": "Systems Engineer — Domain A requirements, gap analysis, test traceability"
+    },
+    "sys_eng_b": {
+      "skill_path": "skills/sys_eng_b",
+      "description": "Systems Engineer — Domain B requirements, gap analysis, test traceability"
+    },
+    "qa_reviewer": {
+      "skill_path": "skills/qa_reviewer",
+      "description": "QA Reviewer — second-pass quality review on completed artifacts"
+    }
+  },
+  "domains": {
+    "domain_a": {
+      "skill_path": "skills/sys_eng_a",
+      "description": "Primary engineering domain — configure in team_config.local.json"
+    },
+    "domain_b": {
+      "skill_path": "skills/sys_eng_b",
+      "description": "Secondary engineering domain — configure in team_config.local.json"
+    }
+  },
+  "defaults": {
+    "role": "tpm",
+    "policy": "allow_all",
+    "enable_subagents": true
+  }
+}

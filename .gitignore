@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+team_config.local.json
+
+# Private/deployment-specific skills (configure in team_config.local.json)
+skills_private/
+
+# Runtime state — never commit
+sessions/
+memory/
+logs/
+outputs/
+
+# Knowledge files are deployment artifacts — created at runtime
+knowledge/*.md
+knowledge/*.json
+!knowledge/README.md
+
+# Soul — memory.md contains runtime state; roster.json is OK to commit
+soul/memory.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
