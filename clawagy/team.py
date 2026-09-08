@@ -25,22 +25,28 @@ from pathlib import Path
 from google.antigravity import Agent, types
 
 from . import config as cfg
-from .sdk_agent import build_config
+from .sdk_agent import SessionFlags, build_config
 
 MAX_HOPS = 16   # agent turns allowed per user stimulus before requiring input
 
+# Per-agent roster options: "tools_off" (builtin tool values to disable, e.g.
+# "run_command", "create_file", "edit_file") and "workers" (may spawn ephemeral
+# subagents). The tpm is deliberately de-toothed: with no shell and no workers,
+# delegation is its only way to get anything done.
 DEFAULT_ROSTER = {
     "mission": "General-purpose engineering team for roelle.",
     "agents": [
         {"name": "tpm", "role": "Technical program manager. Decomposes user "
          "requests, delegates to specialists by name, tracks completion, and "
          "reports results back to the user. Does not do the technical work itself.",
-         "model": cfg.DEFAULT_MODEL},
+         "model": cfg.DEFAULT_MODEL,
+         "tools_off": ["run_command", "create_file", "edit_file"],
+         "workers": False},
         {"name": "coder", "role": "Software engineer. Implements, runs, and "
-         "verifies code changes.", "model": cfg.DEFAULT_MODEL},
+         "verifies code changes.", "model": cfg.DEFAULT_MODEL, "workers": True},
         {"name": "syseng", "role": "Systems engineer. Environments, tooling, "
          "integration, and checking others' work end-to-end.",
-         "model": cfg.DEFAULT_MODEL},
+         "model": cfg.DEFAULT_MODEL, "workers": True},
     ],
 }
 
@@ -66,7 +72,8 @@ class Team:
         self.bus_log = self.dir / "bus.jsonl"
         self.queues: dict[str, list[dict]] = {}
         self.agents: dict[str, Agent] = {}
-        self.stack: contextlib.AsyncExitStack | None = None
+        self.cms: dict[str, Agent] = {}      # the un-entered Agent context managers
+        self.flags: dict[str, SessionFlags] = {}
         self.quiet = quiet
 
     # ---- bus -------------------------------------------------------------
@@ -126,14 +133,19 @@ class Team:
                 "messaging the teammate by name with complete context; when you "
                 "finish an assigned task, report back to whoever assigned it; "
                 "don't loop — if an exchange isn't converging in 2 rounds, "
-                "escalate to 'user'. Shared files belong under the team dir: "
-                f"{self.dir / 'shared'}")),
+                "escalate to 'user'. Being stuck and not asking is the failure "
+                "mode; asking is the job. If a task is outside your role, or two "
+                "attempts haven't worked, you MUST message the relevant teammate "
+                "or the user before continuing. Nothing goes to 'user' as a "
+                "finished deliverable until another teammate has verified it. "
+                "Some tools are deliberately unavailable to your role — that is "
+                "your cue to delegate, not to work around it. Shared files "
+                f"belong under the team dir: {self.dir / 'shared'}")),
         ]
 
     # ---- lifecycle -------------------------------------------------------
 
     async def start(self):
-        self.stack = contextlib.AsyncExitStack()
         (self.dir / "shared").mkdir(exist_ok=True)
         for spec in self.roster["agents"]:
             await self._start_agent(spec)
@@ -145,27 +157,49 @@ class Team:
         ws = self.dir / "agents" / name
         trace = None if self.quiet else (
             lambda r, n=name: print(f"  ⚙ [{n}] {r.name}", flush=True))
+        flags = SessionFlags()
         config = build_config(
             ws, model=spec.get("model", cfg.DEFAULT_MODEL), name=name,
             interactive=False, trace=trace, extra_tools=self._bus_tools(name),
             extra_sections=self._sections(name, spec["role"]),
-            subagents=[WORKER],
+            subagents=[WORKER] if spec.get("workers", True) else None,
+            disabled_tools=spec.get("tools_off"), flags=flags,
             identity_default=(f"# {name}\n\nYou are {name}, a persistent "
                               f"member of an engineering team. {spec['role']}\n"))
-        agent = await self.stack.enter_async_context(Agent(config))
-        self.agents[name] = agent
-        self.queues[name] = []
+        cm = Agent(config)
+        self.agents[name] = await cm.__aenter__()
+        self.cms[name] = cm
+        self.flags[name] = flags
+        self.queues.setdefault(name, [])
+
+    async def _close_agent(self, name: str, distill: bool = True):
+        agent, cm = self.agents.pop(name, None), self.cms.pop(name, None)
+        self.flags.pop(name, None)
+        if agent is None:
+            return
+        if distill:
+            with contextlib.suppress(Exception):
+                if agent.conversation.turn_count > 0:
+                    print(f"  distilling {name}...")
+                    await agent.chat(
+                        "Session ending. Save durable learnings with "
+                        "save_memory (update, don't duplicate). Be brief.")
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
+
+    async def cycle_agent(self, name: str):
+        """Distill + restart one agent fresh on the same workspace/memory."""
+        spec = next((a for a in self.roster["agents"] if a["name"] == name), None)
+        if spec is None or name not in self.agents:
+            print(f"  no running agent '{name}'")
+            return
+        await self._close_agent(name)
+        await self._start_agent(spec)
+        print(f"  {name}: fresh session, memory index reloaded")
 
     async def stop(self, distill: bool = True):
-        if distill:
-            for name, agent in self.agents.items():
-                with contextlib.suppress(Exception):
-                    if agent.conversation.turn_count > 0:
-                        print(f"  distilling {name}...")
-                        await agent.chat(
-                            "Session ending. Save durable learnings with "
-                            "save_memory (update, don't duplicate). Be brief.")
-        await self.stack.aclose()
+        for name in list(self.agents):
+            await self._close_agent(name, distill=distill)
 
     # ---- scheduling ------------------------------------------------------
 
@@ -184,6 +218,13 @@ class Team:
                 "spawn a worker for grunt tasks. Anything you write outside "
                 "send_to_teammate is visible to nobody.")
             await resp.text()  # drain the turn
+            if self.flags[name].compaction_pending:
+                self.flags[name].compaction_pending = False
+                print(f"  ℹ {name}: context compacted — distilling to memory")
+                await (await self.agents[name].chat(
+                    "Context was just compacted. Save durable learnings from "
+                    "this session with save_memory NOW (update, don't "
+                    "duplicate). Be brief.")).text()
             hops += 1
         print(f"[paused after {MAX_HOPS} agent turns — messages still queued: "
               f"{ {n: len(q) for n, q in self.queues.items() if q} }. "
@@ -210,7 +251,8 @@ async def repl(team: Team, one_shot: str | None):
             await team.run_until_idle()
             return
         print("commands: say <agent> <msg> | broadcast <msg> | log [n] | roster |"
-              " add <name> <role> | remove <name> | distill | usage | quit\n")
+              " add <name> <role> | remove <name> | cycle <agent> | distill |"
+              " usage | quit\n")
         while True:
             try:
                 line = await asyncio.to_thread(input, "team> ")
@@ -257,8 +299,10 @@ async def repl(team: Team, one_shot: str | None):
                                          if a["name"] != nm]
                 team.roster_path.write_text(json.dumps(team.roster, indent=2))
                 team.queues.pop(nm, None)
-                team.agents.pop(nm, None)  # session closes with the stack
+                await team._close_agent(nm)
                 print(f"  removed {nm} from roster and bus")
+            elif cmd == "cycle":
+                await team.cycle_agent(rest.strip())
             elif cmd == "distill":
                 targets = [rest.strip()] if rest.strip() else list(team.agents)
                 for n in targets:
@@ -272,8 +316,9 @@ async def repl(team: Team, one_shot: str | None):
             else:
                 print("unknown command")
     finally:
+        summary = team.usage_summary()
         await team.stop(distill=one_shot is None)
-        print(team.usage_summary())
+        print(summary)
 
 
 def main(argv=None):

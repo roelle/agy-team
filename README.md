@@ -49,7 +49,18 @@ Shared flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 ```
 
 REPL commands: `say <agent> <msg>`, `broadcast <msg>`, `log [n]`, `roster`,
-`add <name> <role>`, `remove <name>`, `distill [agent]`, `usage`, `quit`.
+`add <name> <role>`, `remove <name>`, `cycle <agent>`, `distill [agent]`,
+`usage`, `quit`.
+
+### Role-scoped tools (why agents collaborate)
+
+Per-agent in `team/roster.json`: `"tools_off": ["run_command", ...]` disables
+harness builtins at session build time (the tool schema never reaches the
+model), and `"workers": false` removes subagent spawning. The default tpm has
+no shell, no file writes, and no workers — delegation is its only path to
+results, which is enforced by capability, not prose. Verified: asked for the
+host's Python/pip versions, tpm delegated to syseng, had coder independently
+verify (the review-before-delivery contract), and reported accurate results.
 
 - Roster: `team/roster.json` (default: tpm, coder, syseng). Per-agent model is
   configurable there.
@@ -65,6 +76,32 @@ REPL commands: `say <agent> <msg>`, `broadcast <msg>`, `log [n]`, `roster`,
   every agent's learnings to memory first.
 - Shared deliverables go in `team/shared/`.
 
+## Session lifecycle: cycling and distillation
+
+Distillation (sweeping unsaved learnings into memory files) fires on `/quit`,
+after one-shot runs, on `/cycle` (single agent) / `cycle <agent>` (team), and —
+wired but see quirks — when the harness reports a compaction event. Cycling is
+cheap by design: memory is on disk, so a fresh session reboots with the full
+index. Let sessions live for days; cycle weekly-ish or when a session feels
+off. Primary safety net is the contract's save-as-you-go rule, which evals
+confirm fires unprompted.
+
+## Memory over MCP (optional, not a fork)
+
+`clawagy/mcp_memory.py` is a zero-dependency MCP stdio server exposing the same
+workspace memory (`save_memory`/`read_memory`/`delete_memory`/`memory_index`).
+`--mcp` on `clawagy.sdk_cli` routes memory through it instead of in-process
+callables — same files, same evals (6/6 verified). Any MCP host can mount it;
+to give a pinned Antigravity hub conversation the same memory, register it in
+`~/.gemini/antigravity/mcp_config.json`:
+
+```json
+{"mcpServers": {"clawagy_memory": {
+  "command": "/mnt/data/claw-agy/.venv/bin/python",
+  "args": ["-m", "clawagy.mcp_memory", "/mnt/data/claw-agy/workspace"],
+  "env": {"PYTHONPATH": "/mnt/data/claw-agy"}}}}
+```
+
 ## Evals (run these after changes)
 
 ```bash
@@ -77,6 +114,14 @@ Six probes: teach-restart-recall ×3 (learning) and fabrication probes ×3
 pass 6/6 as of 2026-09-06. Typical suite cost: ~2¢ clean-room, ~8¢ SDK.
 
 ## Known quirks
+
+- `compaction_threshold` maps to the harness's hard `max_token_limit`. Base
+  context (instructions + tool defs) is ~12k tokens; setting the threshold near
+  or below that errors or triggers pathological history-truncation (the model
+  re-reads files over and over — one test burned 490k tokens at a 17k limit).
+  Keep it high (default 80k). At the tiny limits we could test, the harness
+  truncated history *without* emitting the compaction event, so treat
+  distill-on-compaction as best-effort, not guaranteed.
 
 - The harness's builtin `create_file` insists on its own "brain" artifact dir
   and can reject workspace paths; agents recover by writing files via

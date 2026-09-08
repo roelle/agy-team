@@ -10,8 +10,11 @@ import datetime
 import platform
 from pathlib import Path
 
+import sys
+
 from google.antigravity import (CapabilitiesConfig, LocalAgentConfig, types)
-from google.antigravity.hooks import policy, post_tool_call, pre_tool_call_decide
+from google.antigravity.hooks import (on_compaction, policy, post_tool_call,
+                                      pre_tool_call_decide)
 
 from . import config as cfg
 from .agent import CONTRACT
@@ -60,10 +63,20 @@ def make_memory_tools(box: Toolbox):
     return [save_memory, read_memory, delete_memory]
 
 
+class SessionFlags:
+    """Mutable state shared between hooks and the driving CLI/orchestrator."""
+
+    def __init__(self):
+        self.compaction_pending = False
+
+
 def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                  name: str = "Clawy", interactive: bool = False,
                  trace=None, extra_tools=None, extra_sections=None,
-                 subagents=None, identity_default: str | None = None) -> LocalAgentConfig:
+                 subagents=None, identity_default: str | None = None,
+                 disabled_tools: list[str] | None = None,
+                 use_mcp: bool = False,
+                 flags: SessionFlags | None = None) -> LocalAgentConfig:
     workspace = Path(workspace)
     box = Toolbox(workspace)  # creates workspace/memory/
     ident_file = workspace / "IDENTITY.md"
@@ -106,20 +119,37 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
 
     hooks.append(block_dangerous)
 
+    if flags is not None:
+        @on_compaction
+        def note_compaction(step):
+            flags.compaction_pending = True
+        hooks.append(note_compaction)
+
     if trace is not None:
         @post_tool_call
         def trace_tools(result):
             trace(result)
         hooks.append(trace_tools)
 
+    mcp_servers = None
+    if use_mcp:
+        mcp_servers = [types.McpStdioServer(
+            name="clawagy_memory", type="stdio", command=sys.executable,
+            args=["-m", "clawagy.mcp_memory", str(workspace)],
+            env={"PYTHONPATH": str(cfg.PROJECT_ROOT)})]
+
+    off = [types.BuiltinTools(t) for t in (disabled_tools or [])]
+
     return LocalAgentConfig(
         system_instructions=types.TemplatedSystemInstructions(
             identity=ident_file.read_text(), sections=sections),
-        tools=make_memory_tools(box) + list(extra_tools or []),
+        tools=([] if use_mcp else make_memory_tools(box)) + list(extra_tools or []),
         subagents=subagents,
+        mcp_servers=mcp_servers,
         capabilities=CapabilitiesConfig(
             enable_subagents=bool(subagents),
             max_subagent_depth=1 if subagents else None,
+            disabled_tools=off or None,
             agent_behavior=(types.AgentBehavior.INTERACTIVE if interactive
                             else types.AgentBehavior.AUTONOMOUS),
             compaction_threshold=cfg.COMPACT_THRESHOLD_TOKENS,

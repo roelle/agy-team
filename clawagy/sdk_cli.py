@@ -8,7 +8,7 @@ from pathlib import Path
 from google.antigravity import Agent
 
 from . import config as cfg
-from .sdk_agent import build_config
+from .sdk_agent import SessionFlags, build_config
 
 DISTILL_PROMPT = (
     "Session is ending. Review this conversation for anything durable you "
@@ -16,9 +16,13 @@ DISTILL_PROMPT = (
     "save_memory / delete_memory as needed — update existing memories rather "
     "than duplicating. If nothing new, say so briefly.")
 
+COMPACT_DISTILL_PROMPT = (
+    "Context was just compacted; details from earlier in this session are now "
+    "summarized. Save any durable learnings from this session with save_memory "
+    "NOW (update, don't duplicate). Be brief.")
+
 
 def _trace(result):
-    args = getattr(result, "args", None)
     print(f"  ⚙ {result.name}", flush=True)
     if result.error:
         print(f"    ↳ error: {str(result.error)[:120]}", flush=True)
@@ -38,39 +42,63 @@ def _usage_line(agent: Agent, model: str) -> str:
         return f"[usage] unavailable ({e})"
 
 
+async def _chat(agent, flags, text) -> str:
+    """One turn + automatic distill if the harness compacted during it."""
+    resp = await agent.chat(text)
+    out = await resp.text()
+    if flags.compaction_pending:
+        flags.compaction_pending = False
+        print("  ℹ context was compacted — distilling to memory", flush=True)
+        await (await agent.chat(COMPACT_DISTILL_PROMPT)).text()
+    return out
+
+
 async def amain(args):
     trace = None if args.quiet else _trace
-    config = build_config(Path(args.workspace), model=args.model, name=args.name,
-                          interactive=not args.prompt, trace=trace)
-    async with Agent(config) as agent:
-        if args.prompt:
-            resp = await agent.chat(args.prompt)
-            print(await resp.text())
+
+    def fresh():
+        flags = SessionFlags()
+        return build_config(Path(args.workspace), model=args.model,
+                            name=args.name, interactive=not args.prompt,
+                            trace=trace, use_mcp=args.mcp, flags=flags), flags
+
+    config, flags = fresh()
+    if args.prompt:
+        async with Agent(config) as agent:
+            print(await _chat(agent, flags, args.prompt))
             if not args.no_distill:
                 await agent.chat(DISTILL_PROMPT)
             print(f"\n{_usage_line(agent, args.model)}", file=sys.stderr)
-            return
-        print(f"{args.name} (SDK/localharness) ready — model {args.model}")
-        print("Commands: /quit /distill\n")
-        while True:
-            try:
-                user = input("you> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                user = "/quit"
-                print()
-            if not user:
-                continue
-            if user == "/quit":
-                if not args.no_distill:
-                    print("distilling session to memory...")
+        return
+
+    print(f"{args.name} (SDK/localharness) ready — model {args.model}"
+          f"{', memory via MCP' if args.mcp else ''}")
+    print("Commands: /quit /distill /cycle\n")
+    cycling = True
+    while cycling:
+        async with Agent(config) as agent:
+            while True:
+                try:
+                    user = (await asyncio.to_thread(input, "you> ")).strip()
+                except (EOFError, KeyboardInterrupt):
+                    user = "/quit"
+                    print()
+                if not user:
+                    continue
+                if user in ("/quit", "/cycle"):
+                    if not args.no_distill:
+                        print("distilling session to memory...")
+                        print(await (await agent.chat(DISTILL_PROMPT)).text())
+                    print(_usage_line(agent, args.model))
+                    cycling = user == "/cycle"
+                    break
+                if user == "/distill":
                     print(await (await agent.chat(DISTILL_PROMPT)).text())
-                print(_usage_line(agent, args.model))
-                break
-            if user == "/distill":
-                print(await (await agent.chat(DISTILL_PROMPT)).text())
-                continue
-            resp = await agent.chat(user)
-            print(f"\n{args.name}> {await resp.text()}\n")
+                    continue
+                print(f"\n{args.name}> {await _chat(agent, flags, user)}\n")
+        if cycling:
+            print("— fresh session (identity and memory index reloaded) —\n")
+            config, flags = fresh()
 
 
 def main(argv=None):
@@ -82,6 +110,9 @@ def main(argv=None):
     ap.add_argument("--name", default="Clawy")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--no-distill", action="store_true")
+    ap.add_argument("--mcp", action="store_true",
+                    help="serve memory tools via the MCP server instead of "
+                         "in-process callables (same files either way)")
     asyncio.run(amain(ap.parse_args(argv)))
 
 

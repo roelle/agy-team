@@ -1,4 +1,4 @@
 # Memory index
-- [user-preferences] User preferences including Python indentation style
-- [deploy-server] Deploy server host details and SSH configuration
-- [projects] Project codenames and details
+- [deploy-server] Deploy server details: host 'horta', sshd on port 2222
+- [python-style] Python coding style preference: tabs over spaces
+- [poster-pipeline] Poster pipeline project codename: 'MFP-9'

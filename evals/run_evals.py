@@ -15,12 +15,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = ROOT / ".venv" / "bin" / "python"
-# CLAWAGY_IMPL=clawagy.sdk_cli runs the same suite against the SDK-backed agent
+# CLAWAGY_IMPL=clawagy.sdk_cli runs the same suite against the SDK-backed agent;
+# CLAWAGY_EXTRA_ARGS="--mcp" appends flags (e.g. to route memory through MCP).
 IMPL = os.environ.get("CLAWAGY_IMPL", "clawagy")
+EXTRA = os.environ.get("CLAWAGY_EXTRA_ARGS", "").split()
 
 
 def run_agent(workspace: Path, prompt: str, distill: bool = False) -> str:
-    cmd = [str(PY), "-m", IMPL, "--quiet", "-w", str(workspace), "-p", prompt]
+    cmd = [str(PY), "-m", IMPL, "--quiet", "-w", str(workspace), "-p", prompt] + EXTRA
     if not distill:
         cmd.append("--no-distill")
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
