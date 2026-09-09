@@ -1,3 +1,4 @@
 # poster-pipeline
 
-The codename for the poster pipeline project is `MFP-9`.
+- **Codename:** `MFP-9`
+- Project: Poster pipeline

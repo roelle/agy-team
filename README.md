@@ -102,16 +102,93 @@ to give a pinned Antigravity hub conversation the same memory, register it in
   "env": {"PYTHONPATH": "/mnt/data/claw-agy"}}}}
 ```
 
+## agy CLI plugin (the installable form)
+
+Remote Control drives **agy CLI sessions**, not SDK programs — so the
+installable artifact is a CLI plugin, and that is what `plugin/` contains:
+
+```
+plugin/clawagy/
+  plugin.json          manifest
+  agents/{tpm,coder,syseng}/agent.md    peer roles (markdown + frontmatter)
+  skills/{distill,inbox,handoff}.md     slash commands
+  rules/grounding.md   grounding + learning + collaboration contract
+  mcp_config.json      rendered at install time with absolute paths
+```
+
+Install and run:
+
+```bash
+bash plugin/install.sh                  # → ~/.gemini/antigravity-cli/plugins/clawagy
+CLAWAGY_AGENT=tpm agy --agent tpm       # identity must match --agent
+```
+
+The installer renders real paths into `mcp_config.json` (env-var expansion in
+that file is undocumented, so nothing depends on it) and seeds the durable team
+roster. Agent identity is *not* baked in: both MCP servers inherit
+`CLAWAGY_AGENT` from the agy process, so one install serves every agent.
+
+### File scopes
+
+`clawagy/scope.py` defines three classes of path, each overridable by env var,
+`scopes.json` in the project, or argument — run `python -m clawagy.scope` to see
+what resolves where:
+
+| scope | holds | default |
+|---|---|---|
+| durable | identity + memory (survives every project) | `~/.gemini/clawagy` |
+| project | the repo or mapped drive being worked in | `$PWD` |
+| shared | team artifacts and deliverables | `<project>/.clawagy-team` |
+
+Memory is forced into durable scope, so an agent that moves between repos (or
+works on a network mount) keeps what it learned and never strands memory in
+someone else's checkout.
+
+### A2A messaging
+
+Antigravity has no native peer messaging — its Teamwork mode coordinates through
+workspace artifacts, and the SDK offers only subagents. `clawagy/mcp_bus.py`
+supplies the missing channel over MCP, so it works identically in the agy CLI,
+the desktop hub, and SDK agents. Delivery is inbox-based (`check_inbox`) rather
+than push, because when the harness owns the loop nobody can force a peer to
+take a turn.
+
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/run_evals.py                          # clean-room agent
-CLAWAGY_IMPL=clawagy.sdk_cli .venv/bin/python evals/run_evals.py  # SDK agent
+.venv/bin/python evals/test_mcp.py                    # 22 protocol/scope tests, free
+.venv/bin/python evals/run_evals.py                   # clean-room agent
+CLAWAGY_IMPL=clawagy.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
+CLAWAGY_IMPL=clawagy.sdk_cli CLAWAGY_EXTRA_ARGS=--mcp \
+  .venv/bin/python evals/run_evals.py                 # SDK agent, memory via MCP
+.venv/bin/python evals/test_a2a.py                    # A2A behavioral, ~15¢
 ```
 
-Six probes: teach-restart-recall ×3 (learning) and fabrication probes ×3
-(missing file, absent memory, unverified system fact). Both implementations
-pass 6/6 as of 2026-09-06. Typical suite cost: ~2¢ clean-room, ~8¢ SDK.
+Current status — all green as of 2026-09-09:
+
+| suite | what it proves | score |
+|---|---|---|
+| `test_mcp.py` | MCP protocol, memory semantics, bus delivery, scope resolution | 22/22 |
+| `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
+| `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
+
+Typical cost: free, ~2¢ clean-room, ~8¢ SDK, ~15¢ A2A.
+
+## Unverified: the plugin install step
+
+Everything the plugin *does* at runtime is tested (`test_a2a.py` mounts the same
+modules with the same env-derived identity and passes 8/8). What is **not**
+verified is `agy` itself loading the bundle — the CLI is not installed on this
+machine, so the manifest/agents/skills layout follows the published docs but has
+never been loaded by the real thing. Expect to adjust:
+
+- whether plugin `agents/` uses `<name>/agent.md` (documented for custom agents)
+  or a flat `<name>.md`
+- `hooks.json` — schema is undocumented, so nothing here depends on it; the
+  grounding contract ships as `rules/` and agent instructions instead
+- per-agent tool restriction (the SDK path uses `disabled_tools`; the CLI's
+  equivalent for custom agents isn't documented). tpm's "no shell" is currently
+  instruction-level in the plugin, not capability-level as it is in the SDK team.
 
 ## Known quirks
 

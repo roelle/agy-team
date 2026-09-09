@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "clawagy_memory": {
+      "command": "__PYTHON__",
+      "args": ["-m", "clawagy.mcp_memory"],
+      "env": {"PYTHONPATH": "__CLAWAGY_HOME__"}
+    },
+    "clawagy_bus": {
+      "command": "__PYTHON__",
+      "args": ["-m", "clawagy.mcp_bus"],
+      "env": {"PYTHONPATH": "__CLAWAGY_HOME__"}
+    }
+  }
+}

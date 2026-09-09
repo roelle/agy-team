@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 team/bus.jsonl
+evals/ws_*
+evals/team_*
+evals/a2a_*
+plugin/clawagy/mcp_config.json

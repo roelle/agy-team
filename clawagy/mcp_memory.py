@@ -1,102 +1,67 @@
-"""Minimal MCP (Model Context Protocol) stdio server exposing Clawy's memory.
+"""MCP stdio server exposing one agent's durable memory.
 
-Zero dependencies: newline-delimited JSON-RPC 2.0 over stdin/stdout.
-Any MCP host can mount the same workspace memory the CLI/team agents use —
-the google-antigravity SDK (McpStdioServer), the Antigravity hub
-(~/.gemini/antigravity/mcp_config.json), Claude Code, etc.
+Any MCP host can mount the same workspace memory the CLI/team agents use — the
+agy CLI (plugin mcp_config.json), the Antigravity hub
+(~/.gemini/antigravity/mcp_config.json), the google-antigravity SDK
+(McpStdioServer), Claude Code, etc.
 
-Usage: python -m clawagy.mcp_memory <workspace_dir>
+Workspace: `python -m clawagy.mcp_memory <workspace_dir>` (explicit), or omit it
+and set CLAWAGY_AGENT — the workspace is then resolved to the agent's *durable*
+scope (see clawagy.scope), so memory follows the agent between projects instead
+of being stranded in whichever repo it happened to be working in.
 """
-import json
+import os
 import sys
 from pathlib import Path
 
+from .mcp_base import serve, string, tool
 from .tools import Toolbox
 
-PROTOCOL_VERSION = "2025-06-18"
-
-TOOL_DEFS = [
-    {"name": "save_memory",
-     "description": ("Save a durable memory so future sessions of this agent "
-                     "know it: user preferences, corrections, facts about "
-                     "systems/projects, lessons learned. Overwrites an existing "
-                     "name — read first and merge if unsure. Returns the "
-                     "refreshed memory index."),
-     "inputSchema": {"type": "object", "properties": {
-         "name": {"type": "string", "description": "Short kebab-case topic name"},
-         "description": {"type": "string", "description": "One line for the index"},
-         "content": {"type": "string", "description": "Markdown content"}},
-         "required": ["name", "description", "content"]}},
-    {"name": "read_memory",
-     "description": "Read one memory file by name; lists available names on a miss.",
-     "inputSchema": {"type": "object", "properties": {
-         "name": {"type": "string", "description": "Memory name from the index"}},
-         "required": ["name"]}},
-    {"name": "delete_memory",
-     "description": "Delete a memory that is wrong or obsolete.",
-     "inputSchema": {"type": "object", "properties": {
-         "name": {"type": "string", "description": "Memory name"}},
-         "required": ["name"]}},
-    {"name": "memory_index",
-     "description": "Return the full memory index (name + one-line description each).",
-     "inputSchema": {"type": "object", "properties": {}}},
+TOOLS = [
+    tool("save_memory",
+         "Save a durable memory so future sessions of you know it: user "
+         "preferences, corrections, facts about systems/projects, lessons "
+         "learned. Call it the moment you learn something, not at session end. "
+         "Saving under an existing name overwrites it — read first and merge if "
+         "unsure. Returns the refreshed memory index.",
+         {"name": string("Short kebab-case topic name, e.g. 'user-preferences'"),
+          "description": string("One line for your index"),
+          "content": string("The memory content in markdown")},
+         ["name", "description", "content"]),
+    tool("read_memory",
+         "Read one of your memory files by name; lists available names on a miss.",
+         {"name": string("Memory name from your index")}, ["name"]),
+    tool("delete_memory", "Delete a memory that is wrong or obsolete.",
+         {"name": string("Memory name")}, ["name"]),
+    tool("memory_index",
+         "List everything you remember (name + one-line description each). "
+         "Check this before claiming you don't know something.", {}),
 ]
 
 
-def serve(workspace: Path):
-    box = Toolbox(workspace)
+def main(workspace: str):
+    box = Toolbox(Path(workspace))
+    index = lambda: (box.workspace / "MEMORY.md").read_text()
+    handlers = {
+        "save_memory": lambda a: f"{box.save_memory(**a)}\nCurrent memory index:\n{index()}",
+        "read_memory": lambda a: box.read_memory(**a),
+        "delete_memory": lambda a: f"{box.delete_memory(**a)}\nCurrent memory index:\n{index()}",
+        "memory_index": lambda a: index(),
+    }
 
-    def dispatch(tool: str, args: dict) -> str:
-        index = lambda: (box.workspace / "MEMORY.md").read_text()
-        if tool == "save_memory":
-            return f"{box.save_memory(**args)}\nCurrent memory index:\n{index()}"
-        if tool == "read_memory":
-            return box.read_memory(**args)
-        if tool == "delete_memory":
-            return f"{box.delete_memory(**args)}\nCurrent memory index:\n{index()}"
-        if tool == "memory_index":
-            return index()
-        return f"[error: unknown tool '{tool}']"
+    def dispatch(name, args):
+        fn = handlers.get(name)
+        return fn(args) if fn else f"[error: unknown tool '{name}']"
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        method, msg_id = msg.get("method"), msg.get("id")
-        if msg_id is None:      # notification (e.g. notifications/initialized)
-            continue
-        if method == "initialize":
-            result = {"protocolVersion": msg.get("params", {}).get(
-                          "protocolVersion", PROTOCOL_VERSION),
-                      "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "clawagy-memory", "version": "0.1"}}
-        elif method == "tools/list":
-            result = {"tools": TOOL_DEFS}
-        elif method == "tools/call":
-            p = msg.get("params", {})
-            try:
-                out = dispatch(p.get("name", ""), p.get("arguments", {}) or {})
-                result = {"content": [{"type": "text", "text": out}],
-                          "isError": False}
-            except Exception as e:
-                result = {"content": [{"type": "text", "text": f"[error: {e}]"}],
-                          "isError": True}
-        elif method == "ping":
-            result = {}
-        else:
-            print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "error": {
-                "code": -32601, "message": f"method not found: {method}"}}),
-                flush=True)
-            continue
-        print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": result}),
-              flush=True)
+    serve("clawagy-memory", TOOLS, dispatch)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python -m clawagy.mcp_memory <workspace_dir>")
-    serve(Path(sys.argv[1]))
+    if len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
+        from . import scope
+        agent = os.environ.get("CLAWAGY_AGENT", "")
+        if not agent:
+            sys.exit("clawagy.mcp_memory: pass <workspace_dir> or set CLAWAGY_AGENT")
+        main(str(scope.load().agent_workspace(agent)))
