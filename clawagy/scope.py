@@ -7,7 +7,8 @@ Three scopes, because they have different lifetimes and backup/sync stories:
              Default: ~/.gemini/clawagy   (override: CLAWAGY_DURABLE_DIR)
   project  — the repo / mapped drive the work happens in. Disposable per job;
              may be a network mount, may be someone else's git checkout.
-             Default: $PWD               (override: CLAWAGY_PROJECT_DIR)
+             Default: the enclosing git repository root, falling back to $PWD
+             when not in a repo    (override: CLAWAGY_PROJECT_DIR)
   shared   — team coordination artifacts and deliverables handed between agents.
              Default: <project>/.clawagy-team  (override: CLAWAGY_SHARED_DIR)
 
@@ -26,6 +27,21 @@ CONFIG_NAME = "scopes.json"
 
 def _expand(p) -> Path:
     return Path(os.path.expandvars(str(p))).expanduser().resolve()
+
+
+def git_root(start: Path | None = None) -> Path | None:
+    """Nearest enclosing git repository root, or None.
+
+    Walks up checking for `.git`, which is a directory in a normal clone and a
+    file in a worktree or submodule — `.exists()` covers both. Deliberately no
+    subprocess: this runs inside MCP servers where a missing/slow git binary
+    would be a silent failure mode.
+    """
+    cur = (start or Path.cwd()).resolve()
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
 
 
 @dataclass
@@ -52,8 +68,10 @@ class Scopes:
         return self.shared
 
     def describe(self) -> str:
+        in_repo = (self.project / ".git").exists()
         return (f"durable (identity/memory, survives projects): {self.durable}\n"
-                f"project (the repo/drive you are working in): {self.project}\n"
+                f"project (the repo/drive you are working in): {self.project}"
+                f"{' [git root]' if in_repo else ' [not a git repo]'}\n"
                 f"shared  (team artifacts and deliverables):    {self.shared}")
 
     def as_dict(self) -> dict:
@@ -62,7 +80,8 @@ class Scopes:
 
 
 def load(durable=None, project=None, shared=None) -> Scopes:
-    proj = _expand(project or os.environ.get("CLAWAGY_PROJECT_DIR") or Path.cwd())
+    explicit = project or os.environ.get("CLAWAGY_PROJECT_DIR")
+    proj = _expand(explicit) if explicit else (git_root() or Path.cwd().resolve())
 
     cfg = {}
     cfg_file = proj / CONFIG_NAME

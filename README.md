@@ -137,12 +137,25 @@ what resolves where:
 | scope | holds | default |
 |---|---|---|
 | durable | identity + memory (survives every project) | `~/.gemini/clawagy` |
-| project | the repo or mapped drive being worked in | `$PWD` |
+| project | the repo or mapped drive being worked in | enclosing **git root**, else `$PWD` |
 | shared | team artifacts and deliverables | `<project>/.clawagy-team` |
+
+Project scope is discovered, not hardcoded: it walks up for `.git` (handling the
+worktree/submodule case where `.git` is a file), so running an agent from a
+nested subdirectory resolves to the same repo root every time, and falls back to
+`$PWD` outside a repo. Discovery is pure Python — no `git` subprocess — because
+these run inside MCP servers where a missing or slow binary would fail silently.
 
 Memory is forced into durable scope, so an agent that moves between repos (or
 works on a network mount) keeps what it learned and never strands memory in
 someone else's checkout.
+
+### Roster management
+
+`roster_add` / `roster_remove` are exposed over the bus server **only** when
+`CLAWAGY_ROSTER_ADMIN=1`. Team composition is the operator's call, not something
+an agent should do to itself mid-task; without the flag the tools aren't in the
+schema at all, so a curious agent can't even try.
 
 ### A2A messaging
 
@@ -156,7 +169,7 @@ take a turn.
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/test_mcp.py                    # 22 protocol/scope tests, free
+.venv/bin/python evals/test_mcp.py                    # 34 protocol/scope tests, free
 .venv/bin/python evals/run_evals.py                   # clean-room agent
 CLAWAGY_IMPL=clawagy.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
 CLAWAGY_IMPL=clawagy.sdk_cli CLAWAGY_EXTRA_ARGS=--mcp \
@@ -168,7 +181,7 @@ Current status — all green as of 2026-09-09:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | MCP protocol, memory semantics, bus delivery, scope resolution | 22/22 |
+| `test_mcp.py` | MCP protocol, memory semantics, bus delivery, roster gating, git-root scopes | 34/34 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 

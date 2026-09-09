@@ -48,6 +48,19 @@ TOOLS = [
          "listed here.", {}),
 ]
 
+# Roster mutation is off unless CLAWAGY_ROSTER_ADMIN=1. Team composition is the
+# operator's call, not something an agent should do to itself mid-task.
+ADMIN_TOOLS = [
+    tool("roster_add",
+         "Add a teammate to the roster. Takes effect for sessions started "
+         "afterwards; existing sessions learn of them on their next start.",
+         {"name": string("Short agent name, e.g. 'qa'"),
+          "role": string("One-line description of what this agent owns")},
+         ["name", "role"]),
+    tool("roster_remove", "Remove a teammate from the roster.",
+         {"name": string("Agent name to remove")}, ["name"]),
+]
+
 
 class Bus:
     """File-backed message bus: append-only log + per-agent inbox."""
@@ -107,19 +120,50 @@ class Bus:
         return "\n".join(rows + ["- user: the human you work for"]) \
             if rows else "- user: the human you work for"
 
+    def _write_roster(self, agents: list[dict]) -> None:
+        doc = {}
+        if self.roster_path.exists():
+            try:
+                doc = json.loads(self.roster_path.read_text())
+            except json.JSONDecodeError:
+                doc = {}
+        doc["agents"] = agents
+        self.roster_path.write_text(json.dumps(doc, indent=2))
 
-def main(team_dir: str, me: str):
+    def roster_add(self, name: str, role: str) -> str:
+        agents = self.roster()
+        if any(a["name"] == name for a in agents):
+            return f"[error: '{name}' is already on the roster]"
+        agents.append({"name": name, "role": role})
+        self._write_roster(agents)
+        return f"[added '{name}'. Roster: {', '.join(a['name'] for a in agents)}]"
+
+    def roster_remove(self, name: str) -> str:
+        agents = self.roster()
+        if not any(a["name"] == name for a in agents):
+            return f"[error: no teammate named '{name}']"
+        self._write_roster([a for a in agents if a["name"] != name])
+        left = ", ".join(a["name"] for a in self.roster()) or "nobody"
+        return f"[removed '{name}'. Roster: {left}]"
+
+
+def main(team_dir: str, me: str, admin: bool = False):
     bus = Bus(Path(team_dir), me)
     handlers = {"send_to_teammate": lambda a: bus.send(a["to"], a["content"]),
                 "broadcast": lambda a: bus.broadcast(a["content"]),
                 "check_inbox": lambda a: bus.check_inbox(),
                 "list_teammates": lambda a: bus.list_teammates()}
+    tools = list(TOOLS)
+    if admin:
+        tools += ADMIN_TOOLS
+        handlers["roster_add"] = lambda a: bus.roster_add(a["name"], a["role"])
+        handlers["roster_remove"] = lambda a: bus.roster_remove(a["name"])
 
     def dispatch(name, args):
         fn = handlers.get(name)
         return fn(args) if fn else f"[error: unknown tool '{name}']"
 
-    serve(f"clawagy-bus:{me}", TOOLS, dispatch)
+    serve(f"clawagy-bus:{me}", tools, dispatch)
 
 
 if __name__ == "__main__":
@@ -132,4 +176,4 @@ if __name__ == "__main__":
     if not me:
         sys.exit("clawagy.mcp_bus: no agent identity. Pass <team_dir> <agent_name> "
                  "or set CLAWAGY_AGENT (and optionally CLAWAGY_TEAM_DIR).")
-    main(team_dir, me)
+    main(team_dir, me, admin=os.environ.get("CLAWAGY_ROSTER_ADMIN") == "1")

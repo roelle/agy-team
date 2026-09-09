@@ -3,13 +3,15 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = ROOT / ".venv" / "bin" / "python"
 
 
-def rpc(module: str, args: list[str], calls: list[tuple[str, dict]]) -> list[dict]:
+def rpc(module: str, args: list[str], calls: list[tuple[str, dict]],
+        env: dict | None = None) -> list[dict]:
     """Run a server, issue initialize + tools/list + tool calls, return results."""
     msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2025-06-18"}},
@@ -18,8 +20,10 @@ def rpc(module: str, args: list[str], calls: list[tuple[str, dict]]) -> list[dic
     for i, (name, a) in enumerate(calls):
         msgs.append({"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call",
                      "params": {"name": name, "arguments": a}})
+    import os
     proc = subprocess.run(
         [str(PY), "-m", module, *args], cwd=ROOT, text=True, timeout=60,
+        env={**os.environ, **(env or {})},
         input="\n".join(json.dumps(m) for m in msgs) + "\n", capture_output=True)
     if proc.returncode != 0:
         raise AssertionError(f"{module} exited {proc.returncode}: {proc.stderr}")
@@ -114,24 +118,96 @@ def test_bus() -> tuple[int, int]:
     return score, 10
 
 
+def test_roster_admin() -> tuple[int, int]:
+    print("\n== roster admin gating ==")
+    td = ROOT / "evals" / "team_admin_unit"
+    shutil.rmtree(td, ignore_errors=True)
+    td.mkdir(parents=True)
+    (td / "roster.json").write_text(json.dumps(
+        {"mission": "test", "agents": [{"name": "tpm", "role": "coordinates"}]}))
+
+    # default (no admin env): mutation tools must not be offered or honored
+    plain = rpc("clawagy.mcp_bus", [str(td), "tpm"],
+                [("roster_add", {"name": "sneaky", "role": "self-added"})])
+    names = [t["name"] for t in plain[1]["result"]["tools"]]
+    after_plain = json.loads((td / "roster.json").read_text())["agents"]
+
+    # admin session: mutation works and persists
+    adm = rpc("clawagy.mcp_bus", [str(td), "tpm"], [
+        ("roster_add", {"name": "qa", "role": "reviews deliverables"}),
+        ("roster_add", {"name": "qa", "role": "duplicate attempt"}),
+        ("roster_remove", {"name": "nobody"}),
+        ("roster_remove", {"name": "qa"}),
+    ], env={"CLAWAGY_ROSTER_ADMIN": "1"})
+    adm_names = [t["name"] for t in adm[1]["result"]["tools"]]
+    r = adm[2:]
+    final = json.loads((td / "roster.json").read_text())
+
+    score = sum([
+        check("roster tools hidden without admin flag", "roster_add" not in names, str(names)),
+        check("roster unchanged when agent tries anyway", len(after_plain) == 1),
+        check("roster tools exposed with admin flag", "roster_add" in adm_names),
+        check("add works", "added 'qa'" in text_of(r[0]), text_of(r[0])),
+        check("duplicate add rejected", "already on the roster" in text_of(r[1])),
+        check("removing unknown agent errors", "no teammate named" in text_of(r[2])),
+        check("remove works", "removed 'qa'" in text_of(r[3])),
+        check("mission preserved through edits", final.get("mission") == "test"),
+    ])
+    return score, 8
+
+
 def test_scopes() -> tuple[int, int]:
     print("\n== file scope resolution ==")
     import os
-    env = {**os.environ,
-           "CLAWAGY_DURABLE_DIR": "/tmp/clawagy-durable-test",
-           "CLAWAGY_PROJECT_DIR": str(ROOT)}
-    out = subprocess.run([str(PY), "-m", "clawagy.scope"], cwd=ROOT, env=env,
-                         capture_output=True, text=True, timeout=30).stdout
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("CLAWAGY_PROJECT_DIR", "CLAWAGY_DURABLE_DIR")}
+
+    def run_scope(cwd, env=None):
+        return subprocess.run([str(PY), "-m", "clawagy.scope"], cwd=cwd,
+                              env={**base, "PYTHONPATH": str(ROOT), **(env or {})},
+                              capture_output=True, text=True, timeout=30).stdout
+
+    out = run_scope(ROOT, {"CLAWAGY_DURABLE_DIR": "/tmp/clawagy-durable-test",
+                           "CLAWAGY_PROJECT_DIR": str(ROOT)})
+
+    # git root discovery: a repo with a nested subdir, invoked from the subdir
+    repo = ROOT / "evals" / "gitroot_unit"
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "sub" / "deeper").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    from_sub = run_scope(repo / "sub" / "deeper")
+
+    # worktree-style .git *file* rather than directory
+    wt = ROOT / "evals" / "gitfile_unit"
+    shutil.rmtree(wt, ignore_errors=True)
+    (wt / "sub").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+    from_wt = run_scope(wt / "sub")
+
+    # not a repo at all → falls back to cwd. Must live outside this repo,
+    # otherwise walking up correctly finds *our* root and the test is bogus.
+    plain = Path(tempfile.mkdtemp(prefix="clawagy-nogit-")).resolve()
+    from_plain = run_scope(plain)
+
     score = sum([
         check("durable honors env override", "/tmp/clawagy-durable-test" in out, out),
         check("project honors env override", str(ROOT) in out, out),
         check("shared defaults under project", ".clawagy-team" in out, out),
+        check("git root found from nested subdir",
+              f"project (the repo/drive you are working in): {repo} [git root]"
+              in from_sub, from_sub),
+        check("worktree .git file treated as root",
+              f"{wt} [git root]" in from_wt, from_wt),
+        check("non-repo falls back to cwd",
+              f"{plain} [not a git repo]" in from_plain, from_plain),
+        check("shared follows the discovered git root",
+              str(repo / ".clawagy-team") in from_sub, from_sub),
     ])
-    return score, 3
+    return score, 7
 
 
 if __name__ == "__main__":
-    totals = [test_memory(), test_bus(), test_scopes()]
+    totals = [test_memory(), test_bus(), test_roster_admin(), test_scopes()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== MCP/scope unit tests: {got}/{want} ==")
     sys.exit(0 if got == want else 1)
