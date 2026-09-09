@@ -157,19 +157,48 @@ someone else's checkout.
 an agent should do to itself mid-task; without the flag the tools aren't in the
 schema at all, so a curious agent can't even try.
 
-### A2A messaging
+### A2A messaging (swappable transport)
 
-Antigravity has no native peer messaging — its Teamwork mode coordinates through
+Antigravity exposes no peer messaging publicly — Teamwork coordinates through
 workspace artifacts, and the SDK offers only subagents. `clawagy/mcp_bus.py`
-supplies the missing channel over MCP, so it works identically in the agy CLI,
-the desktop hub, and SDK agents. Delivery is inbox-based (`check_inbox`) rather
-than push, because when the harness owns the loop nobody can force a peer to
-take a turn.
+supplies the channel over MCP, so it works identically in the agy CLI, the
+desktop hub, and SDK agents. Delivery is inbox-based (`check_inbox`) rather than
+push, because when the harness owns the loop nobody can force a peer to take a
+turn.
+
+**The wire is pluggable.** The agent-facing tools are fixed; how messages move
+is not. If a native or internal A2A mechanism becomes available to you,
+implement `clawagy/transport.py:Transport` against it and point an env var at
+your class — no clawagy source changes, and agents notice nothing:
+
+```bash
+export CLAWAGY_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+export CLAWAGY_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
+.venv/bin/python evals/test_transport.py            # must pass 12/12
+```
+
+Copy `clawagy/transport_template.py` and implement three methods (`send`,
+`fetch`, `teammates`); `broadcast`, roster admin, and `close` have working
+defaults. **That file is the only thing you should need to write** to move off
+the file bus.
+
+Guarantees the contract suite enforces, because they're what the rest of the
+system assumes: unknown recipients produce an `[error: ...]` string rather than
+vanishing, messages are consumed exactly once (redelivery loops agents forever),
+and inboxes are isolated per agent. Misconfiguration fails loudly — a bad
+module, malformed spec, bad config JSON, or non-`Transport` class exits with a
+message rather than silently falling back to the file bus, which would split the
+team across two channels and produce messages that just disappear.
+
+Swappability is verified, not asserted: `evals/fixture_transport.py` is a
+SQLite-backed transport written against only the public interface, and the same
+12-check contract passes on it and on the file transport.
 
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/test_mcp.py                    # 34 protocol/scope tests, free
+.venv/bin/python evals/test_mcp.py                    # memory + scopes, free
+.venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
 .venv/bin/python evals/run_evals.py                   # clean-room agent
 CLAWAGY_IMPL=clawagy.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
 CLAWAGY_IMPL=clawagy.sdk_cli CLAWAGY_EXTRA_ARGS=--mcp \
@@ -181,7 +210,8 @@ Current status — all green as of 2026-09-09:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | MCP protocol, memory semantics, bus delivery, roster gating, git-root scopes | 34/34 |
+| `test_mcp.py` | MCP protocol, memory semantics, roster persistence, git-root scopes | 19/19 |
+| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 
