@@ -48,7 +48,7 @@ if [ ! -f "$DURABLE/team/roster.json" ]; then
 {
   "mission": "General-purpose engineering team ($TEAM).",
   "agents": [
-    {"name": "tpm",    "role": "Coordinates: decomposes work, delegates, tracks what is outstanding, reports to the user. Does not write code or run commands.",
+    {"name": "tpm",    "role": "Manager: gatekeeper (nothing reaches the user claiming to be done unless it has been reviewed), final check (an unreviewed or rejected result comes back to the manager, not to the user), accountable (the manager owns the answer; 'coder said it was done' is not a defence), and interrupt-driven (the user can ask what is happening at any time and get a truthful answer grounded in the record, not a summary from memory). Does not write code or run commands.",
      "tools_off": ["run_command", "create_file", "edit_file"], "workers": false},
     {"name": "coder",  "role": "Implements. Reads the surrounding code first and matches its idiom. Writes the change and its tests, and runs them before handing off."},
     {"name": "syseng", "role": "Owns environment and tooling. Reproduces problems, runs the full board, and reports concrete failures with the command and output that produced them."},
@@ -65,7 +65,7 @@ fi
 # servers is not enough — the transport is resolved lazily at runtime, so a
 # module missing from PURE_MODULES would slip through. Instantiate it and make a
 # real call.
-( cd / && PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
+( cd / && env -u AGYTEAM_RUNNER PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
 import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory

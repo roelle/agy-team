@@ -120,6 +120,24 @@ deliverable, an answer, a question, a blocker, or a correction. Acknowledgements
 are not messages; they wake someone to read nothing. Silence means understood.
 """
 
+# Accountability means owning the answer that reaches the user. The manager or
+# whoever holds that channel cannot pass off unverified claims: work is not
+# done because someone said it was, a rejected review comes back rather than
+# being reported to the user, and "I do not know, here is how I would find out"
+# is always a valid answer.
+ACCOUNTABILITY = """\
+## Accountability to the user
+Whoever holds the channel to the user owns the answer:
+- Work is not done because someone said it was. Verification must be in the
+  record, not assumed from a teammate's message ("coder said it was done" is
+  not a defence).
+- A rejected review comes back rather than being reported. Findings from qa
+  must be resolved with the team before the user is told work is complete.
+- "I do not know, here is how I would find out" is a valid answer to the user.
+  Guessing from memory or inventing status when the record is silent breaks
+  trust immediately.
+"""
+
 
 def roster_lines(agent: str, agents: list[dict]) -> str:
     peers = [f"- {a['name']}: {a.get('role', '')}"
@@ -139,7 +157,7 @@ def identity(agent: str, agents: list[dict]) -> str:
 def brief(agent: str, agents: list[dict], shared_dir=None) -> str:
     """The full opening brief: identity, teamwork rules, grounding, continuity."""
     parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY,
-             VERIFICATION]
+             VERIFICATION, ACCOUNTABILITY]
     if shared_dir:
         parts.append(f"## Shared files\nWork the team shares belongs under "
                      f"{shared_dir}. Your own private notes do not.")
