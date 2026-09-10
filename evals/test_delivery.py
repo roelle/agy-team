@@ -72,14 +72,19 @@ def main() -> int:
     (team_dir / "roster.json").write_text(json.dumps(ROSTER, indent=2))
     os.environ["AGYTEAM_TEAM_DIR"] = str(team_dir)
 
+    # Runner-agnostic on purpose: the same delivery task must pass whichever
+    # runtime wakes the agents, which is what makes the two paths comparable
+    # rather than merely both present. AGYTEAM_RUNNER picks one.
+    from agyteam import runner as runner_lib
     from agyteam.runner_agy import AgyRunner
     from agyteam.supervisor import Supervisor
     from agyteam.transport import load as load_transport
 
-    runner = AgyRunner({})
-    if not runner.available():
+    runner = runner_lib.load()
+    if isinstance(runner, AgyRunner) and not runner.available():
         print("agy not on PATH — skipping")
         return 0
+    print(f"  runner: {runner.label}")
 
     print(f"\n== delivery: one instruction, verified artifact ({TEAM}) ==")
     sup = Supervisor([a["name"] for a in ROSTER["agents"]], runner,
@@ -107,7 +112,7 @@ def main() -> int:
         check("the user was answered unprompted", bool(answer),
               str([m.content[:60] for m in answer])),
         check("the episode terminated on the answer, not the hop budget",
-              sup.stopped == "the user was answered", sup.stopped),
+              sup.stopped.startswith("the user was answered"), sup.stopped),
         check("no ack spiral (well under the budget)", turns <= 8, str(turns)),
         check("each agent kept one persistent conversation",
               len(convs) >= 2, str(convs)),

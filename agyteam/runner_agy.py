@@ -56,24 +56,14 @@ class AgyRunner(Runner):
         self.persist = self.config.get("persist", True)
         if self.config.get("auto_approve"):
             self.extra_args.append("--dangerously-skip-permissions")
-        self._team_dir = self._resolve_team_dir()
-        self._conv_path = self._team_dir / "conversations.json"
-        self._usage_path = self._team_dir / "usage.jsonl"
-
-    @staticmethod
-    def _resolve_team_dir() -> Path:
-        env = os.environ.get("AGYTEAM_TEAM_DIR")
-        if env:
-            return Path(env)
-        from . import scope
-        return scope.load().team_dir()
+        self._usage_path = self.team_dir / "usage.jsonl"
 
     def _brief(self, agent: str) -> str:
         """The opening brief, from the same source the SDK runner uses."""
         from . import persona
         from . import roster as roster_lib
         try:
-            agents = roster_lib.load(self._team_dir / "roster.json")["agents"]
+            agents = roster_lib.load(self.team_dir / "roster.json")["agents"]
         except Exception:
             agents = [{"name": agent, "role": ""}]
         shared = None
@@ -88,37 +78,6 @@ class AgyRunner(Runner):
         """Return the resolved binary path, or None if agy isn't installed."""
         return shutil.which(self.binary) or (
             self.binary if os.path.isfile(self.binary) else None)
-
-    # --- conversation continuity -----------------------------------------
-
-    def _conversations(self) -> dict:
-        try:
-            return json.loads(self._conv_path.read_text())
-        except (OSError, ValueError):
-            return {}
-
-    def conversation_id(self, agent: str) -> str | None:
-        return self._conversations().get(agent) if self.persist else None
-
-    def _remember(self, agent: str, conv_id: str) -> None:
-        if not (self.persist and conv_id):
-            return
-        convs = self._conversations()
-        if convs.get(agent) == conv_id:
-            return
-        convs[agent] = conv_id
-        self._conv_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conv_path.write_text(json.dumps(convs, indent=2, sort_keys=True))
-
-    def reset(self, agent: str | None = None) -> None:
-        """Forget stored conversations so the next wake starts fresh."""
-        if agent is None:
-            convs = {}
-        else:
-            convs = self._conversations()
-            convs.pop(agent, None)
-        self._conv_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conv_path.write_text(json.dumps(convs, indent=2, sort_keys=True))
 
     def _record_usage(self, agent: str, payload: dict) -> None:
         usage = payload.get("usage") or {}
@@ -165,7 +124,7 @@ class AgyRunner(Runner):
                     f"Antigravity CLI, or set AGYTEAM_RUNNER_CONFIG "
                     f'\'{{"binary": "/path/to/agy"}}\']')
         self._resolved = resolved
-        conv_id = self.conversation_id(agent)
+        conv_id = self.conversation_id(agent) if self.persist else None
         # The brief goes in exactly once, on the turn that creates the
         # conversation; every later wake resumes a session that already has it.
         if not conv_id:
@@ -191,7 +150,7 @@ class AgyRunner(Runner):
         except ValueError:
             payload = {}
         if payload:
-            self._remember(agent, payload.get("conversation_id", ""))
+            self.remember_conversation(agent, payload.get("conversation_id", ""))
             self._record_usage(agent, payload)
             reply = (payload.get("response") or "").strip()
             status = payload.get("status", "")

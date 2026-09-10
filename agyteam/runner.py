@@ -32,6 +32,59 @@ class Runner(ABC):
     def __init__(self, config: dict | None = None):
         self.config = config or {}
 
+    # --- conversation continuity, shared by every runner -------------------
+    #
+    # An agent keeps one conversation, and which one is recorded in
+    # <team_dir>/conversations.json so a human can walk into it
+    # (`python -m agyteam.session <agent>`). This lives on the base class
+    # because both runners need it and two copies would drift: the SDK runner
+    # once wrote its sessions into the CLI's conversation store without
+    # recording their ids, so they existed but nobody could find them.
+
+    @property
+    def team_dir(self):
+        from pathlib import Path
+        env = os.environ.get("AGYTEAM_TEAM_DIR")
+        if env:
+            return Path(env)
+        from . import scope
+        return scope.load().team_dir()
+
+    @property
+    def conversations_path(self):
+        return self.team_dir / "conversations.json"
+
+    def conversations(self) -> dict:
+        try:
+            return json.loads(self.conversations_path.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def conversation_id(self, agent: str) -> str | None:
+        return self.conversations().get(agent)
+
+    def remember_conversation(self, agent: str, conv_id: str) -> None:
+        if not conv_id:
+            return
+        convs = self.conversations()
+        if convs.get(agent) == conv_id:
+            return
+        convs[agent] = conv_id
+        self.conversations_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conversations_path.write_text(
+            json.dumps(convs, indent=2, sort_keys=True))
+
+    def reset(self, agent: str | None = None) -> None:
+        """Forget stored conversations so the next wake starts fresh."""
+        if agent is None:
+            convs = {}
+        else:
+            convs = self.conversations()
+            convs.pop(agent, None)
+        self.conversations_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conversations_path.write_text(
+            json.dumps(convs, indent=2, sort_keys=True))
+
     @abstractmethod
     def wake(self, agent: str, message: str) -> str:
         """Run `agent` against `message` and return whatever it said.

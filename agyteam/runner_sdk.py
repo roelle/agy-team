@@ -71,13 +71,20 @@ class SdkRunner(Runner):
             else None,
             disabled_tools=spec.get("tools_off"))
         cm = Agent(conf)
-        self._agents[agent] = await cm.__aenter__()
+        live = await cm.__aenter__()
+        self._agents[agent] = live
         self._cms[agent] = cm
-        return self._agents[agent]
+        return live
 
     async def _wake(self, agent: str, message: str) -> str:
         a = await self._ensure(agent)
-        return await (await a.chat(message)).text()
+        reply = await (await a.chat(message)).text()
+        # build_config points save_dir at the CLI's conversation store, so this
+        # session is a real, joinable conversation — but only once somebody
+        # records which id belongs to which agent. The id is not assigned until
+        # the first exchange, so this has to happen after chat, not at start-up.
+        self.remember_conversation(agent, a.conversation_id or "")
+        return reply
 
     def wake(self, agent: str, message: str) -> str:
         try:
