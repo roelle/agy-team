@@ -4,9 +4,9 @@ This is the *only* file you should need to write to move agyteam off the file
 bus and onto a real peer-messaging system. Nothing else in agyteam changes, and
 the agents' tools keep the same names and semantics.
 
-    cp agyteam/transport_template.py mycorp/agy_a2a.py
+    cp agyteam/transport_template.py example_transport.py
     # implement the three methods
-    export AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+    export AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
     export AGYTEAM_BUS_CONFIG='{"endpoint": "..."}'      # optional
     .venv/bin/python evals/test_transport.py             # must pass 12/12
 

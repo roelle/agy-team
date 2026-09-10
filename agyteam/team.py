@@ -35,7 +35,7 @@ MAX_HOPS = 16   # agent turns allowed per user stimulus before requiring input
 # subagents). The tpm is deliberately de-toothed: with no shell and no workers,
 # delegation is its only way to get anything done.
 DEFAULT_ROSTER = {
-    "mission": "General-purpose engineering team for roelle.",
+    "mission": "General-purpose engineering team.",
     "agents": [
         {"name": "tpm", "role": "Technical program manager. Decomposes user "
          "requests, delegates to specialists by name, tracks completion, and "

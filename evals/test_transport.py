@@ -5,7 +5,7 @@ implementation (native, internal, proprietary) can be validated before it is
 trusted. This is the suite agyteam/transport_template.py tells you to run.
 
   .venv/bin/python evals/test_transport.py
-  AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport \
+  AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport \
   AGYTEAM_BUS_CONFIG='{"endpoint":"..."}' .venv/bin/python evals/test_transport.py
 
 With no arguments it tests the built-in file transport plus an independent

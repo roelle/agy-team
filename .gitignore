@@ -12,3 +12,8 @@ evals/gitfile_unit/
 evals/nogit_unit/
 evals/team_contract/
 evals/team_shapes/
+
+# Local run state: agent identities, memory, and bus history are machine-
+# specific and belong in the durable scope, not in the distributed artifact.
+team/
+workspace/

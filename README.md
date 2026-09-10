@@ -21,6 +21,29 @@ python3 -m venv .venv
 cp .env.example .env   # or create .env with GEMINI_API_KEY=...
 ```
 
+## Provenance of claims about Antigravity
+
+This README asserts a few things about Antigravity's internals that aren't in
+the product documentation. All of them came from two public sources, and each is
+reproducible:
+
+1. **The shipped SDK source.** `google-antigravity` is on PyPI under Apache-2.0;
+   its Python source installs into your virtualenv. Statements like "`PreTurnHook`
+   is decide-only, it cannot inject context", "`compaction_threshold` maps to a
+   hard `max_token_limit`", and the `mcp_config.json` field list are from reading
+   that installed package (`.venv/lib/python3.12/site-packages/google/antigravity/`).
+2. **Observed behavior on this machine**, running the SDK against a personal
+   Gemini API key. The compaction-without-event note, the `create_file` "brain"
+   artifact-directory quirk, and token/cost figures are empirical, and the tests
+   that produced them are in `evals/`.
+
+Feature-availability claims ("no public peer-to-peer messaging", "Teamwork
+coordinates through workspace artifacts", "remote harness is roadmap") are from
+the public docs at antigravity.google, checked 2026-09-09. Nothing here is
+derived from non-public information, and no design decision below encodes
+knowledge of any unreleased or internal capability — see the note on the
+transport seam in [A2A messaging](#a2a-messaging-swappable-transport).
+
 ## Dependencies
 
 Third-party imports are confined to the modules that actually talk to a model,
@@ -252,7 +275,7 @@ implement `agyteam/transport.py:Transport` against it and point an env var at
 your class — no agyteam source changes, and agents notice nothing:
 
 ```bash
-export AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+export AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
 export AGYTEAM_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
 .venv/bin/python evals/test_transport.py            # must pass 12/12
 ```
@@ -273,6 +296,34 @@ team across two channels and produce messages that just disappear.
 Swappability is verified, not asserted: `evals/fixture_transport.py` is a
 SQLite-backed transport written against only the public interface, and the same
 12-check contract passes on it and on the file transport.
+
+#### Why this seam exists, and why memory doesn't have one
+
+A fair review question: A2A gets a full abstraction (interface, loader,
+template, contract suite) while memory does not. The asymmetry is deliberate and
+follows from a public fact, not a private one.
+
+Memory is *already* replaceable at the MCP layer — point `mcp_config.json` at a
+different server and you have swapped the implementation, because a memory
+server has no cross-agent semantics to preserve. A2A can't be swapped that
+cleanly: the bus server owns the roster, naming, and delivery contract that
+agents' instructions depend on, so replacing the whole server would mean
+reimplementing all of that too. The seam lets the wire change while the tool
+surface, roster handling, and no-redelivery guarantee stay put.
+
+The underlying reason a seam is warranted at all is that the file bus is a
+**stand-in for a primitive the platform doesn't publicly expose**. Stand-ins are
+exactly what you make swappable — the same call you'd make for any local
+substitute for a missing platform capability. The interface shape derives from
+this project's own tool surface (`send_to_teammate`, `check_inbox`,
+`list_teammates`), not from any other system's API; the one line written toward
+an unknown implementation is `fetch()`'s note that a push-based system should
+buffer and drain, which is generic messaging design rather than knowledge of any
+particular system.
+
+If you'd rather the codebase be uniform, the honest options are to give memory
+the same treatment or to drop this one — both defensible. It is documented here
+so the choice reads as a design decision rather than an unexplained special case.
 
 ## Evals (run these after changes)
 

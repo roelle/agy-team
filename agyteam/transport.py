@@ -7,7 +7,7 @@ because Antigravity exposes no peer-to-peer messaging publicly. If a native
 interface against it and point AGYTEAM_BUS_TRANSPORT at your class — no agyteam
 source changes, and agents never notice the difference.
 
-    AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+    AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
     AGYTEAM_BUS_CONFIG='{"endpoint": "...", "timeout": 5}'   # optional, JSON
 
 Implement `send`, `fetch`, and `teammates`; everything else has a working
