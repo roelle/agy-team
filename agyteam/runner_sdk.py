@@ -152,3 +152,7 @@ class SdkRunner(Runner):
         finally:
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join(timeout=5)
+            # Base close() releases the observer. Skipping it is harmless for
+            # the file observer but leaks a networked one, which is exactly the
+            # swap the seam exists to allow.
+            super().close()
