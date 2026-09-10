@@ -77,6 +77,30 @@ one should fail if your component disagreed with an existing one — that is the
 class of mistake that survives a green test run.
 """
 
+# The CONSISTENCY section above fixed the "match your siblings" failures, but a
+# third feature still shipped half broken with a green suite: the author's test
+# used the one input shape that happened to work, and the verifier confirmed it
+# by re-running the author's tests. Re-running someone's own test is not
+# independent verification — it inherits their assumption. Verification has to
+# mean constructing a case they did not think of.
+VERIFICATION = """\
+## Verifying someone else's work
+Running the author's tests proves only that their code does what they wrote it
+to do. It cannot tell you whether the feature works, because it was chosen by
+the person who already believed it did.
+
+To verify, build a case the author did not write. Feed the feature input in the
+shape it will really see — saved through the real store, sent through the real
+server, read back the way a caller reads it — rather than values assembled by
+hand in a test. Try the case that is inconvenient for the implementation: the
+input with no keyword in the table, the file that is missing, the second call
+after the first one changed something.
+
+If you cannot find a case that fails, say what you tried. "I ran the tests and
+they passed" is not verification, and reporting it as though it were is how a
+half-working feature reaches the user.
+"""
+
 TEAMWORK = """\
 ## Teammates and workers
 Teammates are persistent peers. Each has their own role, their own memory, and
@@ -110,7 +134,8 @@ def identity(agent: str, agents: list[dict]) -> str:
 
 def brief(agent: str, agents: list[dict], shared_dir=None) -> str:
     """The full opening brief: identity, teamwork rules, grounding, continuity."""
-    parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY]
+    parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY,
+             VERIFICATION]
     if shared_dir:
         parts.append(f"## Shared files\nWork the team shares belongs under "
                      f"{shared_dir}. Your own private notes do not.")
