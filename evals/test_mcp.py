@@ -13,33 +13,36 @@ from pathlib import Path
 from rpc_util import PY, ROOT, check, rpc, text_of
 
 
-def test_memory() -> tuple[int, int]:
-    print("\n== memory MCP server ==")
+def test_memory_invocation() -> tuple[int, int]:
+    """Server wiring only — memory *semantics* live in test_memory.py, which
+    runs the same contract against every store."""
+    print("\n== memory server invocation paths ==")
     ws = ROOT / "evals" / "ws_mcp_unit"
     shutil.rmtree(ws, ignore_errors=True)
+
+    # positional workspace (how the SDK path launches it)
     r = rpc("agyteam.mcp_memory", [str(ws)], [
         ("save_memory", {"name": "deploy-host", "description": "where we deploy",
-                         "content": "horta, ssh port 2222"}),
-        ("memory_index", {}),
-        ("read_memory", {"name": "deploy-host"}),
-        ("read_memory", {"name": "no-such-memory"}),
-        ("delete_memory", {"name": "deploy-host"}),
-        ("memory_index", {}),
-    ])
-    init, tools, results = r[0], r[1], r[2:]
+                         "content": "horta, ssh port 2222"})])
+    init, tools, saved = r[0], r[1], r[2]
+
+    # env-derived workspace (how the plugin launches it)
+    ws2 = ROOT / "evals" / "ws_mcp_env"
+    shutil.rmtree(ws2, ignore_errors=True)
+    ws2.mkdir(parents=True)
+    env_run = rpc("agyteam.mcp_memory", [], [("memory_index", {})],
+                  env={"AGYTEAM_AGENT": "alice", "AGYTEAM_WORKSPACE": str(ws2)})
+
     return sum([
-        check("initialize handshake",
-              init["result"]["serverInfo"]["name"] == "agy-team-memory"),
+        check("initialize handshake names the agent",
+              init["result"]["serverInfo"]["name"].startswith("agy-team-memory"),
+              init["result"]["serverInfo"]["name"]),
         check("tools/list exposes 4 tools", len(tools["result"]["tools"]) == 4),
-        check("save returns refreshed index", "deploy-host" in text_of(results[0])),
-        check("index lists the memory", "deploy-host" in text_of(results[1])),
-        check("read returns content", "2222" in text_of(results[2])),
-        check("missing memory is honest, not invented",
-              "no memory named" in text_of(results[3]).lower(), text_of(results[3])),
-        check("delete works", "deleted" in text_of(results[4])),
-        check("index empty after delete", "deploy-host" not in text_of(results[5])),
-        check("memory file persisted to disk", (ws / "MEMORY.md").exists()),
-    ]), 9
+        check("positional workspace writes there", (ws / "MEMORY.md").exists()),
+        check("save returns the refreshed index", "deploy-host" in text_of(saved)),
+        check("env-derived workspace starts and answers",
+              "Memory index" in text_of(env_run[2]), text_of(env_run[2])),
+    ]), 5
 
 
 def test_roster_file() -> tuple[int, int]:
@@ -256,7 +259,7 @@ def test_team_isolation() -> tuple[int, int]:
 
 
 if __name__ == "__main__":
-    totals = [test_memory(), test_roster_file(), test_roster_shapes(), test_scopes(),
+    totals = [test_memory_invocation(), test_roster_file(), test_roster_shapes(), test_scopes(),
               test_stdlib_purity(), test_team_isolation()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== memory/scope tests: {got}/{want} ==")

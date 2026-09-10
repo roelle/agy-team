@@ -23,7 +23,7 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 # the plugin has stopped being installable without vendoring.
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
               mcp_memory.py mcp_bus.py transport.py transport_file.py
-              transport_template.py)
+              transport_template.py memory.py memory_file.py memory_template.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
@@ -62,11 +62,12 @@ fi
 # real call.
 ( cd / && PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
 import json, agyteam.mcp_memory, agyteam.mcp_bus
-from agyteam.transport import load
-t = load('installer-selftest')
-t.teammates()                      # forces roster parsing end to end
+from agyteam.transport import load as load_bus
+from agyteam.memory import load as load_memory
+load_bus('installer-selftest').teammates()      # forces roster parsing
+load_memory('installer-selftest').index()       # forces memory store load
 json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
-print('verified: servers import, default transport loads and reads the roster')" )
+print('verified: servers import; default transport and memory store both load')" )
 
 cat <<NOTE
 

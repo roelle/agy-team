@@ -1,5 +1,3 @@
 # deploy-server
 
-- **Server name**: `horta`
-- **SSHD port**: `2222`
-
+Deploy server is named `horta`. `sshd` listens on port 2222.

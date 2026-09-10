@@ -1,5 +1,3 @@
 # poster-pipeline
 
-- **Project**: Poster pipeline
-- **Codename**: `MFP-9`
-
+The codename for the poster pipeline project is `MFP-9`.

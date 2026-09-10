@@ -51,7 +51,7 @@ so the installable surface stays dependency-free:
 
 | module | needs | used by |
 |---|---|---|
-| `scope`, `store`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*` | **stdlib only** | the agy plugin, any MCP host |
+| `scope`, `store`, `roster`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*`, `memory*` | **stdlib only** | the agy plugin, any MCP host |
 | `tools`, `llm`, `agent`, `cli` | `google-genai` | clean-room agent (cheap eval rig) |
 | `sdk_agent`, `sdk_cli`, `team` | `google-antigravity` | SDK agent + Python team orchestrator |
 
@@ -136,14 +136,42 @@ index. Let sessions live for days; cycle weekly-ish or when a session feels
 off. Primary safety net is the contract's save-as-you-go rule, which evals
 confirm fires unprompted.
 
-## Memory over MCP (optional, not a fork)
+## Memory over MCP (swappable storage)
 
-`agyteam/mcp_memory.py` is a zero-dependency MCP stdio server exposing the same
-workspace memory (`save_memory`/`read_memory`/`delete_memory`/`memory_index`).
-`--mcp` on `agyteam.sdk_cli` routes memory through it instead of in-process
-callables — same files, same evals (6/6 verified). Any MCP host can mount it;
-to give a pinned Antigravity hub conversation the same memory, register it in
-`~/.gemini/antigravity/mcp_config.json`:
+`agyteam/mcp_memory.py` is a zero-dependency MCP stdio server exposing memory as
+`save_memory` / `read_memory` / `delete_memory` / `memory_index`. `--mcp` on
+`agyteam.sdk_cli` routes memory through it instead of in-process callables —
+same files, same evals (6/6 verified).
+
+**Storage is pluggable, exactly like the A2A transport.** The default keeps
+human-readable markdown in the agent's durable scope; point
+`AGYTEAM_MEMORY_STORE` at your own class to put memory in a shared database, a
+knowledge service, or an internal store:
+
+```bash
+export AGYTEAM_MEMORY_STORE=example_memory:MyStore
+export AGYTEAM_MEMORY_CONFIG='{"dsn":"..."}'     # optional, JSON
+.venv/bin/python evals/test_memory.py            # must pass 14/14
+```
+
+Copy `agyteam/memory_template.py` and implement four methods (`save`, `read`,
+`delete`, `index`). Stores handle *storage only* — the server owns presentation,
+so every backend produces identical wording, including the honest miss where a
+read of an absent memory reports what does exist instead of letting the model
+guess. That property is load-bearing for grounding, so the contract suite tests
+it directly (a store returning fabricated content on a miss fails). Names are
+normalised centrally, so `"Deploy Host"` and `"deploy-host"` are the same record
+on every backend, and a shared backend must namespace by agent — the suite
+checks that one agent can't read another's memory.
+
+Verified the same way as the transport: `evals/fixture_memory.py` is a
+SQLite-backed store written against only the public interface, and the same
+14-check contract passes on it and on the file store, plus four loader-safety
+cases. Misconfiguration exits loudly rather than falling back to local files,
+which would strand an agent's learnings where nobody looks.
+
+Any MCP host can mount the server; to give a pinned Antigravity hub conversation
+the same memory, register it in `~/.gemini/antigravity/mcp_config.json`:
 
 ```json
 {"mcpServers": {"agyteam_memory": {
@@ -297,39 +325,32 @@ Swappability is verified, not asserted: `evals/fixture_transport.py` is a
 SQLite-backed transport written against only the public interface, and the same
 12-check contract passes on it and on the file transport.
 
-#### Why this seam exists, and why memory doesn't have one
+#### Why the seam exists
 
-A fair review question: A2A gets a full abstraction (interface, loader,
-template, contract suite) while memory does not. The asymmetry is deliberate and
-follows from a public fact, not a private one.
+The local default is a **stand-in for a primitive the platform doesn't publicly
+expose**, and stand-ins are what you make swappable — the same call you'd make
+for any local substitute for a missing capability. Replacing the whole MCP
+server instead wouldn't be equivalent: the bus server owns the roster, naming,
+and delivery guarantees that agents' instructions depend on, so a replacement
+would have to reimplement all of it. The seam changes only the wire.
 
-Memory is *already* replaceable at the MCP layer — point `mcp_config.json` at a
-different server and you have swapped the implementation, because a memory
-server has no cross-agent semantics to preserve. A2A can't be swapped that
-cleanly: the bus server owns the roster, naming, and delivery contract that
-agents' instructions depend on, so replacing the whole server would mean
-reimplementing all of that too. The seam lets the wire change while the tool
-surface, roster handling, and no-redelivery guarantee stay put.
+The interface shape derives from this project's own tool surface
+(`send_to_teammate`, `check_inbox`, `list_teammates`), not from any other
+system's API. The one line written toward an unknown implementation is
+`fetch()`'s note that a push-based backend should buffer and drain, which is
+generic messaging design rather than knowledge of any particular system.
 
-The underlying reason a seam is warranted at all is that the file bus is a
-**stand-in for a primitive the platform doesn't publicly expose**. Stand-ins are
-exactly what you make swappable — the same call you'd make for any local
-substitute for a missing platform capability. The interface shape derives from
-this project's own tool surface (`send_to_teammate`, `check_inbox`,
-`list_teammates`), not from any other system's API; the one line written toward
-an unknown implementation is `fetch()`'s note that a push-based system should
-buffer and drain, which is generic messaging design rather than knowledge of any
-particular system.
-
-If you'd rather the codebase be uniform, the honest options are to give memory
-the same treatment or to drop this one — both defensible. It is documented here
-so the choice reads as a design decision rather than an unexplained special case.
+**Durable memory has the identical seam** (`agyteam/memory.py`,
+`AGYTEAM_MEMORY_STORE`, `memory_template.py`, `evals/test_memory.py`) for the
+same reasons and with the same structure, so the two extension points are
+symmetric rather than one being a special case.
 
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/test_mcp.py                    # memory, scopes, purity, teams — free
+.venv/bin/python evals/test_mcp.py                    # wiring, scopes, purity, teams — free
 .venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
+.venv/bin/python evals/test_memory.py                 # memory contract, both stores, free
 .venv/bin/python evals/run_evals.py                   # clean-room agent
 AGYTEAM_IMPL=agyteam.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
 AGYTEAM_IMPL=agyteam.sdk_cli AGYTEAM_EXTRA_ARGS=--mcp \
@@ -341,8 +362,9 @@ Current status — all green as of 2026-09-09:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | memory, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 44/44 |
+| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 40/40 |
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
+| `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 32/32 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 

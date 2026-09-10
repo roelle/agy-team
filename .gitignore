@@ -17,3 +17,4 @@ evals/team_shapes/
 # specific and belong in the durable scope, not in the distributed artifact.
 team/
 workspace/
+evals/ws_mcp_env/

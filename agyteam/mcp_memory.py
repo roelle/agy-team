@@ -1,21 +1,28 @@
 """MCP stdio server exposing one agent's durable memory.
 
-Any MCP host can mount the same workspace memory the CLI/team agents use — the
-agy CLI (plugin mcp_config.json), the Antigravity hub
-(~/.gemini/antigravity/mcp_config.json), the google-antigravity SDK
-(McpStdioServer), Claude Code, etc.
+Any MCP host can mount it — the agy CLI (plugin mcp_config.json), the
+Antigravity hub (~/.gemini/antigravity/mcp_config.json), the google-antigravity
+SDK (McpStdioServer), Claude Code.
+
+Storage is pluggable (see agyteam/memory.py): the default keeps markdown files
+in the agent's durable scope, and AGYTEAM_MEMORY_STORE swaps in any backend
+without changing the agent-facing tools.
+
+This module owns *presentation*; stores own storage. Every backend therefore
+produces identical wording — including the honest miss, where a read of an
+absent memory returns what does exist rather than letting the model guess.
 
 Workspace: `python -m agyteam.mcp_memory <workspace_dir>` (explicit), or omit it
-and set AGYTEAM_AGENT — the workspace is then resolved to the agent's *durable*
-scope (see agyteam.scope), so memory follows the agent between projects instead
-of being stranded in whichever repo it happened to be working in.
+and set AGYTEAM_AGENT — the workspace resolves to that agent's durable scope, so
+memory follows the agent between projects instead of being stranded in whichever
+repo it happened to be working in.
 """
 import os
 import sys
-from pathlib import Path
 
 from .mcp_base import serve, string, tool
-from .store import Toolbox
+from .memory import MemoryStore, normalize_name
+from .memory import load as load_store
 
 TOOLS = [
     tool("save_memory",
@@ -39,29 +46,56 @@ TOOLS = [
 ]
 
 
-def main(workspace: str):
-    box = Toolbox(Path(workspace))
-    index = lambda: (box.workspace / "MEMORY.md").read_text()
-    handlers = {
-        "save_memory": lambda a: f"{box.save_memory(**a)}\nCurrent memory index:\n{index()}",
-        "read_memory": lambda a: box.read_memory(**a),
-        "delete_memory": lambda a: f"{box.delete_memory(**a)}\nCurrent memory index:\n{index()}",
-        "memory_index": lambda a: index(),
-    }
+def render_index(store: MemoryStore) -> str:
+    entries = store.index()
+    if not entries:
+        return "# Memory index\n(empty — you have not saved anything yet)"
+    return "# Memory index\n" + "\n".join(
+        f"- [{e.name}] {e.description}" for e in entries)
+
+
+def main(store: MemoryStore):
+    def save(a):
+        name = normalize_name(a["name"])
+        created = store.save(name, a["description"], a["content"])
+        verb = "saved" if created else "updated"
+        return f"[memory '{name}' {verb}]\nCurrent memory index:\n{render_index(store)}"
+
+    def read(a):
+        name = normalize_name(a["name"])
+        content = store.read(name)
+        if content is not None:
+            return content
+        have = ", ".join(e.name for e in store.index()) or "none"
+        # Never fabricate on a miss: say so, and show what does exist.
+        return f"[no memory named '{name}'. Existing memories: {have}]"
+
+    def delete(a):
+        name = normalize_name(a["name"])
+        if not store.delete(name):
+            return f"[no memory named '{name}']"
+        return f"[memory '{name}' deleted]\nCurrent memory index:\n{render_index(store)}"
+
+    handlers = {"save_memory": save, "read_memory": read,
+                "delete_memory": delete,
+                "memory_index": lambda a: render_index(store)}
 
     def dispatch(name, args):
         fn = handlers.get(name)
         return fn(args) if fn else f"[error: unknown tool '{name}']"
 
-    serve("agy-team-memory", TOOLS, dispatch)
+    try:
+        serve(f"agy-team-memory:{store.agent}", TOOLS, dispatch)
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2:
-        main(sys.argv[1])
+    if len(sys.argv) == 2:                 # explicit workspace (SDK path)
+        os.environ.setdefault("AGYTEAM_WORKSPACE", sys.argv[1])
+        agent = os.environ.get("AGYTEAM_AGENT") or "agent"
     else:
-        from . import scope
         agent = os.environ.get("AGYTEAM_AGENT", "")
         if not agent:
             sys.exit("agyteam.mcp_memory: pass <workspace_dir> or set AGYTEAM_AGENT")
-        main(str(scope.load().agent_workspace(agent)))
+    main(load_store(agent))

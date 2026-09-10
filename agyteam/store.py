@@ -84,9 +84,11 @@ class Toolbox:
     # ---- memory ----------------------------------------------------------
 
     def _mem_path(self, name: str) -> Path:
-        name = name.strip().replace(" ", "-").lower()
-        name = "".join(c for c in name if c.isalnum() or c in "-_")
-        return self.memory_dir / f"{name}.md"
+        # Shared with the MCP path so the in-process SDK tools and the memory
+        # server agree on identity: "Deploy Host" and "deploy-host" are the same
+        # memory regardless of which route wrote it.
+        from .memory import normalize_name
+        return self.memory_dir / f"{normalize_name(name)}.md"
 
     def save_memory(self, name: str, description: str, content: str) -> str:
         p = self._mem_path(name)
