@@ -217,7 +217,8 @@ def test_team_isolation() -> tuple[int, int]:
     """Separate teams must share no roster, no bus, and no memory."""
     print("\n== team namespacing ==")
     root = Path(tempfile.mkdtemp(prefix="agyteam-teams-"))
-    base = {"AGYTEAM_TEAMS_ROOT": str(root), "PYTHONPATH": str(ROOT)}
+    base = {"AGYTEAM_TEAMS_ROOT": str(root), "PYTHONPATH": str(ROOT),
+            "AGYTEAM_TEAM_DIR": "", "AGYTEAM_DURABLE_DIR": ""}
 
     for team in ("alpha", "beta"):
         d = root / team / "team"
