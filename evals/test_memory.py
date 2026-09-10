@@ -395,6 +395,152 @@ def test_contradiction_detection() -> tuple[int, int]:
     ]), 7
 
 
+def test_review_memory() -> tuple[int, int]:
+    """Test review_memory tool across all categories and clean baseline."""
+    print("\n== memory self-review ==")
+    ws = Path(tempfile.mkdtemp(prefix="agyteam-mem-review-"))
+    env = {"AGYTEAM_AGENT": "alice", "AGYTEAM_WORKSPACE": str(ws),
+           "AGYTEAM_MEMORY_STORE": "agyteam.memory_file:FileMemory"}
+
+    def call(calls):
+        return rpc("agyteam.mcp_memory", [], calls, env=env)
+
+    # 1. Clean baseline: store with unremarkable memories produces NO flags
+    call([
+        ("save_memory", {
+            "name": "deploy-host",
+            "description": "where we deploy",
+            "content": "horta, ssh port 2222",
+            "why": "standard production deployment target",
+            "when": "2026-09-01 10:00:00"
+        }),
+        ("save_memory", {
+            "name": "python-formatting",
+            "description": "code style and linting",
+            "content": "use ruff and black for formatting",
+            "why": "maintain consistent code style across team",
+            "when": "2026-09-02 11:00:00"
+        }),
+    ])
+
+    r_clean = call([("review_memory", {})])[2:]
+    out_clean = text_of(r_clean[0])
+
+    # 2. Motivating case: memory saved with provenance about a broken tool
+    call([
+        ("save_memory", {
+            "name": "tool-delegation",
+            "description": "delegate provisioning when tools break",
+            "content": "when tools are unavailable to coder, delegate provisioning to syseng",
+            "why": "file-writing tools were unavailable due to sandboxing bug",
+            "when": "2026-09-01 10:00:00"
+        })
+    ])
+
+    r_motivating = call([("review_memory", {})])[2:]
+    out_motivating = text_of(r_motivating[0])
+
+    # 3. Unknown vintage: memory with no provenance (saved before feature / missing why)
+    legacy_file = ws / "memory" / "legacy-convention.md"
+    legacy_file.write_text("# legacy-convention\n\nlegacy notes predating provenance\n")
+    idx_file = ws / "MEMORY.md"
+    idx_file.write_text(idx_file.read_text() + "- [legacy-convention] legacy convention\n")
+
+    call([
+        ("save_memory", {
+            "name": "unprovenanced-note",
+            "description": "note without why",
+            "content": "some factual content without why provenance"
+        })
+    ])
+
+    r_vintage = call([("review_memory", {})])[2:]
+    out_vintage = text_of(r_vintage[0])
+
+    # 4. Mutual contradiction: add conflicting memory with opposing assertions
+    call([
+        ("save_memory", {
+            "name": "coder-tools",
+            "description": "tools are available to coder",
+            "content": "tools are available to coder; provision files directly, do not delegate to syseng",
+            "why": "tool bug was resolved in release 2.0"
+        })
+    ])
+
+    r_contradiction = call([("review_memory", {})])[2:]
+    out_contradiction = text_of(r_contradiction[0])
+
+    # 5. Mutual contradiction without antonym: postgres vs sqlite store choice
+    # Saved through the store and reviewed via the MCP server review_memory tool over RPC
+    ws_db = Path(tempfile.mkdtemp(prefix="agyteam-mem-dbchoice-"))
+    env_db = {"AGYTEAM_AGENT": "alice", "AGYTEAM_WORKSPACE": str(ws_db),
+              "AGYTEAM_MEMORY_STORE": "agyteam.memory_file:FileMemory"}
+    r_no_antonym = rpc("agyteam.mcp_memory", [], [
+        ("save_memory", {
+            "name": "db",
+            "description": "store choice",
+            "content": "We use postgres for the store.",
+            "why": "benchmarked it",
+            "when": "2026-09-01 10:00:00"
+        }),
+        ("save_memory", {
+            "name": "db-store",
+            "description": "store choice",
+            "content": "We use sqlite for the store.",
+            "why": "simpler ops",
+            "when": "2026-09-02 10:00:00"
+        }),
+        ("review_memory", {}),
+    ], env=env_db)[2:]
+    out_no_antonym = text_of(r_no_antonym[2])
+
+    # 6. Non-mutating verification: verify review_memory did not alter or delete memories
+    r_idx = call([("memory_index", {})])[2:]
+    out_idx = text_of(r_idx[0])
+    r_read = call([("read_memory", {"name": "tool-delegation"})])[2:]
+    out_read = text_of(r_read[0])
+
+    return sum([
+        check("clean baseline: unremarkable memories produce no flags",
+              "no flags raised" in out_clean and "Mutual contradictions" not in out_clean,
+              out_clean),
+        check("motivating case: flags memory learned from broken/unavailable tool",
+              "Conditional lessons" in out_motivating and "tool-delegation" in out_motivating,
+              out_motivating),
+        check("motivating case: identifies specific trigger keyword(s) and why phrase",
+              "unavailable" in out_motivating and "sandboxing bug" in out_motivating,
+              out_motivating),
+        check("conditional lessons includes honest heuristic disclaimer",
+              "Note: Conditional lesson detection relies on keyword heuristics" in out_motivating,
+              out_motivating),
+        check("unknown vintage: flags legacy memory with no provenance",
+              "Unknown vintage" in out_vintage and "legacy-convention" in out_vintage,
+              out_vintage),
+        check("unknown vintage: explains staleness cannot be judged without why",
+              "cannot be judged for staleness" in out_vintage,
+              out_vintage),
+        check("mutual contradictions: compares stored memories against each other",
+              "Mutual contradictions" in out_contradiction and
+              "tool-delegation" in out_contradiction and
+              "coder-tools" in out_contradiction,
+              out_contradiction),
+        check("mutual contradictions: cites opposing assertions or conflict reason",
+              ("opposing assertions" in out_contradiction or "conflicting" in out_contradiction),
+              out_contradiction),
+        check("mutual contradictions without antonym: flags postgres vs sqlite store choice",
+              "Mutual contradictions" in out_no_antonym and
+              "db" in out_no_antonym and "db-store" in out_no_antonym and
+              ("keyword overlap" in out_no_antonym or "similarity" in out_no_antonym),
+              out_no_antonym),
+        check("non-mutating: memory index preserved intact after reviews",
+              "tool-delegation" in out_idx and "deploy-host" in out_idx and "coder-tools" in out_idx,
+              out_idx),
+        check("non-mutating: memory content preserved intact after reviews",
+              "when tools are unavailable to coder" in out_read,
+              out_read),
+    ]), 11
+
+
 if __name__ == "__main__":
     spec = os.environ.get("AGYTEAM_MEMORY_STORE")
     if spec:
@@ -407,7 +553,8 @@ if __name__ == "__main__":
                 contract("sqlite (independent fixture)", sqlite_env()),
                 test_loader_failures(),
                 test_provenance(),
-                test_contradiction_detection()]
+                test_contradiction_detection(),
+                test_review_memory()]
     got, want = sum(s for s, _ in runs), sum(t for _, t in runs)
     print(f"\n== memory contract: {got}/{want} ==")
     sys.exit(0 if got == want else 1)

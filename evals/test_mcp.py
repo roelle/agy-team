@@ -42,7 +42,7 @@ def test_memory_invocation() -> tuple[int, int]:
         check("initialize handshake names the agent",
               init["result"]["serverInfo"]["name"].startswith("agy-team-memory"),
               init["result"]["serverInfo"]["name"]),
-        check("tools/list exposes 4 tools", len(tools["result"]["tools"]) == 4),
+        check("tools/list exposes 5 tools", len(tools["result"]["tools"]) == 5),
         check("positional workspace writes there", (ws / "MEMORY.md").exists()),
         check("save returns the refreshed index", "deploy-host" in text_of(saved)),
         check("env-derived workspace starts and answers",
