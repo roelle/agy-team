@@ -15,9 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = ROOT / ".venv" / "bin" / "python"
-# AGYTEAM_IMPL=agyteam.sdk_cli runs the same suite against the SDK-backed agent;
 # AGYTEAM_EXTRA_ARGS="--mcp" appends flags (e.g. to route memory through MCP).
-IMPL = os.environ.get("AGYTEAM_IMPL", "agyteam")
+IMPL = os.environ.get("AGYTEAM_IMPL", "agyteam.sdk_cli")
 EXTRA = os.environ.get("AGYTEAM_EXTRA_ARGS", "").split()
 
 

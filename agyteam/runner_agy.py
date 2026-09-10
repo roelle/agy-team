@@ -1,4 +1,4 @@
-"""Default runner: wake an agent as an `agy` CLI turn, in a session that lasts.
+"""CLI runner: wake an agent as an `agy` CLI turn, in a session that lasts.
 
     agy --agent <name> --conversation <id> -p "<message>" --output-format json
 

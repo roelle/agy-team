@@ -1,5 +1,4 @@
-"""CLI for the SDK-backed Agy. Same flags/contract as agyteam.cli so the
-eval harness can drive either implementation."""
+"""CLI for the SDK-backed Agy."""
 import argparse
 import asyncio
 import sys

@@ -17,7 +17,7 @@ The SDK and eval paths need a virtualenv:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install google-genai google-antigravity
+.venv/bin/pip install google-antigravity
 cp .env.example .env   # or create .env with GEMINI_API_KEY=...
 ```
 
@@ -52,28 +52,21 @@ so the installable surface stays dependency-free:
 | module | needs | used by |
 |---|---|---|
 | `scope`, `store`, `roster`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*`, `memory*`, `runner`, `runner_agy`, `supervisor` | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
-| `tools`, `llm`, `agent`, `cli` | `google-genai` | clean-room agent (cheap eval rig) |
-| `sdk_agent`, `sdk_cli`, `team`, `runner_sdk` | `google-antigravity` | SDK agent + Python team orchestrator |
+| `sdk_agent`, `sdk_cli`, `runner_sdk`, `runner_mixed` | `google-antigravity` | SDK agent, CLI, and SDK/mixed runners |
 
-`store.py` holds the tool implementations and memory store; `tools.py` holds
-only the Gemini function declarations for them. That split is what keeps the
+`store.py` holds the tool implementations, `Toolbox`, and memory store. That split is what keeps the
 MCP servers importable without a virtualenv, and `evals/test_mcp.py` enforces
-it — including a control case asserting that `llm.py` *does* fail on bare
-python, so the check can't silently stop discriminating.
+it — including a control case asserting that `sdk_agent.py` *does* fail on bare
+python (missing `google-antigravity`), so the check can't silently stop discriminating.
 
 ## Single agent (priority zero)
 
 ```bash
-# SDK/localharness-backed agent (the Antigravity one):
 .venv/bin/python -m agyteam.sdk_cli                 # REPL
 .venv/bin/python -m agyteam.sdk_cli -p "task..."    # one-shot
-
-# Lightweight clean-room agent (same memory design, direct Gemini API,
-# ~4-5x cheaper per turn; useful for cheap experiments):
-.venv/bin/python -m agyteam                         # REPL / -p one-shot
 ```
 
-Shared flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
+Flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 (default `gemini-3.8-flash`), `--quiet`, `--no-distill`.
 
 ### How learning works (and why prior attempts didn't)
@@ -87,20 +80,17 @@ Shared flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 - On `/quit` (or after a one-shot) a distillation turn pushes unsaved durable
   learnings into memory. The write path and the read path are the same files —
   the broken link in both prior attempts.
-- A fixed grounding contract (in `agyteam/agent.py:CONTRACT`, not agent-editable)
+- A fixed grounding contract (in `agyteam/persona.py:CONTRACT`, not agent-editable)
   requires claims to trace to tool output or memory, and makes "I don't know"
   an acceptable answer.
 
 ## Team platform
 
 ```bash
-.venv/bin/python -m agyteam.team                    # REPL
-.venv/bin/python -m agyteam.team --say "tpm: <task>" # one-shot until idle
+python -m agyteam.supervisor --say "tpm: <task>"    # run until idle
+python -m agyteam.supervisor --daemon               # stay up, react as mail arrives
+python -m agyteam.supervisor --status               # who has mail waiting (non-destructive)
 ```
-
-REPL commands: `say <agent> <msg>`, `broadcast <msg>`, `log [n]`, `roster`,
-`add <name> <role>`, `remove <name>`, `cycle <agent>`, `distill [agent]`,
-`usage`, `quit`.
 
 ### Role-scoped tools (why agents collaborate)
 
@@ -155,8 +145,9 @@ they decide *how* an agent is woken:
 
 | runner | wakes an agent by | needs |
 |---|---|---|
-| `agyteam.runner_agy:AgyRunner` (default) | `agy --conversation <id> -p "<message>"` | the agy CLI |
-| `agyteam.runner_sdk:SdkRunner` | a persistent SDK session per agent | `google-antigravity` |
+| `agyteam.runner_sdk:SdkRunner` (default) | a persistent SDK session per agent | `google-antigravity` |
+| `agyteam.runner_agy:AgyRunner` | `agy --conversation <id> -p "<message>"` | the agy CLI |
+| `agyteam.runner_mixed:MixedRunner` | per-agent runner from `roster.json` | `google-antigravity` |
 | your own | anything | — |
 
 ```bash
@@ -164,11 +155,24 @@ export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
 export AGYTEAM_RUNNER_CONFIG='{"model":"gemini-3.8-flash"}'
 ```
 
-The CLI runner is the one that makes a team work *inside Antigravity proper*:
-agents are agy custom agents, so they get the harness's tools, policies, and
-subagents, and the sessions are visible to Remote Control. The SDK runner keeps
-sessions alive between wakes, so an agent woken five times has one continuous
-context rather than five cold starts.
+The SDK runner is the default. It keeps sessions alive between wakes, so an agent
+woken five times has one continuous context rather than five cold starts, supports
+hooks, and enforces `tools_off` at the capability level. The CLI runner makes a team
+work *inside Antigravity proper*: agents are agy custom agents, so they get the
+harness's tools, policies, and subagents, and sessions are visible to Remote Control.
+
+`agyteam.runner_mixed:MixedRunner` enables mixed runtimes where individual agents
+can run under different runners configured per agent in `roster.json` (e.g.,
+`"runner": "agyteam.runner_agy:AgyRunner"`). The two runtimes trade rather than
+rank:
+- **SDK runner**: enforces `tools_off` for real (an agent given it reports `NO TOOLS`
+  and cannot write a file) and supports compaction/tool hooks.
+- **agy CLI runner**: routes through Antigravity's backend to reach models the API
+  key cannot (e.g. `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.1-pro-high`),
+  trading capability-enforced tools for broader model availability.
+
+This allows roles like `qa` to use a frontier model on the CLI while implementers
+like `coder` remain on the SDK with capability-enforced roles.
 
 `check_inbox` still exists as a tool — useful mid-task, since a teammate may
 answer while you're working — but it is no longer how delivery happens.
@@ -441,30 +445,37 @@ symmetric rather than one being a special case.
 .venv/bin/python evals/test_mcp.py                    # wiring, scopes, purity, teams — free
 .venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
 .venv/bin/python evals/test_memory.py                 # memory contract, both stores, free
+.venv/bin/python evals/test_self.py                   # agent introspection server, free
 .venv/bin/python evals/test_supervisor.py             # reactive dispatch, free
+.venv/bin/python evals/test_review.py                 # durable review records & approval gate, free
+.venv/bin/python evals/test_observer.py               # observer contract, file & SQLite, free
+.venv/bin/python evals/test_cycle.py                  # cycle & distillation to durable memory, free
+.venv/bin/python evals/test_continuity.py             # context continuity per runner, free
+.venv/bin/python evals/run_evals.py                   # SDK agent (default)
+AGYTEAM_EXTRA_ARGS=--mcp .venv/bin/python evals/run_evals.py # SDK agent, memory via MCP
 .venv/bin/python evals/test_reactive.py               # real reactive team, ~30c
-.venv/bin/python evals/run_evals.py                   # clean-room agent
-AGYTEAM_IMPL=agyteam.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
-AGYTEAM_IMPL=agyteam.sdk_cli AGYTEAM_EXTRA_ARGS=--mcp \
-  .venv/bin/python evals/run_evals.py                 # SDK agent, memory via MCP
 .venv/bin/python evals/test_a2a.py                    # A2A behavioral, ~15¢
 ```
 
-Current status — all green as of 2026-09-09:
+Current status — all green:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 40/40 |
-| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
-| `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 32/32 |
+| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 41/41 |
+| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 32/32 |
+| `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 64/64 |
+| `test_self.py` | agent introspection server, tool functionality, robust isolation | 22/22 |
 | `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 23/23 |
-| `test_delivery.py` | **the product**: one instruction → a verified artifact on disk, via the agy CLI | 8/8 |
+| `test_review.py` | durable review records, approval gate, and supervisor integration | 14/14 |
+| `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 49/49 |
+| `test_cycle.py` | conversation cycle, distill abort safety, frontmatter parsing | 83/83 |
 | `test_continuity.py` | whether a wake resumes context or cold-starts, per runner | 4/4 |
+| `test_delivery.py` | **the product**: one instruction → a verified artifact on disk, via the agy CLI | 8/8 |
 | `test_reactive.py` | real agents woken by teammates, end to end, no human polling | 7/7 |
-| `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
+| `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 
-Typical cost: free, ~2¢ clean-room, ~8¢ SDK, ~15¢ A2A.
+Typical cost: free offline suites, ~8¢ SDK, ~15¢ A2A.
 
 ## Headless permissions: required for unattended teamwork
 
