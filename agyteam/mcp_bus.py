@@ -5,8 +5,8 @@ through workspace artifacts, and the SDK offers only subagents. This server
 supplies the channel, and because it is MCP it works identically in the agy CLI
 (plugin mcp_config.json), the desktop hub, and SDK agents.
 
-The wire is pluggable (see clawagy/transport.py): the default file bus works
-anywhere agents share a filesystem, and CLAWAGY_BUS_TRANSPORT swaps in a native
+The wire is pluggable (see agyteam/transport.py): the default file bus works
+anywhere agents share a filesystem, and AGYTEAM_BUS_TRANSPORT swaps in a native
 implementation without changing the agent-facing tools.
 
 Delivery is inbox-based rather than push: when the harness owns the agent loop
@@ -14,8 +14,8 @@ nobody can force a peer to take a turn, so peers leave mail and agents read it.
 The teammate/worker distinction stays structural — teammates are *messaged*
 through this server; workers are *spawned* by the harness and never appear here.
 
-Identity: `python -m clawagy.mcp_bus <team_dir> <agent_name>` (SDK path), or
-omit the arguments and set CLAWAGY_AGENT (agy CLI path, where mcp_config.json is
+Identity: `python -m agyteam.mcp_bus <team_dir> <agent_name>` (SDK path), or
+omit the arguments and set AGYTEAM_AGENT (agy CLI path, where mcp_config.json is
 static and the session supplies identity). Refuses to start nameless rather than
 guessing, so messages can never be filed under the wrong agent.
 """
@@ -49,7 +49,7 @@ TOOLS = [
          "listed here.", {}),
 ]
 
-# Roster mutation is off unless CLAWAGY_ROSTER_ADMIN=1 *and* the transport
+# Roster mutation is off unless AGYTEAM_ROSTER_ADMIN=1 *and* the transport
 # supports it. Team composition is the operator's call, not something an agent
 # should do to itself mid-task.
 ADMIN_TOOLS = [
@@ -92,18 +92,18 @@ def main(transport: Transport, admin: bool = False):
         return fn(args) if fn else f"[error: unknown tool '{name}']"
 
     try:
-        serve(f"clawagy-bus:{transport.me}", tools, dispatch)
+        serve(f"agy-team-bus:{transport.me}", tools, dispatch)
     finally:
         transport.close()
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 3:                      # <team_dir> <agent_name>
-        os.environ.setdefault("CLAWAGY_TEAM_DIR", sys.argv[1])
+        os.environ.setdefault("AGYTEAM_TEAM_DIR", sys.argv[1])
         me = sys.argv[2]
     else:
-        me = os.environ.get("CLAWAGY_AGENT", "")
+        me = os.environ.get("AGYTEAM_AGENT", "")
     if not me:
-        sys.exit("clawagy.mcp_bus: no agent identity. Pass <team_dir> <agent_name> "
-                 "or set CLAWAGY_AGENT (and optionally CLAWAGY_TEAM_DIR).")
-    main(load(me), admin=os.environ.get("CLAWAGY_ROSTER_ADMIN") == "1")
+        sys.exit("agyteam.mcp_bus: no agent identity. Pass <team_dir> <agent_name> "
+                 "or set AGYTEAM_AGENT (and optionally AGYTEAM_TEAM_DIR).")
+    main(load(me), admin=os.environ.get("AGYTEAM_ROSTER_ADMIN") == "1")

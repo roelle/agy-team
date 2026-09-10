@@ -4,14 +4,14 @@ The agent-facing tool surface (send_to_teammate, check_inbox, ...) is fixed;
 *how* messages actually move is not. Today the default is a file-backed bus,
 because Antigravity exposes no peer-to-peer messaging publicly. If a native
 (or internal, or proprietary) A2A mechanism is available to you, implement this
-interface against it and point CLAWAGY_BUS_TRANSPORT at your class — no clawagy
+interface against it and point AGYTEAM_BUS_TRANSPORT at your class — no agyteam
 source changes, and agents never notice the difference.
 
-    CLAWAGY_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
-    CLAWAGY_BUS_CONFIG='{"endpoint": "...", "timeout": 5}'   # optional, JSON
+    AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+    AGYTEAM_BUS_CONFIG='{"endpoint": "...", "timeout": 5}'   # optional, JSON
 
 Implement `send`, `fetch`, and `teammates`; everything else has a working
-default. See clawagy/transport_template.py for a commented skeleton.
+default. See agyteam/transport_template.py for a commented skeleton.
 """
 import importlib
 import json
@@ -19,7 +19,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-DEFAULT_TRANSPORT = "clawagy.transport_file:FileTransport"
+DEFAULT_TRANSPORT = "agyteam.transport_file:FileTransport"
 
 
 @dataclass
@@ -97,20 +97,20 @@ def load(me: str, spec: str | None = None, config: dict | None = None) -> Transp
     meant to use a native one would split the team across two channels, and the
     symptom (messages that vanish) is miserable to debug.
     """
-    spec = spec or os.environ.get("CLAWAGY_BUS_TRANSPORT") or DEFAULT_TRANSPORT
+    spec = spec or os.environ.get("AGYTEAM_BUS_TRANSPORT") or DEFAULT_TRANSPORT
     if config is None:
-        raw = os.environ.get("CLAWAGY_BUS_CONFIG", "")
+        raw = os.environ.get("AGYTEAM_BUS_CONFIG", "")
         try:
             config = json.loads(raw) if raw else {}
         except json.JSONDecodeError as e:
-            raise SystemExit(f"CLAWAGY_BUS_CONFIG is not valid JSON: {e}")
+            raise SystemExit(f"AGYTEAM_BUS_CONFIG is not valid JSON: {e}")
     if ":" not in spec:
-        raise SystemExit(f"CLAWAGY_BUS_TRANSPORT must be 'module:Class', got {spec!r}")
+        raise SystemExit(f"AGYTEAM_BUS_TRANSPORT must be 'module:Class', got {spec!r}")
     mod_name, _, cls_name = spec.partition(":")
     try:
         cls = getattr(importlib.import_module(mod_name), cls_name)
     except (ImportError, AttributeError) as e:
         raise SystemExit(f"cannot load transport {spec!r}: {e}")
     if not issubclass(cls, Transport):
-        raise SystemExit(f"{spec} is not a clawagy.transport.Transport subclass")
+        raise SystemExit(f"{spec} is not a agyteam.transport.Transport subclass")
     return cls(me, config)

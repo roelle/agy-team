@@ -1,7 +1,7 @@
 """Behavioral test of the plugin's runtime wiring, using real models.
 
 Mounts the memory and bus MCP servers exactly as plugin/mcp_config.template.json
-does — same modules, same env-derived identity (CLAWAGY_AGENT) — but through the
+does — same modules, same env-derived identity (AGYTEAM_AGENT) — but through the
 SDK, since the agy CLI is not installed here. What this proves transfers to the
 plugin: env identity resolves, A2A messages cross *separate agent processes*,
 memory lands in durable scope, and the roles behave.
@@ -18,32 +18,32 @@ from google.antigravity import Agent, CapabilitiesConfig, LocalAgentConfig, type
 from google.antigravity.hooks import policy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from clawagy import config as cfg          # noqa: E402
-from clawagy import scope                  # noqa: E402
+from agyteam import config as cfg          # noqa: E402
+from agyteam import scope                  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = str(ROOT / ".venv" / "bin" / "python")
 SANDBOX = ROOT / "evals" / "a2a_sandbox"
-RULES = (ROOT / "plugin" / "clawagy" / "rules" / "grounding.md").read_text()
+RULES = (ROOT / "plugin" / "agy-team" / "rules" / "grounding.md").read_text()
 
 
 def agent_config(name: str, durable: Path, team_dir: Path) -> LocalAgentConfig:
     """Mirror of the installed plugin: agent.md identity + both MCP servers."""
-    agent_md = (ROOT / "plugin" / "clawagy" / "agents" / name / "agent.md").read_text()
+    agent_md = (ROOT / "plugin" / "agy-team" / "agents" / name / "agent.md").read_text()
     identity = agent_md.split("---", 2)[2].strip()   # strip YAML frontmatter
-    env = {"PYTHONPATH": str(ROOT), "CLAWAGY_AGENT": name,
-           "CLAWAGY_TEAM_DIR": str(team_dir), "CLAWAGY_DURABLE_DIR": str(durable)}
+    env = {"PYTHONPATH": str(ROOT), "AGYTEAM_AGENT": name,
+           "AGYTEAM_TEAM_DIR": str(team_dir), "AGYTEAM_DURABLE_DIR": str(durable)}
     return LocalAgentConfig(
         system_instructions=types.TemplatedSystemInstructions(
             identity=identity,
             sections=[types.SystemInstructionSection(
                 title="grounding_and_collaboration_rules", content=RULES)]),
         mcp_servers=[
-            types.McpStdioServer(name="clawagy_memory", type="stdio",
-                                 command=PY, args=["-m", "clawagy.mcp_memory"],
+            types.McpStdioServer(name="agyteam_memory", type="stdio",
+                                 command=PY, args=["-m", "agyteam.mcp_memory"],
                                  env=env),
-            types.McpStdioServer(name="clawagy_bus", type="stdio",
-                                 command=PY, args=["-m", "clawagy.mcp_bus"],
+            types.McpStdioServer(name="agyteam_bus", type="stdio",
+                                 command=PY, args=["-m", "agyteam.mcp_bus"],
                                  env=env),
         ],
         capabilities=CapabilitiesConfig(enable_subagents=False),

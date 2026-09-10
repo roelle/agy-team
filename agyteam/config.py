@@ -1,4 +1,4 @@
-"""Configuration for clawagy. Reads .env from the project root."""
+"""Configuration for agyteam. Reads .env from the project root."""
 import os
 from pathlib import Path
 
@@ -11,7 +11,7 @@ COMPACTION_MODEL = "gemini-3.5-flash-lite"
 # Context management. antigravity-preview-05-2026 has a 131072-token input
 # limit, so we compact well below that regardless of which model is active.
 # Env-overridable so tests can force compaction cheaply.
-COMPACT_THRESHOLD_TOKENS = int(os.environ.get("CLAWAGY_COMPACT_THRESHOLD", 80_000))
+COMPACT_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_COMPACT_THRESHOLD", 80_000))
 KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this

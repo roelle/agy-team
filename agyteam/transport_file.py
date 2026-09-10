@@ -1,8 +1,8 @@
 """Default A2A transport: append-only log plus a per-agent inbox file.
 
 No daemon, no ports, no dependencies — it works anywhere the agents share a
-filesystem, which includes every environment clawagy currently runs in. Swap it
-out via CLAWAGY_BUS_TRANSPORT if you have something better.
+filesystem, which includes every environment agyteam currently runs in. Swap it
+out via AGYTEAM_BUS_TRANSPORT if you have something better.
 """
 import json
 import time
@@ -18,7 +18,7 @@ class FileTransport(Transport):
     def __init__(self, me: str, config: dict | None = None):
         super().__init__(me, config)
         team_dir = (self.config.get("team_dir")
-                    or __import__("os").environ.get("CLAWAGY_TEAM_DIR"))
+                    or __import__("os").environ.get("AGYTEAM_TEAM_DIR"))
         if not team_dir:
             from . import scope
             team_dir = scope.load().team_dir()

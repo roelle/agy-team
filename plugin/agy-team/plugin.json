@@ -1,5 +1,5 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "clawagy",
+  "name": "agyteam",
   "description": "Persistent, learning agents with durable file-backed memory and peer-to-peer team messaging. Adds anti-hallucination grounding rules, cross-session memory, and an A2A message bus."
 }

@@ -1,4 +1,9 @@
-"""Tool implementations + Gemini function declarations.
+"""Workspace tools and the durable memory store. Pure standard library.
+
+Kept free of third-party imports on purpose: the MCP servers depend on this
+module, and they must run under a bare system python with no virtualenv --
+which is what makes the agy plugin installable without vendoring anything.
+Gemini function declarations for these tools live in tools.py.
 
 Every tool returns a plain string; errors are returned as text (never raised)
 so the model always sees what actually happened.
@@ -6,8 +11,6 @@ so the model always sees what actually happened.
 import subprocess
 import urllib.request
 from pathlib import Path
-
-from google.genai import types
 
 from . import config
 
@@ -120,7 +123,7 @@ class Toolbox:
 
     def web_fetch(self, url: str) -> str:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "clawagy/0.1"})
+            req = urllib.request.Request(url, headers={"User-Agent": "agyteam/0.1"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 body = r.read(500_000).decode("utf-8", errors="replace")
             return _truncate(body)
@@ -139,40 +142,3 @@ class Toolbox:
             return f"[error: bad arguments for {name}: {e}]"
 
 
-def _decl(name, description, params, required):
-    return types.FunctionDeclaration(
-        name=name, description=description,
-        parameters=types.Schema(type="OBJECT", properties=params, required=required))
-
-
-def _s(desc):  # string param
-    return types.Schema(type="STRING", description=desc)
-
-
-BASE_DECLARATIONS = [
-    _decl("bash", "Run a shell command and return stdout/stderr. Working directory is your workdir.",
-          {"command": _s("The shell command to run"),
-           "timeout": types.Schema(type="INTEGER", description="Seconds before kill (default 60, max 300)")},
-          ["command"]),
-    _decl("read_file", "Read a text file and return its contents.",
-          {"path": _s("Absolute or ~-relative path")}, ["path"]),
-    _decl("write_file", "Write content to a file (overwrites; creates parent dirs).",
-          {"path": _s("Absolute or ~-relative path"), "content": _s("Full file content")},
-          ["path", "content"]),
-    _decl("list_dir", "List entries in a directory.",
-          {"path": _s("Directory path (default: your workdir)")}, []),
-    _decl("save_memory",
-          "Save a durable memory to your workspace so future sessions of you know it. "
-          "Use for user preferences, corrections, facts about systems/projects, and lessons learned. "
-          "Saving under an existing name overwrites it — re-read first and merge if unsure.",
-          {"name": _s("Short kebab-case topic name, e.g. 'user-preferences'"),
-           "description": _s("One line: what's in this memory (shown in your index)"),
-           "content": _s("The memory content in markdown")},
-          ["name", "description", "content"]),
-    _decl("read_memory", "Read one of your memory files by name.",
-          {"name": _s("Memory name from your index")}, ["name"]),
-    _decl("delete_memory", "Delete a memory that is wrong or obsolete.",
-          {"name": _s("Memory name")}, ["name"]),
-    _decl("web_fetch", "Fetch a URL and return the raw response body (truncated).",
-          {"url": _s("http(s) URL")}, ["url"]),
-]

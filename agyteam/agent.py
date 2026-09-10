@@ -46,7 +46,7 @@ class Agent:
         self.declarations = list(BASE_DECLARATIONS) + list(extra_declarations or [])
         if extra_handlers:
             self.tools.handlers.update(extra_handlers)
-        self.name = name or "Clawy"
+        self.name = name or "Agy"
         self.history: list[types.Content] = []
         self._ensure_workspace_files()
 

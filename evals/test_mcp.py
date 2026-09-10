@@ -17,7 +17,7 @@ def test_memory() -> tuple[int, int]:
     print("\n== memory MCP server ==")
     ws = ROOT / "evals" / "ws_mcp_unit"
     shutil.rmtree(ws, ignore_errors=True)
-    r = rpc("clawagy.mcp_memory", [str(ws)], [
+    r = rpc("agyteam.mcp_memory", [str(ws)], [
         ("save_memory", {"name": "deploy-host", "description": "where we deploy",
                          "content": "horta, ssh port 2222"}),
         ("memory_index", {}),
@@ -29,7 +29,7 @@ def test_memory() -> tuple[int, int]:
     init, tools, results = r[0], r[1], r[2:]
     return sum([
         check("initialize handshake",
-              init["result"]["serverInfo"]["name"] == "clawagy-memory"),
+              init["result"]["serverInfo"]["name"] == "agy-team-memory"),
         check("tools/list exposes 4 tools", len(tools["result"]["tools"]) == 4),
         check("save returns refreshed index", "deploy-host" in text_of(results[0])),
         check("index lists the memory", "deploy-host" in text_of(results[1])),
@@ -50,9 +50,9 @@ def test_roster_file() -> tuple[int, int]:
     td.mkdir(parents=True)
     (td / "roster.json").write_text(json.dumps(
         {"mission": "test", "agents": [{"name": "tpm", "role": "coordinates"}]}))
-    env = {"CLAWAGY_AGENT": "tpm", "CLAWAGY_TEAM_DIR": str(td),
-           "CLAWAGY_ROSTER_ADMIN": "1"}
-    rpc("clawagy.mcp_bus", [], [("roster_add", {"name": "qa", "role": "reviews"})],
+    env = {"AGYTEAM_AGENT": "tpm", "AGYTEAM_TEAM_DIR": str(td),
+           "AGYTEAM_ROSTER_ADMIN": "1"}
+    rpc("agyteam.mcp_bus", [], [("roster_add", {"name": "qa", "role": "reviews"})],
         env=env)
     doc = json.loads((td / "roster.json").read_text())
     return sum([
@@ -68,15 +68,15 @@ def test_scopes() -> tuple[int, int]:
     print("\n== file scope resolution ==")
     import os
     base = {k: v for k, v in os.environ.items()
-            if k not in ("CLAWAGY_PROJECT_DIR", "CLAWAGY_DURABLE_DIR")}
+            if k not in ("AGYTEAM_PROJECT_DIR", "AGYTEAM_DURABLE_DIR")}
 
     def run_scope(cwd, env=None):
-        return subprocess.run([str(PY), "-m", "clawagy.scope"], cwd=cwd,
+        return subprocess.run([str(PY), "-m", "agyteam.scope"], cwd=cwd,
                               env={**base, "PYTHONPATH": str(ROOT), **(env or {})},
                               capture_output=True, text=True, timeout=30).stdout
 
-    out = run_scope(ROOT, {"CLAWAGY_DURABLE_DIR": "/tmp/clawagy-durable-test",
-                           "CLAWAGY_PROJECT_DIR": str(ROOT)})
+    out = run_scope(ROOT, {"AGYTEAM_DURABLE_DIR": "/tmp/agyteam-durable-test",
+                           "AGYTEAM_PROJECT_DIR": str(ROOT)})
 
     repo = ROOT / "evals" / "gitroot_unit"
     shutil.rmtree(repo, ignore_errors=True)
@@ -92,13 +92,13 @@ def test_scopes() -> tuple[int, int]:
 
     # Must live outside this repo, else walking up correctly finds *our* root
     # and the test proves nothing.
-    plain = Path(tempfile.mkdtemp(prefix="clawagy-nogit-")).resolve()
+    plain = Path(tempfile.mkdtemp(prefix="agyteam-nogit-")).resolve()
     from_plain = run_scope(plain)
 
     return sum([
-        check("durable honors env override", "/tmp/clawagy-durable-test" in out, out),
+        check("durable honors env override", "/tmp/agyteam-durable-test" in out, out),
         check("project honors env override", str(ROOT) in out, out),
-        check("shared defaults under project", ".clawagy-team" in out, out),
+        check("shared defaults under project", ".agy-team-shared" in out, out),
         check("git root found from nested subdir", f"{repo} [git root]" in from_sub,
               from_sub),
         check("worktree .git file treated as root", f"{wt} [git root]" in from_wt,
@@ -106,12 +106,94 @@ def test_scopes() -> tuple[int, int]:
         check("non-repo falls back to cwd", f"{plain} [not a git repo]" in from_plain,
               from_plain),
         check("shared follows the discovered git root",
-              str(repo / ".clawagy-team") in from_sub, from_sub),
+              str(repo / ".agy-team-shared") in from_sub, from_sub),
     ]), 7
 
 
+def test_stdlib_purity() -> tuple[int, int]:
+    """The MCP servers must run under a bare system python, no venv.
+
+    That property is what makes the agy plugin installable without vendoring
+    third-party packages, so it is worth a test rather than a comment.
+    """
+    print("\n== stdlib purity (system python, no virtualenv) ==")
+    sys_py = "/usr/bin/python3"
+    if not Path(sys_py).exists():
+        return check("system python present", False, f"{sys_py} missing"), 1
+
+    def imports(mod, path):
+        p = subprocess.run([sys_py, "-c", f"import {mod}"], cwd="/",
+                           env={"PYTHONPATH": path}, capture_output=True,
+                           text=True, timeout=60)
+        return p.returncode == 0, p.stderr
+
+    checks = []
+    for mod in ("agyteam.mcp_memory", "agyteam.mcp_bus", "agyteam.scope",
+                "agyteam.transport_file", "agyteam.store"):
+        ok, err = imports(mod, str(ROOT))
+        checks.append(check(f"{mod} imports with no third-party deps", ok, err))
+
+    # the venv-only modules SHOULD fail here — proves the test has teeth
+    ok, _ = imports("agyteam.llm", str(ROOT))
+    checks.append(check("control: agyteam.llm (needs google-genai) does NOT import",
+                        not ok, "llm.py imported on bare python — purity test is "
+                                "not actually discriminating"))
+    return sum(checks), len(checks)
+
+
+def test_team_isolation() -> tuple[int, int]:
+    """Separate teams must share no roster, no bus, and no memory."""
+    print("\n== team namespacing ==")
+    root = Path(tempfile.mkdtemp(prefix="agyteam-teams-"))
+    base = {"AGYTEAM_TEAMS_ROOT": str(root), "PYTHONPATH": str(ROOT)}
+
+    for team in ("alpha", "beta"):
+        d = root / team / "team"
+        (d / "inbox").mkdir(parents=True)
+        (d / "roster.json").write_text(json.dumps({"agents": [
+            {"name": "tpm", "role": "coordinates"},
+            {"name": "coder", "role": "implements"}]}))
+
+    def send(team, to, content):
+        return rpc("agyteam.mcp_bus", [], [("send_to_teammate",
+                                            {"to": to, "content": content})],
+                   env={**base, "AGYTEAM_TEAM": team, "AGYTEAM_AGENT": "tpm"})[2:]
+
+    def inbox(team, agent):
+        return text_of(rpc("agyteam.mcp_bus", [], [("check_inbox", {})],
+                           env={**base, "AGYTEAM_TEAM": team,
+                                "AGYTEAM_AGENT": agent})[2])
+
+    send("alpha", "coder", "alpha-only-secret")
+    beta_inbox = inbox("beta", "coder")
+    alpha_inbox = inbox("alpha", "coder")
+
+    # explicit durable path should override the root/team composition entirely
+    exact = Path(tempfile.mkdtemp(prefix="agyteam-exact-"))
+    out = subprocess.run([str(PY), "-m", "agyteam.scope"], cwd=ROOT,
+                         env={**base, "AGYTEAM_TEAM": "alpha",
+                              "AGYTEAM_DURABLE_DIR": str(exact)},
+                         capture_output=True, text=True, timeout=30).stdout
+    bad_name = subprocess.run([str(PY), "-m", "agyteam.scope"], cwd=ROOT,
+                              env={**base, "AGYTEAM_TEAM": "../escape"},
+                              capture_output=True, text=True, timeout=30).stdout
+
+    return sum([
+        check("message delivered within its own team",
+              "alpha-only-secret" in alpha_inbox, alpha_inbox),
+        check("other team cannot see it", beta_inbox == "[inbox empty]", beta_inbox),
+        check("each team gets its own durable dir",
+              (root / "alpha").exists() and (root / "beta").exists()),
+        check("explicit durable path overrides team composition",
+              str(exact) in out and str(root / "alpha") not in out, out),
+        check("malicious team name cannot escape the teams root",
+              f"{root}/escape" in bad_name and ".." not in bad_name, bad_name),
+    ]), 5
+
+
 if __name__ == "__main__":
-    totals = [test_memory(), test_roster_file(), test_scopes()]
+    totals = [test_memory(), test_roster_file(), test_scopes(),
+              test_stdlib_purity(), test_team_isolation()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== memory/scope tests: {got}/{want} ==")
     sys.exit(0 if got == want else 1)

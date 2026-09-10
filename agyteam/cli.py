@@ -1,4 +1,4 @@
-"""CLI for a single Clawy agent: interactive REPL and one-shot mode."""
+"""CLI for a single Agy agent: interactive REPL and one-shot mode."""
 import argparse
 import sys
 from pathlib import Path
@@ -19,12 +19,12 @@ def _print_event(kind, payload):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="clawagy", description="Clawy — learning CLI agent on Gemini/Antigravity")
+    ap = argparse.ArgumentParser(prog="agyteam", description="Agy — learning CLI agent on Gemini/Antigravity")
     ap.add_argument("-p", "--prompt", help="One-shot: run this prompt and exit")
     ap.add_argument("-w", "--workspace", default=str(config.PROJECT_ROOT / "workspace"),
                     help="Agent workspace dir (identity + memory live here)")
     ap.add_argument("-m", "--model", default=config.DEFAULT_MODEL)
-    ap.add_argument("--name", default="Clawy")
+    ap.add_argument("--name", default="Agy")
     ap.add_argument("--quiet", action="store_true", help="Suppress tool-call trace")
     ap.add_argument("--no-distill", action="store_true",
                     help="Skip the end-of-session memory distillation pass")

@@ -1,4 +1,4 @@
-"""Clawy on the official google-antigravity SDK (Go localharness backend).
+"""Agy on the official google-antigravity SDK (Go localharness backend).
 
 The harness assembles the prompt and runs the loop; our levers are:
 - TemplatedSystemInstructions at session start (identity + contract + memory index)
@@ -71,7 +71,7 @@ class SessionFlags:
 
 
 def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
-                 name: str = "Clawy", interactive: bool = False,
+                 name: str = "Agy", interactive: bool = False,
                  trace=None, extra_tools=None, extra_sections=None,
                  subagents=None, identity_default: str | None = None,
                  disabled_tools: list[str] | None = None,
@@ -134,8 +134,8 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
     mcp_servers = None
     if use_mcp:
         mcp_servers = [types.McpStdioServer(
-            name="clawagy_memory", type="stdio", command=sys.executable,
-            args=["-m", "clawagy.mcp_memory", str(workspace)],
+            name="agyteam_memory", type="stdio", command=sys.executable,
+            args=["-m", "agyteam.mcp_memory", str(workspace)],
             env={"PYTHONPATH": str(cfg.PROJECT_ROOT)})]
 
     off = [types.BuiltinTools(t) for t in (disabled_tools or [])]

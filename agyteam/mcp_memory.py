@@ -5,9 +5,9 @@ agy CLI (plugin mcp_config.json), the Antigravity hub
 (~/.gemini/antigravity/mcp_config.json), the google-antigravity SDK
 (McpStdioServer), Claude Code, etc.
 
-Workspace: `python -m clawagy.mcp_memory <workspace_dir>` (explicit), or omit it
-and set CLAWAGY_AGENT — the workspace is then resolved to the agent's *durable*
-scope (see clawagy.scope), so memory follows the agent between projects instead
+Workspace: `python -m agyteam.mcp_memory <workspace_dir>` (explicit), or omit it
+and set AGYTEAM_AGENT — the workspace is then resolved to the agent's *durable*
+scope (see agyteam.scope), so memory follows the agent between projects instead
 of being stranded in whichever repo it happened to be working in.
 """
 import os
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from .mcp_base import serve, string, tool
-from .tools import Toolbox
+from .store import Toolbox
 
 TOOLS = [
     tool("save_memory",
@@ -53,7 +53,7 @@ def main(workspace: str):
         fn = handlers.get(name)
         return fn(args) if fn else f"[error: unknown tool '{name}']"
 
-    serve("clawagy-memory", TOOLS, dispatch)
+    serve("agy-team-memory", TOOLS, dispatch)
 
 
 if __name__ == "__main__":
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         main(sys.argv[1])
     else:
         from . import scope
-        agent = os.environ.get("CLAWAGY_AGENT", "")
+        agent = os.environ.get("AGYTEAM_AGENT", "")
         if not agent:
-            sys.exit("clawagy.mcp_memory: pass <workspace_dir> or set CLAWAGY_AGENT")
+            sys.exit("agyteam.mcp_memory: pass <workspace_dir> or set AGYTEAM_AGENT")
         main(str(scope.load().agent_workspace(agent)))

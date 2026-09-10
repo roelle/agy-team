@@ -1,4 +1,4 @@
 # Memory index
-- [deploy-server] Deploy server details (horta, port 2222)
-- [user-preferences] Coding preferences (tabs over spaces in Python)
+- [deploy-server] Deploy server 'horta' details and SSH configuration
+- [user-preferences] User code style preferences (Python tabs over spaces)
 - [poster-pipeline] Poster pipeline project codename (MFP-9)

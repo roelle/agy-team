@@ -1,18 +1,18 @@
 """A second, independent A2A transport — SQLite instead of files.
 
 Deliberately written the way a third party would: it imports only the public
-interface (clawagy.transport) and touches no clawagy internals. Its job is to
+interface (agyteam.transport) and touches no agyteam internals. Its job is to
 prove the transport seam is real, so that swapping in a native/internal A2A
 implementation is a config change rather than a fork.
 
-Config (CLAWAGY_BUS_CONFIG): {"db": "/path/to.db", "roster": [{"name","role"}]}
+Config (AGYTEAM_BUS_CONFIG): {"db": "/path/to.db", "roster": [{"name","role"}]}
 """
 import json
 import os
 import sqlite3
 import time
 
-from clawagy.transport import Message, Transport
+from agyteam.transport import Message, Transport
 
 
 class SqliteTransport(Transport):
@@ -21,7 +21,7 @@ class SqliteTransport(Transport):
 
     def __init__(self, me, config=None):
         super().__init__(me, config)
-        db = self.config.get("db") or os.environ.get("CLAWAGY_FIXTURE_DB")
+        db = self.config.get("db") or os.environ.get("AGYTEAM_FIXTURE_DB")
         if not db:
             raise SystemExit("SqliteTransport needs config {'db': ...}")
         self.conn = sqlite3.connect(db, timeout=10)

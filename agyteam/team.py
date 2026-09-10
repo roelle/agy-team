@@ -9,7 +9,7 @@ Structure that prevents the teammate/subagent confusion of prior attempts:
 Roster lives in team/roster.json; add/remove agents by editing it via this
 CLI (or by hand between runs). Bus messages persist to team/bus.jsonl.
 
-Usage: .venv/bin/python -m clawagy.team [--team-dir DIR]
+Usage: .venv/bin/python -m agyteam.team [--team-dir DIR]
   Commands inside: say <agent> <msg> | broadcast <msg> | log [n] | roster
                    add <name> <role...> | remove <name> | distill [agent] | quit
   Or one-shot:     --say "<agent>: <message>" (runs until idle, then exits)
@@ -322,7 +322,7 @@ async def repl(team: Team, one_shot: str | None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="clawagy-team")
+    ap = argparse.ArgumentParser(prog="agy-team-shared")
     ap.add_argument("--team-dir", default=str(cfg.PROJECT_ROOT / "team"))
     ap.add_argument("--say", help="One-shot: '<agent>: <message>', run until idle, exit")
     ap.add_argument("--quiet", action="store_true")

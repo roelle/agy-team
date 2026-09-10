@@ -2,11 +2,11 @@
 
 Runs the identical scenario against every configured transport, so a new
 implementation (native, internal, proprietary) can be validated before it is
-trusted. This is the suite clawagy/transport_template.py tells you to run.
+trusted. This is the suite agyteam/transport_template.py tells you to run.
 
   .venv/bin/python evals/test_transport.py
-  CLAWAGY_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport \
-  CLAWAGY_BUS_CONFIG='{"endpoint":"..."}' .venv/bin/python evals/test_transport.py
+  AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport \
+  AGYTEAM_BUS_CONFIG='{"endpoint":"..."}' .venv/bin/python evals/test_transport.py
 
 With no arguments it tests the built-in file transport plus an independent
 SQLite fixture — if both pass, the seam is real and not file-specific.
@@ -30,7 +30,7 @@ def contract(label: str, env_for) -> tuple[int, int]:
     print(f"\n== transport contract: {label} ==")
 
     def call(agent, calls, admin=False):
-        return rpc("clawagy.mcp_bus", [], calls, env=env_for(agent, admin))
+        return rpc("agyteam.mcp_bus", [], calls, env=env_for(agent, admin))
 
     a = call("tpm", [("list_teammates", {}),
                      ("send_to_teammate", {"to": "coder", "content": "build X"}),
@@ -86,23 +86,23 @@ def file_env():
     (team / "roster.json").write_text(json.dumps({"agents": ROSTER}))
 
     def env_for(agent, admin):
-        e = {"CLAWAGY_AGENT": agent, "CLAWAGY_TEAM_DIR": str(team),
-             "CLAWAGY_BUS_TRANSPORT": "clawagy.transport_file:FileTransport"}
+        e = {"AGYTEAM_AGENT": agent, "AGYTEAM_TEAM_DIR": str(team),
+             "AGYTEAM_BUS_TRANSPORT": "agyteam.transport_file:FileTransport"}
         if admin:
-            e["CLAWAGY_ROSTER_ADMIN"] = "1"
+            e["AGYTEAM_ROSTER_ADMIN"] = "1"
         return e
     return env_for
 
 
 def sqlite_env():
-    db = Path(tempfile.mkdtemp(prefix="clawagy-fixture-")) / "bus.db"
+    db = Path(tempfile.mkdtemp(prefix="agyteam-fixture-")) / "bus.db"
     cfg = json.dumps({"db": str(db), "roster": ROSTER})
 
     def env_for(agent, admin):
-        e = {"CLAWAGY_AGENT": agent, "CLAWAGY_BUS_CONFIG": cfg,
-             "CLAWAGY_BUS_TRANSPORT": "fixture_transport:SqliteTransport"}
+        e = {"AGYTEAM_AGENT": agent, "AGYTEAM_BUS_CONFIG": cfg,
+             "AGYTEAM_BUS_TRANSPORT": "fixture_transport:SqliteTransport"}
         if admin:
-            e["CLAWAGY_ROSTER_ADMIN"] = "1"
+            e["AGYTEAM_ROSTER_ADMIN"] = "1"
         return e
     return env_for
 
@@ -114,17 +114,17 @@ def test_loader_failures() -> tuple[int, int]:
     from rpc_util import PY
 
     def run(env):
-        p = subprocess.run([str(PY), "-m", "clawagy.mcp_bus"], cwd=ROOT,
+        p = subprocess.run([str(PY), "-m", "agyteam.mcp_bus"], cwd=ROOT,
                            input="", capture_output=True, text=True, timeout=30,
                            env={**os.environ, "PYTHONPATH": str(ROOT),
-                                "CLAWAGY_AGENT": "tpm", **env})
+                                "AGYTEAM_AGENT": "tpm", **env})
         return p.returncode, (p.stderr or "") + (p.stdout or "")
 
-    rc1, o1 = run({"CLAWAGY_BUS_TRANSPORT": "nosuchmodule:Thing"})
-    rc2, o2 = run({"CLAWAGY_BUS_TRANSPORT": "clawagy.transport_file"})
-    rc3, o3 = run({"CLAWAGY_BUS_TRANSPORT": "clawagy.transport_file:FileTransport",
-                   "CLAWAGY_BUS_CONFIG": "{not json"})
-    rc4, o4 = run({"CLAWAGY_BUS_TRANSPORT": "clawagy.scope:Scopes"})
+    rc1, o1 = run({"AGYTEAM_BUS_TRANSPORT": "nosuchmodule:Thing"})
+    rc2, o2 = run({"AGYTEAM_BUS_TRANSPORT": "agyteam.transport_file"})
+    rc3, o3 = run({"AGYTEAM_BUS_TRANSPORT": "agyteam.transport_file:FileTransport",
+                   "AGYTEAM_BUS_CONFIG": "{not json"})
+    rc4, o4 = run({"AGYTEAM_BUS_TRANSPORT": "agyteam.scope:Scopes"})
     return sum([
         check("missing module fails loudly", rc1 != 0 and "cannot load" in o1, o1),
         check("malformed spec rejected", rc2 != 0 and "module:Class" in o2, o2),
@@ -134,14 +134,14 @@ def test_loader_failures() -> tuple[int, int]:
 
 
 if __name__ == "__main__":
-    spec = os.environ.get("CLAWAGY_BUS_TRANSPORT")
+    spec = os.environ.get("AGYTEAM_BUS_TRANSPORT")
     if spec:
-        cfg = os.environ.get("CLAWAGY_BUS_CONFIG", "")
+        cfg = os.environ.get("AGYTEAM_BUS_CONFIG", "")
         def custom(agent, admin):
-            e = {"CLAWAGY_AGENT": agent, "CLAWAGY_BUS_TRANSPORT": spec,
-                 "CLAWAGY_BUS_CONFIG": cfg}
+            e = {"AGYTEAM_AGENT": agent, "AGYTEAM_BUS_TRANSPORT": spec,
+                 "AGYTEAM_BUS_CONFIG": cfg}
             if admin:
-                e["CLAWAGY_ROSTER_ADMIN"] = "1"
+                e["AGYTEAM_ROSTER_ADMIN"] = "1"
             return e
         runs = [contract(spec, custom)]
     else:

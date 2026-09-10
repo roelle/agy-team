@@ -1,35 +1,49 @@
 #!/usr/bin/env bash
-# Install the clawagy plugin into the Antigravity CLI.
+# Install the agy-team plugin into the Antigravity CLI.
 #
-# Renders absolute paths into mcp_config.json (env-var expansion inside that
-# file is undocumented, so we don't rely on it) and seeds the durable team dir.
-# Agent identity is NOT baked in: the MCP servers inherit CLAWAGY_AGENT from the
-# agy process, so one install serves every agent.
+# The installed plugin is self-contained: the MCP servers it mounts are pure
+# standard library, so they are copied in alongside the manifest and run under
+# a bare system python3. No virtualenv, no third-party packages, and nothing
+# breaks if this repo later moves or is deleted.
+#
+# Agent identity is NOT baked in: the servers inherit AGYTEAM_AGENT from the
+# agy process, so one install serves every agent on every team.
 set -euo pipefail
 
-CLAWAGY_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${CLAWAGY_PYTHON:-$CLAWAGY_HOME/.venv/bin/python}"
-PLUGIN_SRC="$CLAWAGY_HOME/plugin/clawagy"
-PLUGIN_DST="${CLAWAGY_PLUGIN_DIR:-$HOME/.gemini/antigravity-cli/plugins/clawagy}"
-DURABLE="${CLAWAGY_DURABLE_DIR:-$HOME/.gemini/clawagy}"
+AGYTEAM_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${AGYTEAM_PYTHON:-$(command -v python3)}"
+PLUGIN_SRC="$AGYTEAM_HOME/plugin/agy-team"
+PLUGIN_DST="${AGYTEAM_PLUGIN_DIR:-$HOME/.gemini/antigravity-cli/plugins/agy-team}"
+TEAM="${AGYTEAM_TEAM:-default}"
+TEAMS_ROOT="${AGYTEAM_TEAMS_ROOT:-$HOME/agy-teams}"
+DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 
-[ -x "$PYTHON" ] || { echo "ERROR: python not found at $PYTHON (set CLAWAGY_PYTHON)"; exit 1; }
+# Modules the MCP servers need. Deliberately excludes anything importing
+# google-genai or google-antigravity; if this list ever needs one of those,
+# the plugin has stopped being installable without vendoring.
+PURE_MODULES=(__init__.py config.py scope.py store.py mcp_base.py mcp_memory.py
+              mcp_bus.py transport.py transport_file.py transport_template.py)
 
-echo "clawagy home : $CLAWAGY_HOME"
-echo "python       : $PYTHON"
-echo "plugin dest  : $PLUGIN_DST"
-echo "durable dir  : $DURABLE"
+echo "python      : $PYTHON"
+echo "plugin dest : $PLUGIN_DST"
+echo "team        : $TEAM"
+echo "durable dir : $DURABLE"
 
-mkdir -p "$PLUGIN_DST" "$DURABLE/team/inbox" "$DURABLE/agents"
+[ -x "$PYTHON" ] || { echo "ERROR: python3 not found (set AGYTEAM_PYTHON)"; exit 1; }
+
+mkdir -p "$PLUGIN_DST/agyteam" "$DURABLE/team/inbox" "$DURABLE/agents"
 cp -r "$PLUGIN_SRC/." "$PLUGIN_DST/"
+for m in "${PURE_MODULES[@]}"; do
+  cp "$AGYTEAM_HOME/agyteam/$m" "$PLUGIN_DST/agyteam/$m"
+done
 
-sed -e "s|__PYTHON__|$PYTHON|g" -e "s|__CLAWAGY_HOME__|$CLAWAGY_HOME|g" \
-    "$CLAWAGY_HOME/plugin/mcp_config.template.json" > "$PLUGIN_DST/mcp_config.json"
+sed -e "s|__PYTHON__|$PYTHON|g" -e "s|__AGYTEAM_HOME__|$PLUGIN_DST|g" \
+    "$AGYTEAM_HOME/plugin/mcp_config.template.json" > "$PLUGIN_DST/mcp_config.json"
 
 if [ ! -f "$DURABLE/team/roster.json" ]; then
-  cat > "$DURABLE/team/roster.json" <<'JSON'
+  cat > "$DURABLE/team/roster.json" <<JSON
 {
-  "mission": "General-purpose engineering team.",
+  "mission": "General-purpose engineering team ($TEAM).",
   "agents": [
     {"name": "tpm",    "role": "Coordinates: decomposes work, delegates, reports to the user. No shell, no file writes."},
     {"name": "coder",  "role": "Implements, runs, and verifies code changes."},
@@ -40,18 +54,29 @@ JSON
   echo "seeded roster: $DURABLE/team/roster.json"
 fi
 
-"$PYTHON" -c "import json,sys; json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json')); print('manifest + mcp_config valid JSON')"
+# Prove the install actually works rather than merely looking right: import the
+# servers using only the installed copy, with this repo off the path.
+( cd / && PYTHONPATH="$PLUGIN_DST" "$PYTHON" -c "
+import json, agyteam.mcp_memory, agyteam.mcp_bus
+json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
+print('verified: servers import standalone, manifests are valid JSON')" )
 
 cat <<NOTE
 
-Installed. To run an agent so its memory and mail are correctly attributed:
+Installed. Run an agent so its memory and mail are attributed correctly:
 
-    CLAWAGY_AGENT=tpm agy --agent tpm
+    AGYTEAM_AGENT=tpm agy --agent tpm
 
-Set CLAWAGY_AGENT to the same name you pass to --agent. Optionally set
-CLAWAGY_DURABLE_DIR (identity/memory) and CLAWAGY_PROJECT_DIR (the repo you're
-working in); see 'python -m clawagy.scope' for what resolves where.
+Keep AGYTEAM_AGENT equal to what you pass to --agent.
 
-If your agy build expects plugins elsewhere, re-run with
-CLAWAGY_PLUGIN_DIR=/path/to/plugins/clawagy, or use: agy plugin install "$PLUGIN_DST"
+Teams are isolated — separate roster, bus, and memory, no cross-talk:
+
+    AGYTEAM_TEAM=team-b bash plugin/install.sh     # seed another team
+    AGYTEAM_TEAM=team-b AGYTEAM_AGENT=tpm agy --agent tpm
+
+Or point somewhere explicit (useful if your backups target a specific tree):
+
+    AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A AGYTEAM_AGENT=tpm agy --agent tpm
+
+'$PYTHON -m agyteam.scope' prints what currently resolves where.
 NOTE

@@ -15,10 +15,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = ROOT / ".venv" / "bin" / "python"
-# CLAWAGY_IMPL=clawagy.sdk_cli runs the same suite against the SDK-backed agent;
-# CLAWAGY_EXTRA_ARGS="--mcp" appends flags (e.g. to route memory through MCP).
-IMPL = os.environ.get("CLAWAGY_IMPL", "clawagy")
-EXTRA = os.environ.get("CLAWAGY_EXTRA_ARGS", "").split()
+# AGYTEAM_IMPL=agyteam.sdk_cli runs the same suite against the SDK-backed agent;
+# AGYTEAM_EXTRA_ARGS="--mcp" appends flags (e.g. to route memory through MCP).
+IMPL = os.environ.get("AGYTEAM_IMPL", "agyteam")
+EXTRA = os.environ.get("AGYTEAM_EXTRA_ARGS", "").split()
 
 
 def run_agent(workspace: Path, prompt: str, distill: bool = False) -> str:

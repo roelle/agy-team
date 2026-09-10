@@ -1,6 +1,6 @@
 """Tiny dependency-free MCP stdio server scaffold (JSON-RPC 2.0 over stdin/stdout).
 
-Shared by clawagy's memory and bus servers so both speak identical protocol.
+Shared by agyteam's memory and bus servers so both speak identical protocol.
 """
 import json
 import sys

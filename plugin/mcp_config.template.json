@@ -1,14 +1,14 @@
 {
   "mcpServers": {
-    "clawagy_memory": {
+    "agyteam_memory": {
       "command": "__PYTHON__",
-      "args": ["-m", "clawagy.mcp_memory"],
-      "env": {"PYTHONPATH": "__CLAWAGY_HOME__"}
+      "args": ["-m", "agyteam.mcp_memory"],
+      "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
     },
-    "clawagy_bus": {
+    "agyteam_bus": {
       "command": "__PYTHON__",
-      "args": ["-m", "clawagy.mcp_bus"],
-      "env": {"PYTHONPATH": "__CLAWAGY_HOME__"}
+      "args": ["-m", "agyteam.mcp_bus"],
+      "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
     }
   }
 }

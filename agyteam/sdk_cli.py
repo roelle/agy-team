@@ -1,4 +1,4 @@
-"""CLI for the SDK-backed Clawy. Same flags/contract as clawagy.cli so the
+"""CLI for the SDK-backed Agy. Same flags/contract as agyteam.cli so the
 eval harness can drive either implementation."""
 import argparse
 import asyncio
@@ -102,12 +102,12 @@ async def amain(args):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="clawagy-sdk",
-                                 description="Clawy on the google-antigravity SDK")
+    ap = argparse.ArgumentParser(prog="agyteam-sdk",
+                                 description="Agy on the google-antigravity SDK")
     ap.add_argument("-p", "--prompt")
     ap.add_argument("-w", "--workspace", default=str(cfg.PROJECT_ROOT / "workspace"))
     ap.add_argument("-m", "--model", default=cfg.DEFAULT_MODEL)
-    ap.add_argument("--name", default="Clawy")
+    ap.add_argument("--name", default="Agy")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--no-distill", action="store_true")
     ap.add_argument("--mcp", action="store_true",

@@ -1,9 +1,19 @@
-# Clawy-AGY
+# Agy-Team
 
-An OpenClaw-style persistent, learning agent — and a team platform of them —
-on the **google-antigravity SDK** (Antigravity 2.0 / Gemini backend).
+Persistent, learning agents — and a team platform of them — for Google
+Antigravity 2.0: as an installable **agy CLI plugin**, or driven directly
+through the **google-antigravity SDK**.
 
 ## Setup
+
+The plugin path needs **nothing installed** — its MCP servers are pure standard
+library and run under system `python3` (see [Dependencies](#dependencies)):
+
+```bash
+bash plugin/install.sh
+```
+
+The SDK and eval paths need a virtualenv:
 
 ```bash
 python3 -m venv .venv
@@ -11,16 +21,33 @@ python3 -m venv .venv
 cp .env.example .env   # or create .env with GEMINI_API_KEY=...
 ```
 
+## Dependencies
+
+Third-party imports are confined to the modules that actually talk to a model,
+so the installable surface stays dependency-free:
+
+| module | needs | used by |
+|---|---|---|
+| `scope`, `store`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*` | **stdlib only** | the agy plugin, any MCP host |
+| `tools`, `llm`, `agent`, `cli` | `google-genai` | clean-room agent (cheap eval rig) |
+| `sdk_agent`, `sdk_cli`, `team` | `google-antigravity` | SDK agent + Python team orchestrator |
+
+`store.py` holds the tool implementations and memory store; `tools.py` holds
+only the Gemini function declarations for them. That split is what keeps the
+MCP servers importable without a virtualenv, and `evals/test_mcp.py` enforces
+it — including a control case asserting that `llm.py` *does* fail on bare
+python, so the check can't silently stop discriminating.
+
 ## Single agent (priority zero)
 
 ```bash
 # SDK/localharness-backed agent (the Antigravity one):
-.venv/bin/python -m clawagy.sdk_cli                 # REPL
-.venv/bin/python -m clawagy.sdk_cli -p "task..."    # one-shot
+.venv/bin/python -m agyteam.sdk_cli                 # REPL
+.venv/bin/python -m agyteam.sdk_cli -p "task..."    # one-shot
 
 # Lightweight clean-room agent (same memory design, direct Gemini API,
 # ~4-5x cheaper per turn; useful for cheap experiments):
-.venv/bin/python -m clawagy                         # REPL / -p one-shot
+.venv/bin/python -m agyteam                         # REPL / -p one-shot
 ```
 
 Shared flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
@@ -37,15 +64,15 @@ Shared flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 - On `/quit` (or after a one-shot) a distillation turn pushes unsaved durable
   learnings into memory. The write path and the read path are the same files —
   the broken link in both prior attempts.
-- A fixed grounding contract (in `clawagy/agent.py:CONTRACT`, not agent-editable)
+- A fixed grounding contract (in `agyteam/agent.py:CONTRACT`, not agent-editable)
   requires claims to trace to tool output or memory, and makes "I don't know"
   an acceptable answer.
 
 ## Team platform
 
 ```bash
-.venv/bin/python -m clawagy.team                    # REPL
-.venv/bin/python -m clawagy.team --say "tpm: <task>" # one-shot until idle
+.venv/bin/python -m agyteam.team                    # REPL
+.venv/bin/python -m agyteam.team --say "tpm: <task>" # one-shot until idle
 ```
 
 REPL commands: `say <agent> <msg>`, `broadcast <msg>`, `log [n]`, `roster`,
@@ -66,7 +93,7 @@ verify (the review-before-delivery contract), and reported accurate results.
   configurable there.
 - Each teammate is a persistent SDK Agent session with its own workspace and
   memory under `team/agents/<name>/` — any of them also runs standalone via
-  `clawagy.sdk_cli -w team/agents/<name>`.
+  `agyteam.sdk_cli -w team/agents/<name>`.
 - **Teammates vs workers is structural**: teammates can only be *messaged*
   (`send_to_teammate`, persisted to `team/bus.jsonl`); workers can only be
   *spawned* (builtin `start_subagent`, depth-capped at 1) and have no memory or
@@ -88,17 +115,17 @@ confirm fires unprompted.
 
 ## Memory over MCP (optional, not a fork)
 
-`clawagy/mcp_memory.py` is a zero-dependency MCP stdio server exposing the same
+`agyteam/mcp_memory.py` is a zero-dependency MCP stdio server exposing the same
 workspace memory (`save_memory`/`read_memory`/`delete_memory`/`memory_index`).
-`--mcp` on `clawagy.sdk_cli` routes memory through it instead of in-process
+`--mcp` on `agyteam.sdk_cli` routes memory through it instead of in-process
 callables — same files, same evals (6/6 verified). Any MCP host can mount it;
 to give a pinned Antigravity hub conversation the same memory, register it in
 `~/.gemini/antigravity/mcp_config.json`:
 
 ```json
-{"mcpServers": {"clawagy_memory": {
+{"mcpServers": {"agyteam_memory": {
   "command": "/mnt/data/claw-agy/.venv/bin/python",
-  "args": ["-m", "clawagy.mcp_memory", "/mnt/data/claw-agy/workspace"],
+  "args": ["-m", "agyteam.mcp_memory", "/mnt/data/claw-agy/workspace"],
   "env": {"PYTHONPATH": "/mnt/data/claw-agy"}}}}
 ```
 
@@ -108,7 +135,7 @@ Remote Control drives **agy CLI sessions**, not SDK programs — so the
 installable artifact is a CLI plugin, and that is what `plugin/` contains:
 
 ```
-plugin/clawagy/
+plugin/agy-team/
   plugin.json          manifest
   agents/{tpm,coder,syseng}/agent.md    peer roles (markdown + frontmatter)
   skills/{distill,inbox,handoff}.md     slash commands
@@ -119,26 +146,54 @@ plugin/clawagy/
 Install and run:
 
 ```bash
-bash plugin/install.sh                  # → ~/.gemini/antigravity-cli/plugins/clawagy
-CLAWAGY_AGENT=tpm agy --agent tpm       # identity must match --agent
+bash plugin/install.sh                  # → ~/.gemini/antigravity-cli/plugins/agy-team
+AGYTEAM_AGENT=tpm agy --agent tpm       # identity must match --agent
 ```
 
-The installer renders real paths into `mcp_config.json` (env-var expansion in
-that file is undocumented, so nothing depends on it) and seeds the durable team
-roster. Agent identity is *not* baked in: both MCP servers inherit
-`CLAWAGY_AGENT` from the agy process, so one install serves every agent.
+The installed plugin is **self-contained**: the stdlib MCP modules are copied in
+beside the manifest and run under system `python3`, so nothing breaks if this
+repo later moves or is deleted. The installer renders real paths into
+`mcp_config.json` (env-var expansion in that file is undocumented, so nothing
+depends on it), seeds the team roster, and then verifies the result by importing
+the servers from the *installed copy* with this repo off `PYTHONPATH`.
+
+Agent identity is not baked in: both MCP servers inherit `AGYTEAM_AGENT` from
+the agy process, so one install serves every agent on every team.
 
 ### File scopes
 
-`clawagy/scope.py` defines three classes of path, each overridable by env var,
-`scopes.json` in the project, or argument — run `python -m clawagy.scope` to see
+`agyteam/scope.py` defines three classes of path, each overridable by env var,
+`scopes.json` in the project, or argument — run `python -m agyteam.scope` to see
 what resolves where:
 
 | scope | holds | default |
 |---|---|---|
-| durable | identity + memory (survives every project) | `~/.gemini/clawagy` |
+| durable | identity, memory, roster, bus (survives every project) | `~/agy-teams/<team>` |
 | project | the repo or mapped drive being worked in | enclosing **git root**, else `$PWD` |
-| shared | team artifacts and deliverables | `<project>/.clawagy-team` |
+| shared | team artifacts and deliverables | `<project>/.agy-team-shared` |
+
+Durable state lives under your **home directory, not `~/.gemini`** — app and OS
+config are replaceable, but memory is the part you'd be sad to lose, so it
+belongs where your backups already point. Plugin *configuration* still installs
+to `~/.gemini/antigravity-cli/plugins/` because that's where agy looks for it.
+
+### Team namespacing
+
+Everything durable is namespaced per team, so separate teams share no roster, no
+bus, and no memory, and cannot observe each other — useful for isolating real
+work from experiments:
+
+```bash
+AGYTEAM_TEAM=team-b bash plugin/install.sh            # seed a second team
+AGYTEAM_TEAM=team-b AGYTEAM_AGENT=tpm agy --agent tpm
+
+# or point at an exact path, ignoring the <root>/<team> layout entirely
+AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A AGYTEAM_AGENT=tpm agy --agent tpm
+```
+
+`AGYTEAM_TEAMS_ROOT` moves the whole collection; `AGYTEAM_DURABLE_DIR` overrides
+one team outright. Team names are sanitised into directory names, so a stray
+`../` can't escape the teams root (tested).
 
 Project scope is discovered, not hardcoded: it walks up for `.git` (handling the
 worktree/submodule case where `.git` is a file), so running an agent from a
@@ -153,14 +208,14 @@ someone else's checkout.
 ### Roster management
 
 `roster_add` / `roster_remove` are exposed over the bus server **only** when
-`CLAWAGY_ROSTER_ADMIN=1`. Team composition is the operator's call, not something
+`AGYTEAM_ROSTER_ADMIN=1`. Team composition is the operator's call, not something
 an agent should do to itself mid-task; without the flag the tools aren't in the
 schema at all, so a curious agent can't even try.
 
 ### A2A messaging (swappable transport)
 
 Antigravity exposes no peer messaging publicly — Teamwork coordinates through
-workspace artifacts, and the SDK offers only subagents. `clawagy/mcp_bus.py`
+workspace artifacts, and the SDK offers only subagents. `agyteam/mcp_bus.py`
 supplies the channel over MCP, so it works identically in the agy CLI, the
 desktop hub, and SDK agents. Delivery is inbox-based (`check_inbox`) rather than
 push, because when the harness owns the loop nobody can force a peer to take a
@@ -168,16 +223,16 @@ turn.
 
 **The wire is pluggable.** The agent-facing tools are fixed; how messages move
 is not. If a native or internal A2A mechanism becomes available to you,
-implement `clawagy/transport.py:Transport` against it and point an env var at
-your class — no clawagy source changes, and agents notice nothing:
+implement `agyteam/transport.py:Transport` against it and point an env var at
+your class — no agyteam source changes, and agents notice nothing:
 
 ```bash
-export CLAWAGY_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
-export CLAWAGY_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
+export AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+export AGYTEAM_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
 .venv/bin/python evals/test_transport.py            # must pass 12/12
 ```
 
-Copy `clawagy/transport_template.py` and implement three methods (`send`,
+Copy `agyteam/transport_template.py` and implement three methods (`send`,
 `fetch`, `teammates`); `broadcast`, roster admin, and `close` have working
 defaults. **That file is the only thing you should need to write** to move off
 the file bus.
@@ -197,11 +252,11 @@ SQLite-backed transport written against only the public interface, and the same
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/test_mcp.py                    # memory + scopes, free
+.venv/bin/python evals/test_mcp.py                    # memory, scopes, purity, teams — free
 .venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
 .venv/bin/python evals/run_evals.py                   # clean-room agent
-CLAWAGY_IMPL=clawagy.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
-CLAWAGY_IMPL=clawagy.sdk_cli CLAWAGY_EXTRA_ARGS=--mcp \
+AGYTEAM_IMPL=agyteam.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
+AGYTEAM_IMPL=agyteam.sdk_cli AGYTEAM_EXTRA_ARGS=--mcp \
   .venv/bin/python evals/run_evals.py                 # SDK agent, memory via MCP
 .venv/bin/python evals/test_a2a.py                    # A2A behavioral, ~15¢
 ```
@@ -210,7 +265,7 @@ Current status — all green as of 2026-09-09:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | MCP protocol, memory semantics, roster persistence, git-root scopes | 19/19 |
+| `test_mcp.py` | memory semantics, roster persistence, git-root scopes, stdlib purity, team isolation | 30/30 |
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
@@ -247,6 +302,6 @@ never been loaded by the real thing. Expect to adjust:
   and can reject workspace paths; agents recover by writing files via
   `run_command`. Harmless, but visible as an HTTP 0 warning.
 - `antigravity-preview-05-2026` (the AGY2.0 agent model) has a 131k input
-  limit; the compaction threshold (80k, `clawagy/config.py`) respects it.
-- Pricing table in `clawagy/config.py` is an estimate for the cost display —
+  limit; the compaction threshold (80k, `agyteam/config.py`) respects it.
+- Pricing table in `agyteam/config.py` is an estimate for the cost display —
   update from ai.google.dev/pricing if you need it exact.

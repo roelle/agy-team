@@ -1,28 +1,46 @@
 """File scope management: where each *class* of file belongs.
 
-Three scopes, because they have different lifetimes and backup/sync stories:
+Three scopes, because they have different lifetimes and backup stories:
 
-  durable  — survives every project. Agent identity and memory live here, so an
-             agent that moves between repos keeps what it learned.
-             Default: ~/.gemini/clawagy   (override: CLAWAGY_DURABLE_DIR)
+  durable  — survives every project: agent identity, memory, roster, bus.
+             Lives under your home directory rather than ~/.gemini, because the
+             OS and app config are replaceable but this is the part you'd be
+             sad to lose — put it where your backups already point.
+             Default: ~/agy-teams/<team>
+             (override: AGYTEAM_DURABLE_DIR for an exact path, or
+              AGYTEAM_TEAMS_ROOT + AGYTEAM_TEAM to compose one)
   project  — the repo / mapped drive the work happens in. Disposable per job;
              may be a network mount, may be someone else's git checkout.
              Default: the enclosing git repository root, falling back to $PWD
-             when not in a repo    (override: CLAWAGY_PROJECT_DIR)
+             when not in a repo    (override: AGYTEAM_PROJECT_DIR)
   shared   — team coordination artifacts and deliverables handed between agents.
-             Default: <project>/.clawagy-team  (override: CLAWAGY_SHARED_DIR)
+             Default: <project>/.agy-team-shared  (override: AGYTEAM_SHARED_DIR)
+
+Teams are namespaced: everything durable for a team lives under its own
+directory, so separate teams share no roster, no bus, and no memory and cannot
+observe each other. Switch teams with AGYTEAM_TEAM=<name> (default "default"),
+or point AGYTEAM_DURABLE_DIR straight at e.g. ~/my-agents/my-agent-team-A.
 
 Resolution order (first wins): explicit argument, environment variable,
-scopes.json in the project dir, then the default. Mirrors Antigravity's own
-global (~/.gemini/config) vs workspace (.agents/) split, so a plugin install
-lands in the same places the CLI already expects.
+scopes.json in the project dir, then the default.
 """
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_NAME = "scopes.json"
+DEFAULT_TEAMS_ROOT = "~/agy-teams"
+DEFAULT_TEAM = "default"
+
+
+def _safe_team(name: str) -> str:
+    """Team names become directory names, so keep them boring."""
+    clean = re.sub(r"[^A-Za-z0-9._-]", "-", name.strip()).strip(".-")
+    if not clean:
+        raise SystemExit(f"AGYTEAM_TEAM={name!r} is not a usable team name")
+    return clean
 
 
 def _expand(p) -> Path:
@@ -49,6 +67,7 @@ class Scopes:
     durable: Path
     project: Path
     shared: Path
+    team: str = DEFAULT_TEAM
 
     def agent_workspace(self, agent: str) -> Path:
         """Identity + memory for one agent — always durable, never in the repo."""
@@ -69,18 +88,19 @@ class Scopes:
 
     def describe(self) -> str:
         in_repo = (self.project / ".git").exists()
-        return (f"durable (identity/memory, survives projects): {self.durable}\n"
+        return (f"team:    {self.team}\n"
+                f"durable (identity/memory, survives projects): {self.durable}\n"
                 f"project (the repo/drive you are working in): {self.project}"
                 f"{' [git root]' if in_repo else ' [not a git repo]'}\n"
                 f"shared  (team artifacts and deliverables):    {self.shared}")
 
     def as_dict(self) -> dict:
-        return {"durable": str(self.durable), "project": str(self.project),
-                "shared": str(self.shared)}
+        return {"team": self.team, "durable": str(self.durable),
+                "project": str(self.project), "shared": str(self.shared)}
 
 
-def load(durable=None, project=None, shared=None) -> Scopes:
-    explicit = project or os.environ.get("CLAWAGY_PROJECT_DIR")
+def load(durable=None, project=None, shared=None, team=None) -> Scopes:
+    explicit = project or os.environ.get("AGYTEAM_PROJECT_DIR")
     proj = _expand(explicit) if explicit else (git_root() or Path.cwd().resolve())
 
     cfg = {}
@@ -91,21 +111,33 @@ def load(durable=None, project=None, shared=None) -> Scopes:
         except json.JSONDecodeError:
             cfg = {}
 
-    dur = _expand(durable or os.environ.get("CLAWAGY_DURABLE_DIR")
-                  or cfg.get("durable") or Path.home() / ".gemini" / "clawagy")
-    shr = _expand(shared or os.environ.get("CLAWAGY_SHARED_DIR")
-                  or cfg.get("shared") or proj / ".clawagy-team")
+    tm = _safe_team(team or os.environ.get("AGYTEAM_TEAM")
+                    or cfg.get("team") or DEFAULT_TEAM)
+
+    # An explicit durable path wins outright and is used verbatim — that's how
+    # you get ~/my-agents/my-agent-team-A without adopting the layout below.
+    exact = durable or os.environ.get("AGYTEAM_DURABLE_DIR") or cfg.get("durable")
+    if exact:
+        dur = _expand(exact)
+    else:
+        root = _expand(os.environ.get("AGYTEAM_TEAMS_ROOT")
+                       or cfg.get("teams_root") or DEFAULT_TEAMS_ROOT)
+        dur = root / tm
+
+    shr = _expand(shared or os.environ.get("AGYTEAM_SHARED_DIR")
+                  or cfg.get("shared") or proj / ".agy-team-shared")
     dur.mkdir(parents=True, exist_ok=True)
-    return Scopes(durable=dur, project=proj, shared=shr)
+    return Scopes(durable=dur, project=proj, shared=shr, team=tm)
 
 
 def write_config(project: Path, scopes: Scopes) -> Path:
     """Persist scope choices so every agent in this project agrees on them."""
     path = Path(project) / CONFIG_NAME
     path.write_text(json.dumps(
-        {"durable": str(scopes.durable), "shared": str(scopes.shared)}, indent=2))
+        {"team": scopes.team, "durable": str(scopes.durable),
+         "shared": str(scopes.shared)}, indent=2))
     return path
 
 
-if __name__ == "__main__":   # python -m clawagy.scope → show resolved scopes
+if __name__ == "__main__":   # python -m agyteam.scope → show resolved scopes
     print(load().describe())

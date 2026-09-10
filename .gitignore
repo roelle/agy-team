@@ -6,7 +6,7 @@ team/bus.jsonl
 evals/ws_*
 evals/team_*
 evals/a2a_*
-plugin/clawagy/mcp_config.json
+plugin/agyteam/mcp_config.json
 evals/gitroot_unit/
 evals/gitfile_unit/
 evals/nogit_unit/

@@ -1,13 +1,13 @@
 """Skeleton for a native/internal A2A transport. Copy, rename, fill in.
 
-This is the *only* file you should need to write to move clawagy off the file
-bus and onto a real peer-messaging system. Nothing else in clawagy changes, and
+This is the *only* file you should need to write to move agyteam off the file
+bus and onto a real peer-messaging system. Nothing else in agyteam changes, and
 the agents' tools keep the same names and semantics.
 
-    cp clawagy/transport_template.py mycorp/agy_a2a.py
+    cp agyteam/transport_template.py mycorp/agy_a2a.py
     # implement the three methods
-    export CLAWAGY_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
-    export CLAWAGY_BUS_CONFIG='{"endpoint": "..."}'      # optional
+    export AGYTEAM_BUS_TRANSPORT=mycorp.agy_a2a:NativeTransport
+    export AGYTEAM_BUS_CONFIG='{"endpoint": "..."}'      # optional
     .venv/bin/python evals/test_transport.py             # must pass 12/12
 
 Run that suite before trusting it — it is transport-agnostic and checks the
@@ -22,7 +22,7 @@ class NativeTransport(Transport):
 
     def __init__(self, me, config=None):
         super().__init__(me, config)
-        # self.config holds the parsed CLAWAGY_BUS_CONFIG JSON.
+        # self.config holds the parsed AGYTEAM_BUS_CONFIG JSON.
         # Open your client/connection here, e.g.:
         # self.client = YourA2AClient(endpoint=self.config["endpoint"], agent=me)
         raise NotImplementedError("implement NativeTransport before using it")

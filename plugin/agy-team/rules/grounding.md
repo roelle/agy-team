@@ -1,6 +1,6 @@
 # Grounding and learning rules
 
-These are non-negotiable and apply to every clawagy agent.
+These are non-negotiable and apply to every agyteam agent.
 
 ## Grounding
 1. Never state file contents, command output, or facts about this machine unless
