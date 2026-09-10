@@ -118,6 +118,74 @@ def test_peek_is_nondestructive() -> tuple[int, int]:
     ]), 3
 
 
+class AckLoop(ScriptedRunner):
+    """Reproduces the observed pathology: teammates acking each other forever.
+
+    tpm answers the user on its first turn, then everyone keeps politely
+    replying. Without a terminator this runs until the hop budget.
+    """
+
+    def wake(self, agent, message):
+        self.woken.append(agent)
+        bus = load_transport(agent)
+        if agent == "tpm":
+            if len(self.woken) == 1:
+                bus.send("user", "the team is assembled and standing by")
+            bus.send("coder", "acknowledged, standing by")
+        else:
+            bus.send("tpm", "acknowledged, standing by")
+        bus.close()
+        return "ack"
+
+
+def test_stop_on_answer() -> tuple[int, int]:
+    """Answering the user ends the episode instead of an ack spiral."""
+    print("\n== answering the user ends the episode ==")
+    make_team()
+    runner = AckLoop({})
+    sup = Supervisor(["tpm", "coder"], runner, max_hops=32, quiet=True)
+    load_transport("user").send("tpm", "introduce yourself to the team")
+    turns = sup.run_until_idle()
+    stopped, woken = sup.stopped, len(runner.woken)
+    sup.close()
+
+    make_team()
+    loose = AckLoop({})
+    sup2 = Supervisor(["tpm", "coder"], loose, max_hops=12, quiet=True,
+                      stop_on_answer=False)
+    load_transport("user").send("tpm", "introduce yourself to the team")
+    sup2.run_until_idle()
+    unbounded = len(loose.woken)
+    sup2.close()
+
+    return sum([
+        check("the ack spiral is cut short", turns <= 4, f"{turns} turns"),
+        check("it stopped because the user was answered",
+              stopped == "the user was answered", stopped),
+        check("well under the hop budget", woken < 12, str(woken)),
+        check("opting out lets it run on (the old behaviour)",
+              unbounded >= 12, str(unbounded)),
+    ]), 4
+
+
+def test_user_mail_survives() -> tuple[int, int]:
+    """Detecting the answer must not consume the answer."""
+    print("\n== the user's answer is still readable ==")
+    make_team()
+    sup = Supervisor(["tpm", "coder"], AckLoop({}), max_hops=32, quiet=True)
+    load_transport("user").send("tpm", "introduce yourself")
+    sup.run_until_idle()
+    sup.close()
+    delivered = load_transport("user").fetch()
+    return sum([
+        check("the user actually receives the answer", len(delivered) >= 1,
+              str(delivered)),
+        check("the answer has the expected content",
+              any("standing by" in m.content for m in delivered),
+              str([m.content for m in delivered])),
+    ]), 2
+
+
 def test_loader() -> tuple[int, int]:
     print("\n== runner loader safety ==")
     import subprocess, os
@@ -149,7 +217,8 @@ def test_loader() -> tuple[int, int]:
 
 if __name__ == "__main__":
     totals = [test_cascade(), test_hop_budget(), test_failure_isolation(),
-              test_peek_is_nondestructive(), test_loader()]
+              test_peek_is_nondestructive(), test_stop_on_answer(),
+              test_user_mail_survives(), test_loader()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== supervisor: {got}/{want} ==")
     sys.exit(0 if got == want else 1)

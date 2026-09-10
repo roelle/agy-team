@@ -75,11 +75,13 @@ class FileTransport(Transport):
                  "to": to, "content": content}
         with self.log.open("a") as f:
             f.write(json.dumps(entry) + "\n")
-        if to != "user":
-            with (self.inbox_dir / f"{to}.jsonl").open("a") as f:
-                f.write(json.dumps(entry) + "\n")
-            return f"[delivered to {to}]"
-        return "[delivered to the user — they will see it in the team log]"
+        # The user gets a real mailbox like anyone else. Logging their messages
+        # only to bus.jsonl made answers unreadable without grepping the log,
+        # and left nothing that could tell whether the ask had been answered.
+        with (self.inbox_dir / f"{to}.jsonl").open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        return (f"[delivered to {to}]" if to != "user"
+                else "[delivered to the user]")
 
     def _read_inbox(self) -> list[Message]:
         path = self.inbox_dir / f"{self.me}.jsonl"

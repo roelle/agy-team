@@ -177,6 +177,25 @@ Runaway protection: a hop budget bounds one stimulus (`--max-hops`, default 32)
 so agents can't ping-pong your token budget away, and an agent that fails is
 logged and skipped rather than stopping the team. Both are tested.
 
+### Knowing when to stop
+
+An early real run produced 31 messages of pure courtesy — *"Acknowledged, thanks
+for standing by"* in both directions — until the hop budget killed it. The cause
+was the wake prompt, which told agents to always reply; two agents that always
+reply never stop. Three things fix it:
+
+- The wake prompt now says to send a message **only** when it carries something
+  the recipient lacks, bans acknowledgements outright, and states plainly that
+  doing nothing is a correct outcome.
+- **Answering the user ends the episode.** `run_until_idle` stops as soon as the
+  user's mailbox grows, on the theory that the ask is done once it's been
+  answered. Disable with `--no-stop-on-answer`.
+- The user has a real mailbox. Messages to `user` used to go only to
+  `bus.jsonl`, which made the answer unreadable without grepping the log and
+  left nothing to detect completion from. `--say` now prints what agents
+  addressed to you, and the transport contract tests user delivery — an
+  alternate transport that drops it gets a team that never stops talking.
+
 ### Push instead of polling
 
 The supervisor asks each transport what arrived. The file transport can only be
@@ -429,20 +448,51 @@ Current status — all green as of 2026-09-09:
 | `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 40/40 |
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 32/32 |
-| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status | 17/17 |
+| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 23/23 |
 | `test_reactive.py` | real agents woken by teammates, end to end, no human polling | 7/7 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 
 Typical cost: free, ~2¢ clean-room, ~8¢ SDK, ~15¢ A2A.
 
+## Headless permissions: required for unattended teamwork
+
+Verified against agy 1.2.0. In headless (`-p`) mode the CLI **auto-denies** any
+tool that would need an approval prompt, then exits **0 with empty stdout** and
+the reason on stderr. An agent woken by the supervisor therefore does nothing,
+silently, until permissions are pre-granted. Set this once:
+
+```jsonc
+// ~/.gemini/antigravity-cli/settings.json
+{ "toolPermission": "always-proceed" }
+```
+
+Two traps found the hard way:
+
+- `permissions.allow` allow-rules cover the builtin file tools, but the binary
+  also carries the string *"Settings allow-rules do not apply"* for a second
+  class of tools — so an allowlist alone is not a reliable substitute for
+  `toolPermission`, and MCP tools appear to be in that second class.
+- Because the failure is exit 0 + empty stdout, anything that reads only stdout
+  reports a blank turn. `runner_agy` now surfaces stderr on a silent clean exit
+  and names this fix, rather than printing `[no output]`.
+
+`agy plugin validate` reports `mcpServers: skipped (not found)` for our bundle,
+yet the servers *do* start and their tools get cached under
+`~/.gemini/antigravity-cli/mcp/` — so `mcp_config.json` is honored at session
+time even though `agy mcp list` does not show it. Treat `validate`'s MCP line as
+unreliable; confirm via the tool cache instead.
+
 ## Unverified: the plugin install step
 
 Everything the plugin *does* at runtime is tested (`test_a2a.py` mounts the same
-modules with the same env-derived identity and passes 8/8). What is **not**
-verified is `agy` itself loading the bundle — the CLI is not installed on this
-machine, so the manifest/agents/skills layout follows the published docs but has
-never been loaded by the real thing. Expect to adjust:
+modules with the same env-derived identity and passes 8/8). Installing by file
+copy is confirmed to register `agents/` (all three show in `agy agents`) and to
+start both MCP servers. Still unverified end to end is a full unattended team
+run, which is blocked on the permission setting above. Note also that
+`agy plugin list` reports **"No imported plugins"** for a hand-copied bundle —
+`agy plugin install <dir>` is the first-class path and may behave differently.
+Expect to adjust:
 
 - whether plugin `agents/` uses `<name>/agent.md` (documented for custom agents)
   or a flat `<name>.md`

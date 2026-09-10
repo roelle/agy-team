@@ -45,6 +45,11 @@ def contract(label: str, env_for) -> tuple[int, int]:
                        ("roster_add", {"name": "qa", "role": "dup"}),
                        ("roster_remove", {"name": "qa"})], admin=True)
     adm_tools, adm_res = tool_names(adm[1]), adm[2:]
+    # The user is a real recipient, not a log line: the supervisor decides an
+    # episode is finished by seeing that the user was answered, so a transport
+    # that drops these has a team that never stops talking.
+    u = call("tpm", [("send_to_teammate", {"to": "user", "content": "done: X"})])[2:]
+    u_read = call("user", [("check_inbox", {})])[2:]
 
     return sum([
         check("teammates listed, self excluded, user included",
@@ -76,7 +81,11 @@ def contract(label: str, env_for) -> tuple[int, int]:
               and "already on the roster" in text_of(adm_res[1])
               and "removed 'qa'" in text_of(adm_res[2]),
               " | ".join(text_of(r) for r in adm_res)),
-    ]), 12
+        check("send to user reports delivery, not a shrug",
+              "delivered to the user" in text_of(u[0]), text_of(u[0])),
+        check("the user's answer is retrievable, not just logged",
+              "done: X" in text_of(u_read[0]), text_of(u_read[0])),
+    ]), 14
 
 
 def file_env():

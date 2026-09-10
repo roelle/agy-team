@@ -33,27 +33,54 @@ WAKE_PROMPT = """You have new messages from your team:
 
 {messages}
 
-Act on them now. Do the work if it is yours to do, or delegate with
-send_to_teammate. Reply to whoever wrote to you when you are done — an
-unanswered message stalls the person waiting on it. Anything you want a
-teammate or the user to see must go through send_to_teammate; text you write
-here is seen by nobody."""
+Act on them now: do the work if it is yours, or delegate with send_to_teammate.
+
+Send a message only when it carries something the recipient does not already
+have — a deliverable, an answer, a question, a blocker, or a correction. Do NOT
+send acknowledgements, thanks, "got it", or "standing by" notes. Every message
+you send wakes a teammate and costs them a full turn, so an ack wakes someone up
+to read nothing and provokes an ack in return. Silence means understood.
+
+If these messages need no action from you, do nothing at all and send nothing.
+That is a normal, common, correct outcome — not a failure to participate.
+
+When the work you were asked for is done, send the result to whoever asked for
+it, once. Anything you want a teammate or the user to see must go through
+send_to_teammate; text you write here is seen by nobody."""
 
 
 class Supervisor:
     def __init__(self, agents: list[str], runner, team_dir=None,
-                 max_hops: int = 32, poll: float = 1.0, quiet: bool = False):
+                 max_hops: int = 32, poll: float = 1.0, quiet: bool = False,
+                 stop_on_answer: bool = True):
         self.agents = agents
         self.runner = runner
         self.max_hops = max_hops
         self.poll = poll
         self.quiet = quiet
+        self.stop_on_answer = stop_on_answer
         if team_dir:
             os.environ.setdefault("AGYTEAM_TEAM_DIR", str(team_dir))
         # One transport per agent: each reads its own mail, exactly as the
         # agent's own MCP server would.
         self.transports = {a: load_transport(a) for a in agents}
+        # The user is not an agent and is never woken, but their inbox is the
+        # episode's finish line: once someone has answered, the ask is done.
+        self.user_transport = load_transport("user")
+        self._user_mail_at_start = self._user_mail_count()
         self.hops = 0
+        self.stopped = ""
+
+    def _user_mail_count(self) -> int | None:
+        """How much mail the user is holding. None if peek is unsupported."""
+        waiting = self.user_transport.peek()
+        return None if waiting is None else len(waiting)
+
+    def _user_was_answered(self) -> bool:
+        now = self._user_mail_count()
+        if now is None or self._user_mail_at_start is None:
+            return False        # can't tell; fall back to idle/hop budget
+        return now > self._user_mail_at_start
 
     def _log(self, msg: str):
         if not self.quiet:
@@ -89,16 +116,29 @@ class Supervisor:
         return dispatched
 
     def run_until_idle(self) -> int:
-        """Dispatch until nobody has mail. Returns total turns taken."""
+        """Dispatch until the user is answered, or nobody has mail.
+
+        Returns total turns taken; self.stopped says why we stopped.
+        """
         total = 0
         while self.hops < self.max_hops:
             n = self.step()
             total += n
             if n == 0:
+                self.stopped = "team went idle"
+                break
+            # Answering the user ends the episode. Without this, agents who
+            # have nothing left to do still owe each other a reply, and a
+            # finished team keeps talking until the hop budget kills it.
+            if self.stop_on_answer and self._user_was_answered():
+                self.stopped = "the user was answered"
                 break
         if self.hops >= self.max_hops:
+            self.stopped = f"hop budget of {self.max_hops} reached"
             self._log(f"[hop budget of {self.max_hops} reached — stopping. "
                       f"Raise --max-hops or send a new instruction.]")
+        else:
+            self._log(f"[done after {total} turns — {self.stopped}]")
         return total
 
     def run_forever(self, stop: threading.Event | None = None) -> None:
@@ -119,6 +159,7 @@ class Supervisor:
         self.runner.close()
         for t in self.transports.values():
             t.close()
+        self.user_transport.close()
 
 
 def _agents_from_roster(team_dir: Path) -> list[str]:
@@ -140,6 +181,9 @@ def main(argv=None):
     ap.add_argument("--poll", type=float, default=1.0,
                     help="Seconds between checks when idle (daemon mode)")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-stop-on-answer", action="store_true",
+                    help="Keep dispatching after the user is answered "
+                         "(default: an answer to the user ends the episode)")
     args = ap.parse_args(argv)
 
     team_dir = Path(args.team_dir) if args.team_dir else scope.load().team_dir()
@@ -164,7 +208,8 @@ def main(argv=None):
         return
 
     sup = Supervisor(agents, runner_lib.load(), team_dir=team_dir,
-                     max_hops=args.max_hops, poll=args.poll, quiet=args.quiet)
+                     max_hops=args.max_hops, poll=args.poll, quiet=args.quiet,
+                     stop_on_answer=not args.no_stop_on_answer)
     try:
         if args.say:
             to, _, content = args.say.partition(":")
@@ -173,6 +218,10 @@ def main(argv=None):
                 sys.exit(f"unknown agent {to!r}; roster has: {', '.join(agents)}")
             load_transport("user").send(to, content)
             sup.run_until_idle()
+            # The agents' stdout is just a self-summary; what they actually
+            # addressed to the user is the real answer, so show it.
+            for m in load_transport("user").fetch():
+                print(f"\n[{m.sender} → you] {m.content}")
         elif args.daemon:
             try:
                 sup.run_forever()

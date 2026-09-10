@@ -24,7 +24,7 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
               mcp_memory.py mcp_bus.py transport.py transport_file.py
               transport_template.py memory.py memory_file.py memory_template.py
-              runner.py runner_agy.py supervisor.py)
+              runner.py runner_agy.py supervisor.py session.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
