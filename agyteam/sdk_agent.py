@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 from google.antigravity import (CapabilitiesConfig, LocalAgentConfig, types)
+from google.antigravity.models import (GeminiAPIEndpoint, GeminiModelOptions,
+                                       ModelTarget)
 from google.antigravity.hooks import (on_compaction, policy, post_tool_call,
                                       pre_tool_call_decide)
 
@@ -70,8 +72,33 @@ class SessionFlags:
         self.compaction_pending = False
 
 
+# The agy CLI encodes reasoning effort in the model name ("gemini-3.8-flash-high"),
+# but those aliases exist only in the CLI — the SDK talks to the Gemini API,
+# which rejects them. Effort lives in GeminiModelOptions instead. Without this,
+# moving a roster from the CLI runner to the SDK silently drops the team from
+# high effort to the default, which is a quality change nobody would see.
+EFFORT = {"minimal": types.ThinkingLevel.MINIMAL, "low": types.ThinkingLevel.LOW,
+          "medium": types.ThinkingLevel.MEDIUM, "high": types.ThinkingLevel.HIGH,
+          "extra_high": types.ThinkingLevel.EXTRA_HIGH}
+
+
+def _model_target(model: str, effort: str = ""):
+    """A plain model name, or a ModelTarget carrying the requested effort."""
+    base, _, suffix = model.rpartition("-")
+    if not effort and suffix in EFFORT and base:
+        model, effort = base, suffix     # accept CLI-style names too
+    if not effort:
+        return model
+    level = EFFORT.get(effort.lower())
+    if level is None:
+        raise SystemExit(f"unknown effort {effort!r}; use one of "
+                         f"{', '.join(sorted(EFFORT))}")
+    return ModelTarget(name=model, endpoint=GeminiAPIEndpoint(
+        api_key=cfg.api_key(), options=GeminiModelOptions(thinking_level=level)))
+
+
 def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
-                 name: str = "Agy", interactive: bool = False,
+                 name: str = "Agy", interactive: bool = False, effort: str = "",
                  trace=None, extra_tools=None, extra_sections=None,
                  subagents=None, identity_default: str | None = None,
                  disabled_tools: list[str] | None = None,
@@ -171,7 +198,7 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         workspaces=[str(workspace), str(Path.cwd())],
         policies=[policy.allow_all()],
         hooks=hooks,
-        model=model,
+        model=_model_target(model, effort),
         api_key=cfg.api_key(),
         # Without this the SDK saves each conversation to a throwaway
         # tempfile.mkdtemp("antigravity_") and abandons it. Writing to the

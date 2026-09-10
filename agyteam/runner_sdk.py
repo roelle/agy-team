@@ -39,6 +39,7 @@ class SdkRunner(Runner):
         super().__init__(config, observer=observer)
         self.model = self.config.get("model", cfg.DEFAULT_MODEL)
         self.use_workers = self.config.get("workers", True)
+        self.effort = self.config.get("effort", "")
         self.scopes = scope.load()
         self.roster = roster_lib.load(self.scopes.team_dir() / "roster.json")
         self._specs = {a["name"]: a for a in self.roster["agents"]}
@@ -67,6 +68,7 @@ class SdkRunner(Runner):
         conf = build_config(
             self.scopes.agent_workspace(agent), model=spec.get("model", self.model),
             name=agent, interactive=False, use_mcp=True, with_bus=True,
+            effort=spec.get("effort", self.effort),
             extra_sections=[section],
             subagents=[WORKER] if (self.use_workers and spec.get("workers", True))
             else None,
