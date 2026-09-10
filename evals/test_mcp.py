@@ -4,11 +4,16 @@ A2A/bus behavior lives in test_transport.py, which runs the same contract
 against every transport rather than just the file one.
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Prevent outer agent process environment from bleeding into unit test scope and isolation tests
+for _k in ("AGYTEAM_TEAM_DIR", "AGYTEAM_SHARED_DIR"):
+    os.environ.pop(_k, None)
 
 from rpc_util import PY, ROOT, check, rpc, text_of
 

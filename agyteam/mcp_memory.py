@@ -21,7 +21,7 @@ import os
 import sys
 
 from .mcp_base import serve, string, tool
-from .memory import MemoryStore, normalize_name
+from .memory import MemoryStore, detect_conflicts, normalize_name
 from .memory import load as load_store
 
 TOOLS = [
@@ -30,10 +30,14 @@ TOOLS = [
          "preferences, corrections, facts about systems/projects, lessons "
          "learned. Call it the moment you learn something, not at session end. "
          "Saving under an existing name overwrites it — read first and merge if "
-         "unsure. Returns the refreshed memory index.",
+         "unsure. Returns the refreshed memory index, and notifies if the memory "
+         "appears to overlap or conflict with an existing one.",
          {"name": string("Short kebab-case topic name, e.g. 'user-preferences'"),
           "description": string("One line for your index"),
-          "content": string("The memory content in markdown")},
+          "content": string("The memory content in markdown"),
+          "why": string("Why this was learned: the situation or trigger that produced "
+                        "the lesson, so future sessions can judge if it is still true"),
+          "when": string("When this was learned (timestamp, optional, defaults to now)")},
          ["name", "description", "content"]),
     tool("read_memory",
          "Read one of your memory files by name; lists available names on a miss.",
@@ -57,9 +61,28 @@ def render_index(store: MemoryStore) -> str:
 def main(store: MemoryStore):
     def save(a):
         name = normalize_name(a["name"])
-        created = store.save(name, a["description"], a["content"])
+        why = a.get("why", "")
+        when = a.get("when")
+
+        # Check for contradictions or overlap against existing memories
+        existing = []
+        for e in store.index():
+            if e.name != name:
+                existing.append((e.name, e.description, store.read(e.name) or ""))
+        conflicts = detect_conflicts(name, a["description"], a["content"], why, existing)
+
+        created = store.save(name, a["description"], a["content"],
+                             why=why, when=when)
         verb = "saved" if created else "updated"
-        return f"[memory '{name}' {verb}]\nCurrent memory index:\n{render_index(store)}"
+        msg = f"[memory '{name}' {verb}]"
+        if conflicts:
+            conflict_lines = "\n".join(f"- '{c['name']}': {c['reason']}" for c in conflicts)
+            msg += (
+                f"\n\n[conflict warning: this memory appears to overlap or conflict with "
+                f"existing memories]\n{conflict_lines}\n"
+                f"Please review and reconcile if appropriate."
+            )
+        return f"{msg}\nCurrent memory index:\n{render_index(store)}"
 
     def read(a):
         name = normalize_name(a["name"])
