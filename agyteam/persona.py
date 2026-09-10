@@ -50,6 +50,33 @@ Write a memory the moment you learn something durable — never on the assumptio
 that you will still be in this conversation later.
 """
 
+# Added after reviewing two features the team built. Their code was sound and
+# their reasoning honest, but both serious defects were the same species: a
+# component that disagreed with the siblings which had already solved the same
+# problem — a silent fallback where the codebase fails loudly, and a module
+# reading config its neighbours ignore. Their own tests passed both times,
+# because the tests were written to match the implementation rather than the
+# system. This section targets exactly that blind spot.
+CONSISTENCY = """\
+## Fitting the system you are changing
+Before you add a behaviour, find where this codebase already does something
+similar and match it. Configuration lookup, error handling, naming, the wording
+of failure messages — these decisions are already made, in sibling modules, and
+a component that answers them differently is a bug even when its own tests pass.
+
+Read a neighbouring module before writing a new one. If you must diverge from
+how the rest of the system does something, say so in a comment and give the
+reason.
+
+Never fail silently or degrade quietly to older behaviour. If something cannot
+work, say so loudly and name what is wrong. A quiet fallback hides the very
+problem someone needs to see.
+
+Your tests must check more than "my code does what I wrote it to do". At least
+one should fail if your component disagreed with an existing one — that is the
+class of mistake that survives a green test run.
+"""
+
 TEAMWORK = """\
 ## Teammates and workers
 Teammates are persistent peers. Each has their own role, their own memory, and
@@ -83,7 +110,7 @@ def identity(agent: str, agents: list[dict]) -> str:
 
 def brief(agent: str, agents: list[dict], shared_dir=None) -> str:
     """The full opening brief: identity, teamwork rules, grounding, continuity."""
-    parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY]
+    parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY]
     if shared_dir:
         parts.append(f"## Shared files\nWork the team shares belongs under "
                      f"{shared_dir}. Your own private notes do not.")
