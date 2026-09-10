@@ -88,6 +88,21 @@ class AgyRunner(Runner):
         return shutil.which(self.binary) or (
             self.binary if os.path.isfile(self.binary) else None)
 
+    def _model_for(self, agent: str) -> str:
+        """The model this agent actually runs on, as sent to the CLI.
+
+        agy's JSON output does not report the model back, so the only reliable
+        source is what we passed. Without this the CLI path records model=None
+        and its turns cannot be priced -- which matters most for exactly the
+        agents worth putting on a different model.
+        """
+        spec = self._roster_spec(agent)
+        model = spec.get("model") or self.config.get("model") or ""
+        effort = spec.get("effort") or self.config.get("effort") or ""
+        if model and effort and not model.endswith(f"-{effort}"):
+            model = f"{model}-{effort}"
+        return model
+
     def _record_usage(self, agent: str, payload: dict, conv_id: str | None = None,
                       duration_s: float | None = None) -> None:
         usage = payload.get("usage") if isinstance(payload, dict) else None
@@ -106,7 +121,8 @@ class AgyRunner(Runner):
                 output_tokens=usage.get("output_tokens"),
                 cache_read_tokens=usage.get("cache_read_tokens"),
                 total_tokens=usage.get("total_tokens"),
-                model=payload.get("model") if isinstance(payload, dict) else None,
+                model=(payload.get("model") if isinstance(payload, dict) else None)
+                      or self._model_for(agent) or None,
             )
         except Exception:
             pass  # accounting must never break a turn

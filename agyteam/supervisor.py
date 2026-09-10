@@ -62,13 +62,16 @@ Call save_memory now for each lesson (update existing memories rather than dupli
 class Supervisor:
     def __init__(self, agents: list[str], runner, team_dir=None,
                  max_hops: int = 32, poll: float = 1.0, quiet: bool = False,
-                 stop_on_answer: bool = True, observer=None):
+                 stop_on_answer: bool = True, observer=None,
+                 require_review: bool = True, manager: str | None = None):
         self.agents = agents
         self.runner = runner
         self.max_hops = max_hops
         self.poll = poll
         self.quiet = quiet
         self.stop_on_answer = stop_on_answer
+        self.require_review = require_review
+        self.manager = manager
         if team_dir:
             self.team_dir = Path(team_dir)
             os.environ["AGYTEAM_TEAM_DIR"] = str(self.team_dir)
@@ -131,6 +134,21 @@ class Supervisor:
         """True if an approved review was recorded during this episode."""
         return self._approved_reviews_count() > self._approved_reviews_at_start
 
+    def _find_manager(self) -> str | None:
+        """Find the manager agent: explicit manager, or by role/name in roster."""
+        if self.manager and self.manager in self.transports:
+            return self.manager
+        try:
+            roster = roster_lib.load(self.team_dir / "roster.json")
+            for entry in roster.get("agents", []):
+                name = entry.get("name", "")
+                role = entry.get("role", "").lower()
+                if ("manager" in role or name.lower() == "manager") and name in self.transports:
+                    return name
+        except Exception:
+            pass
+        return None
+
     def _log(self, msg: str):
         if not self.quiet:
             print(msg, flush=True)
@@ -178,6 +196,7 @@ class Supervisor:
         """
         t0 = time.monotonic()
         total = 0
+        bounced = False
         while self.hops < self.max_hops:
             n = self.step()
             total += n
@@ -188,23 +207,43 @@ class Supervisor:
             # have nothing left to do still owe each other a reply, and a
             # finished team keeps talking until the hop budget kills it.
             if self.stop_on_answer and self._user_was_answered():
-                # Design Decision: Flagging vs Blocking Unreviewed Answers
-                #
-                # We choose to FLAG unreviewed answers prominently rather than BLOCK them.
-                # Rationale:
-                # 1. Autonomous execution safety: Blocking an answer when a review is missing
-                #    risks hanging the team or causing runaways that consume the entire hop budget,
-                #    particularly if a designated reviewer agent crashes, encounters an error,
-                #    or is slow to respond.
-                # 2. Operator visibility: The supervisor's finish line is answering the user.
-                #    Reporting "the user was answered (unreviewed)" alongside a logged warning
-                #    gives the human operator immediate, unambiguous transparency about review
-                #    status without stranding the supervisor loop in deadlocks.
                 if self._has_new_approved_review():
                     self.stopped = "the user was answered"
-                else:
-                    self.stopped = "the user was answered (unreviewed)"
-                    self._log("[WARNING: the user was answered without an approved review recorded in reviews.jsonl]")
+                    break
+
+                mgr = self._find_manager()
+                # Rationale for choosing exactly ONE bounce:
+                # Bouncing once gives the team an opportunity to complete the review
+                # cycle autonomously: the manager is notified that its answer went out
+                # without an approved review, allowing it to delegate to qa and obtain
+                # an approved verdict in reviews.jsonl before reporting to the user.
+                # However, this must be strictly bounded. Allowing unbounded bounces
+                # risks an infinite loop (e.g., if a reviewer is missing, repeatedly
+                # rejects, or encounters errors, or if the manager repeatedly answers
+                # without review), rapidly burning the hop budget and tokens.
+                # Bouncing exactly once balances autonomous recovery against runaway
+                # resource exhaustion: if the manager answers again still unreviewed,
+                # the supervisor terminates the episode and flags it explicitly.
+                if self.require_review and mgr and not bounced:
+                    bounced = True
+                    bus = load_transport("supervisor")
+                    try:
+                        bus.send(
+                            mgr,
+                            "Your answer to the user went out without an approved review "
+                            "recorded in reviews.jsonl. Work must be verified with an "
+                            "approved review before reporting to the user.",
+                        )
+                    finally:
+                        bus.close()
+                    # Reset the baseline so subsequent turns while obtaining a review
+                    # are not mistaken for a new answer to the user.
+                    self._user_mail_at_start = self._user_mail_count()
+                    self._log(f"[supervisor] unreviewed answer bounced back to {mgr}")
+                    continue
+
+                self.stopped = "the user was answered (unreviewed)"
+                self._log("[WARNING: the user was answered without an approved review recorded in reviews.jsonl]")
                 break
         if self.hops >= self.max_hops:
             self.stopped = f"hop budget of {self.max_hops} reached"
@@ -419,6 +458,400 @@ def cycle(agent: str, runner=None, team_dir=None) -> tuple[int, int]:
             sup.close()
 
 
+def _check_unread_mail(agent: str, team_dir: Path) -> tuple[bool | None, int | None]:
+    """Check if an agent currently holds unread mail (peek only, non-destructive)."""
+    try:
+        t = load_transport(agent, config={"team_dir": str(team_dir)})
+        try:
+            peeked = t.peek()
+            if peeked is not None:
+                return (len(peeked) > 0, len(peeked))
+        finally:
+            t.close()
+    except Exception:
+        pass
+    inbox_file = team_dir / "inbox" / f"{agent}.jsonl"
+    if inbox_file.exists():
+        try:
+            lines = [l for l in inbox_file.read_text().splitlines() if l.strip()]
+            return (len(lines) > 0, len(lines))
+        except OSError:
+            return (None, None)
+    return (False, 0)
+
+
+def generate_report(team_dir: Path | str | None = None) -> dict:
+    """Generate structured team activity and status report from recorded history.
+
+    Strictly read-only and deterministic: no model calls or runner wakes.
+    Unmeasured values are reported as None (null in JSON), never as invented zeros.
+    """
+    if team_dir is None:
+        env = os.environ.get("AGYTEAM_TEAM_DIR")
+        if env:
+            team_dir = Path(env)
+        else:
+            team_dir = scope.load().team_dir()
+    else:
+        team_dir = Path(team_dir)
+    team_dir = team_dir.resolve()
+
+    events_file = team_dir / "events.jsonl"
+    reviews_file = team_dir / "reviews.jsonl"
+    bus_file = team_dir / "bus.jsonl"
+    conv_file = team_dir / "conversations.json"
+    roster_file = team_dir / "roster.json"
+
+    events = []
+    if events_file.exists():
+        try:
+            for line in events_file.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            pass
+
+    reviews = []
+    if reviews_file.exists():
+        try:
+            for line in reviews_file.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        reviews.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            pass
+
+    bus_msgs = []
+    if bus_file.exists():
+        try:
+            for line in bus_file.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        bus_msgs.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            pass
+
+    conversations = {}
+    if conv_file.exists():
+        try:
+            conversations = json.loads(conv_file.read_text())
+            if not isinstance(conversations, dict):
+                conversations = {}
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    roster_agents = []
+    if roster_file.exists():
+        try:
+            doc = json.loads(roster_file.read_text())
+            roster_agents = [a.get("name") for a in doc.get("agents", []) if a.get("name")]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    inbox_agents = []
+    inbox_dir = team_dir / "inbox"
+    if inbox_dir.exists():
+        try:
+            for p in inbox_dir.glob("*.jsonl"):
+                stem = p.stem
+                if stem != "user":
+                    inbox_agents.append(stem)
+        except OSError:
+            pass
+
+    has_history = bool(events or reviews or bus_msgs or conversations)
+    if not has_history:
+        return {
+            "has_history": False,
+            "team_dir": str(team_dir),
+            "episodes": [],
+            "agents": {},
+            "totals": {
+                "episodes": 0,
+                "reviewed_episodes": 0,
+                "turns": 0,
+                "failures": 0,
+                "duration_s": None,
+                "input_tokens": None,
+                "output_tokens": None,
+                "cache_read_tokens": None,
+                "total_tokens": None,
+                "cost_usd": None,
+            },
+        }
+
+    all_agent_names = set(roster_agents)
+    for ev in events:
+        ag = ev.get("agent")
+        if ag and ag != "user":
+            all_agent_names.add(ag)
+    for ag in conversations.keys():
+        if ag and ag != "user":
+            all_agent_names.add(ag)
+    for b in bus_msgs:
+        for party in (b.get("from"), b.get("to")):
+            if party and party != "user":
+                all_agent_names.add(party)
+    for ag in inbox_agents:
+        all_agent_names.add(ag)
+
+    approved_reviews_count = sum(1 for r in reviews if r.get("verdict") == "approved")
+
+    raw_episodes = [ev for ev in events if ev.get("event") == "episode"]
+    episodes_data = []
+    for idx, ep in enumerate(raw_episodes, 1):
+        ep_reviewed = ep.get("reviewed")
+        if ep_reviewed is None:
+            ep_ts = ep.get("ts")
+            if ep_ts and any(r.get("verdict") == "approved" and r.get("ts", "") <= ep_ts for r in reviews):
+                ep_reviewed = True
+            elif approved_reviews_count > 0:
+                ep_reviewed = True
+            else:
+                ep_reviewed = False
+        else:
+            ep_reviewed = bool(ep_reviewed)
+
+        episodes_data.append({
+            "episode": idx,
+            "ts": ep.get("ts"),
+            "turns": ep.get("turns"),
+            "stopped_reason": ep.get("stopped_reason") or "unknown",
+            "reviewed": ep_reviewed,
+            "duration_s": ep.get("duration_s"),
+        })
+
+    from .observer import calculate_cost  # returns None when the model is unpriced
+
+    agents_data = {}
+    total_turns = 0
+    total_failures = 0
+    total_duration = 0.0
+    total_in_tokens = 0
+    total_out_tokens = 0
+    total_cache_tokens = 0
+    total_toks = 0
+    total_cost = 0.0
+    has_any_tokens = False
+    has_any_duration = False
+
+    for agent in sorted(all_agent_names):
+        ag_turns = [ev for ev in events if ev.get("event") == "turn" and ev.get("agent") == agent]
+        ag_fails = [ev for ev in events if ev.get("event") == "failure" and ev.get("agent") == agent]
+
+        turn_count = len(ag_turns)
+        fail_count = len(ag_fails)
+        total_turns += turn_count
+        total_failures += fail_count
+
+        ag_durations = [ev.get("duration_s") for ev in ag_turns if ev.get("duration_s") is not None]
+        if ag_durations:
+            ag_dur = round(sum(ag_durations), 2)
+            total_duration += ag_dur
+            has_any_duration = True
+        else:
+            ag_dur = None
+
+        token_turns = [
+            ev for ev in ag_turns
+            if ev.get("input_tokens") is not None or ev.get("output_tokens") is not None or ev.get("total_tokens") is not None
+        ]
+        unmeasured_turns = turn_count - len(token_turns)
+
+        if token_turns:
+            has_any_tokens = True
+            in_tok = sum(ev.get("input_tokens") or 0 for ev in token_turns if ev.get("input_tokens") is not None)
+            out_tok = sum(ev.get("output_tokens") or 0 for ev in token_turns if ev.get("output_tokens") is not None)
+            cache_tok = sum(ev.get("cache_read_tokens") or 0 for ev in token_turns if ev.get("cache_read_tokens") is not None)
+            tot_tok = sum(ev.get("total_tokens") or ((ev.get("input_tokens") or 0) + (ev.get("output_tokens") or 0)) for ev in token_turns)
+
+            # calculate_cost returns None for a model we have no price for.
+            # Sum what we can price and count what we cannot, so the report can
+            # say "$X plus N unpriced turns" instead of quietly implying that
+            # unpriced work was free.
+            priced = [calculate_cost(ev.get("input_tokens"), ev.get("output_tokens"),
+                                     ev.get("model")) for ev in token_turns]
+            unpriced = sum(1 for c in priced if c is None)
+            cost_usd = round(sum(c for c in priced if c is not None), 4)
+
+            total_in_tokens += in_tok
+            total_out_tokens += out_tok
+            total_cache_tokens += cache_tok
+            total_toks += tot_tok
+            total_cost += cost_usd
+        else:
+            in_tok = None
+            out_tok = None
+            cache_tok = None
+            tot_tok = None
+            cost_usd = None
+
+        unread_mail, unread_count = _check_unread_mail(agent, team_dir)
+
+        ag_dict = {
+            "turns": turn_count,
+            "failures": fail_count,
+            "duration_s": ag_dur,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "cache_read_tokens": cache_tok,
+            "total_tokens": tot_tok,
+            "cost_usd": cost_usd,
+            "unpriced_turns": unpriced,
+            "unread_mail": unread_mail,
+            "unread_count": unread_count,
+            "conversation": conversations.get(agent),
+        }
+        if unmeasured_turns > 0:
+            ag_dict["unmeasured_turns"] = unmeasured_turns
+        agents_data[agent] = ag_dict
+
+    totals_data = {
+        "episodes": len(episodes_data),
+        "reviewed_episodes": sum(1 for ep in episodes_data if ep.get("reviewed")),
+        "turns": total_turns,
+        "failures": total_failures,
+        "duration_s": round(total_duration, 2) if has_any_duration else None,
+        "input_tokens": total_in_tokens if has_any_tokens else None,
+        "output_tokens": total_out_tokens if has_any_tokens else None,
+        "cache_read_tokens": total_cache_tokens if has_any_tokens else None,
+        "total_tokens": total_toks if has_any_tokens else None,
+        "cost_usd": round(total_cost, 4) if has_any_tokens else None,
+    }
+
+    report = {
+        "has_history": True,
+        "team_dir": str(team_dir),
+        "episodes": episodes_data,
+        "agents": agents_data,
+        "totals": totals_data,
+    }
+    if reviews:
+        report["reviews"] = [
+            {
+                "ts": r.get("ts"),
+                "reviewer": r.get("reviewer"),
+                "what": r.get("what"),
+                "verdict": r.get("verdict"),
+            }
+            for r in reviews
+        ]
+    return report
+
+
+def format_report(data: dict) -> str:
+    """Format team status report into a clean, human-readable terminal string."""
+    if not data.get("has_history", True) or (not data.get("episodes") and not data.get("agents")):
+        return "(no team history recorded)"
+
+    lines = ["=== Team Status & Activity Report ==="]
+    td = data.get("team_dir")
+    if td:
+        lines.append(f"Team directory: {td}")
+
+    episodes = data.get("episodes", [])
+    lines.append("\nEpisodes:")
+    if not episodes:
+        lines.append("  (no episodes recorded)")
+    else:
+        reviewed_cnt = sum(1 for ep in episodes if ep.get("reviewed"))
+        lines.append(f"  Total episodes: {len(episodes)}")
+        lines.append(f"  Reviewed episodes: {reviewed_cnt}/{len(episodes)}")
+        for ep in episodes:
+            num = ep.get("episode", "?")
+            t_val = ep.get("turns")
+            turns_str = f"{t_val} turns" if t_val is not None else "unknown turns"
+            stopped = ep.get("stopped_reason") or "unknown"
+            rev_label = "reviewed" if ep.get("reviewed") else "unreviewed"
+            dur_val = ep.get("duration_s")
+            dur_str = f" in {dur_val:.1f}s" if dur_val is not None else ""
+            lines.append(f"  #{num}: {turns_str}, stopped: {stopped} ({rev_label}){dur_str}")
+
+    agents = data.get("agents", {})
+    lines.append("\nPer-Agent Status:")
+    if not agents:
+        lines.append("  (no agents active)")
+    else:
+        lines.append(f"  {'Agent':<12} {'Turns':<7} {'Duration':<10} {'Tokens (In / Out / Cached / Total)':<38} {'Est. Cost':<11} {'Unread Mail':<12}")
+        lines.append("  " + "-" * 92)
+        for name, ag in sorted(agents.items()):
+            dur_val = ag.get("duration_s")
+            dur = f"{dur_val:.1f}s" if dur_val is not None else "unknown"
+
+            in_t = ag.get("input_tokens")
+            if in_t is not None:
+                tok_str = f"{in_t} / {ag.get('output_tokens', 0)} / {ag.get('cache_read_tokens', 0)} / {ag.get('total_tokens', 0)}"
+                unmeas = ag.get("unmeasured_turns", 0)
+                if unmeas > 0:
+                    tok_str += f" (+{unmeas} unk)"
+            else:
+                tok_str = "unknown"
+
+            cost_val = ag.get("cost_usd")
+            unpriced = ag.get("unpriced_turns") or 0
+            if cost_val is None:
+                cost_str = "unknown"
+            elif unpriced:
+                # Never let unpriced work read as free.
+                cost_str = f"${cost_val:.4f} +{unpriced}?"
+            else:
+                cost_str = f"${cost_val:.4f}"
+
+            unread = ag.get("unread_mail")
+            unread_cnt = ag.get("unread_count")
+            if unread is True:
+                unread_str = f"yes ({unread_cnt})" if unread_cnt is not None else "yes"
+            elif unread is False:
+                unread_str = "no"
+            else:
+                unread_str = "unknown"
+
+            lines.append(f"  {name:<12} {ag.get('turns', 0):<7} {dur:<10} {tok_str:<38} {cost_str:<11} {unread_str:<12}")
+
+    reviews = data.get("reviews", [])
+    if reviews:
+        lines.append("\nReviews:")
+        appr = sum(1 for r in reviews if r.get("verdict") == "approved")
+        lines.append(f"  Total reviews: {len(reviews)} ({appr} approved, {len(reviews) - appr} other)")
+        latest = reviews[-1]
+        lines.append(f"  Latest: [{latest.get('reviewer', 'unknown')}: {latest.get('verdict', 'unknown')}] {latest.get('what', '')}")
+
+    totals = data.get("totals", {})
+    lines.append("\nTotals:")
+    lines.append(f"  Episodes:    {totals.get('episodes', 0)} ({totals.get('reviewed_episodes', 0)} reviewed)")
+    lines.append(f"  Turns:       {totals.get('turns', 0)}")
+    if totals.get("failures", 0) > 0:
+        lines.append(f"  Failures:    {totals.get('failures', 0)}")
+
+    dur_tot = totals.get("duration_s")
+    lines.append(f"  Duration:    {dur_tot:.2f}s" if dur_tot is not None else "  Duration:    unknown")
+
+    in_tot = totals.get("input_tokens")
+    if in_tot is not None:
+        lines.append(f"  Tokens:      {in_tot} input, {totals.get('output_tokens', 0)} output, "
+                     f"{totals.get('cache_read_tokens', 0)} cached ({totals.get('total_tokens', 0)} total)")
+    else:
+        lines.append("  Tokens:      unknown")
+
+    cost_tot = totals.get("cost_usd")
+    if cost_tot is not None:
+        lines.append(f"  Est. Cost:   ${cost_tot:.4f}")
+    else:
+        lines.append("  Est. Cost:   unknown")
+
+    return "\n".join(lines)
+
+
 def _agents_from_roster(team_dir: Path) -> list[str]:
     return [a["name"] for a in roster_lib.load(team_dir / "roster.json")["agents"]]
 
@@ -443,6 +876,10 @@ def main(argv=None, runner=None):
                     help="Show who has mail waiting, then exit")
     ap.add_argument("--cost", action="store_true",
                     help="Show team usage and cost summary, then exit")
+    ap.add_argument("--report", action="store_true",
+                    help="Show team status and activity report from history, then exit")
+    ap.add_argument("--report-json", action="store_true",
+                    help="Output team status and activity report as JSON, then exit")
     ap.add_argument("--team-dir", default=None)
     ap.add_argument("--max-hops", type=int, default=32)
     ap.add_argument("--poll", type=float, default=1.0,
@@ -451,12 +888,26 @@ def main(argv=None, runner=None):
     ap.add_argument("--no-stop-on-answer", action="store_true",
                     help="Keep dispatching after the user is answered "
                          "(default: an answer to the user ends the episode)")
+    ap.add_argument("--no-require-review", action="store_true",
+                    help="Do not bounce unreviewed answers back to the manager")
+    ap.add_argument("--manager", metavar="AGENT", default=None,
+                    help="Agent acting as manager (default: auto-detect from roster)")
     args = ap.parse_args(argv)
 
     team_dir = Path(args.team_dir) if args.team_dir else scope.load().team_dir()
     os.environ["AGYTEAM_TEAM_DIR"] = str(team_dir)
     if team_dir.name == "team":
         os.environ["AGYTEAM_DURABLE_DIR"] = str(team_dir.parent)
+
+    if args.report_json:
+        rep = generate_report(team_dir)
+        print(json.dumps(rep, indent=2))
+        return
+
+    if args.report:
+        rep = generate_report(team_dir)
+        print(format_report(rep))
+        return
 
     if args.cost:
         from . import observer as observer_lib
@@ -485,7 +936,9 @@ def main(argv=None, runner=None):
     r = runner or runner_lib.load()
     sup = Supervisor(agents, r, team_dir=team_dir,
                      max_hops=args.max_hops, poll=args.poll, quiet=args.quiet,
-                     stop_on_answer=not args.no_stop_on_answer)
+                     stop_on_answer=not args.no_stop_on_answer,
+                     require_review=not args.no_require_review,
+                     manager=args.manager)
     try:
         if args.distill:
             if args.distill not in agents:

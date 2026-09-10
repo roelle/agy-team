@@ -141,8 +141,16 @@ class Observer(ABC):
                         total_tokens += calc_tot
 
                 cost = calculate_cost(in_tok, out_tok, model)
-                ag["cost_usd"] += cost
-                total_cost += cost
+                if cost is None:
+                    # Unpriced model: count the turn, refuse to invent a figure,
+                    # and remember why so the report can say which agent and
+                    # which model the gap belongs to.
+                    ag["unpriced_turns"] = ag.get("unpriced_turns", 0) + 1
+                    if model:
+                        ag.setdefault("unpriced_models", set()).add(model)
+                else:
+                    ag["cost_usd"] += cost
+                    total_cost += cost
 
             elif etype == "failure":
                 failures += 1
@@ -176,6 +184,8 @@ class Observer(ABC):
         for ag in agent_data.values():
             ag["duration_s"] = round(ag["duration_s"], 2)
             ag["cost_usd"] = round(ag["cost_usd"], 4)
+            if ag.get("unpriced_models"):
+                ag["unpriced_models"] = sorted(ag["unpriced_models"])
 
         return {
             "agents": agent_data,
@@ -198,14 +208,28 @@ class Observer(ABC):
 
 
 def calculate_cost(input_tokens: int | None, output_tokens: int | None,
-                   model: str | None = None) -> float:
+                   model: str | None = None) -> float | None:
     """Calculate estimated USD cost for input/output tokens according to PRICING."""
     try:
         from .config import DEFAULT_PRICE, PRICING
     except ImportError:
         PRICING = {}
         DEFAULT_PRICE = (2.00, 12.00)
-    price = PRICING.get(model, DEFAULT_PRICE) if model else DEFAULT_PRICE
+    # A model we have no price for gets no price. Guessing produces a
+    # confident dollar figure for a number nobody measured, in the accounting
+    # that exists to compare runtimes -- the same fabricated-metric failure we
+    # refuse everywhere else. None means "unknown", not "free".
+    # CLI model names carry reasoning effort as a suffix
+    # ("gemini-3.8-flash-high"); price the base model rather than calling a
+    # model we do know unknown. Effort changes thinking tokens, not the rate.
+    key = model or ""
+    if key not in PRICING:
+        base, _, suffix = key.rpartition("-")
+        if suffix in ("minimal", "low", "medium", "high") and base in PRICING:
+            key = base
+    if key not in PRICING:
+        return None
+    price = PRICING[key]
     in_cost = ((input_tokens or 0) / 1_000_000) * price[0]
     out_cost = ((output_tokens or 0) / 1_000_000) * price[1]
     return in_cost + out_cost
