@@ -14,6 +14,25 @@ COMPACTION_MODEL = "gemini-3.5-flash-lite"
 COMPACT_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_COMPACT_THRESHOLD", 80_000))
 KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 
+# Automatic cycling threshold. antigravity-preview-05-2026 has a 131,072-token
+# input limit. While COMPACT_THRESHOLD_TOKENS (80,000) condenses older turns
+# to keep active sessions within bounds, compaction alone does not write durable
+# memories to disk. Over long multi-turn sessions across many features, an agent's
+# context continues accumulating toward the hard limit where silent truncation
+# or token exhaustion occurs, destroying unpersisted learnings.
+#
+# Choosing CYCLE_THRESHOLD_TOKENS = 100,000:
+# 1. Headroom for distillation: Leaves ~31k tokens below the 131,072 ceiling so
+#    the distillation wake turn (which supplies full conversation context plus
+#    the distillation prompt to invoke save_memory) can complete cleanly without
+#    truncation or running out of context.
+# 2. Avoids premature cycling: Sits 20,000 tokens above COMPACT_THRESHOLD_TOKENS
+#    (80,000) so routine conversation compaction operates first to maintain task
+#    continuity, cycling only when an agent has accumulated extensive history.
+#
+# Env-overridable so tests or custom workflows can trigger cycling deterministically.
+CYCLE_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", 100_000))
+
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
 # Session-lifetime model-call cap. The SDK's BudgetConfig counts "across the
 # session", NOT per turn, and our sessions now persist across every wake — so a

@@ -65,7 +65,7 @@ fi
 # servers is not enough — the transport is resolved lazily at runtime, so a
 # module missing from PURE_MODULES would slip through. Instantiate it and make a
 # real call.
-( cd / && PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
+( cd / && env -u AGYTEAM_RUNNER PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
 import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
