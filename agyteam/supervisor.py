@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from . import roster as roster_lib
@@ -53,7 +54,7 @@ send_to_teammate; text you write here is seen by nobody."""
 class Supervisor:
     def __init__(self, agents: list[str], runner, team_dir=None,
                  max_hops: int = 32, poll: float = 1.0, quiet: bool = False,
-                 stop_on_answer: bool = True):
+                 stop_on_answer: bool = True, observer=None):
         self.agents = agents
         self.runner = runner
         self.max_hops = max_hops
@@ -67,6 +68,10 @@ class Supervisor:
             self.team_dir = Path(os.environ["AGYTEAM_TEAM_DIR"]).resolve()
         else:
             self.team_dir = scope.load().team_dir()
+        from . import observer as observer_lib
+        self.observer = observer or getattr(runner, "_observer", None) or observer_lib.load()
+        if hasattr(runner, "observer"):
+            runner.observer = self.observer
         self.reviews_path = self.team_dir / "reviews.jsonl"
         self._approved_reviews_at_start = self._approved_reviews_count()
         # One transport per agent: each reads its own mail, exactly as the
@@ -135,10 +140,17 @@ class Supervisor:
             self._log(f"  → waking {agent} ({len(msgs)} from {senders})")
             body = "\n\n".join(m.render() for m in msgs)
             self.hops += 1
+            t0 = time.monotonic()
             try:
                 reply = self.runner.wake(agent, WAKE_PROMPT.format(messages=body))
             except Exception as e:                      # one agent must not
+                dur = time.monotonic() - t0
                 reply = f"[error: {type(e).__name__}: {e}]"   # stop the team
+                try:
+                    cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
+                    self.observer.record_failure(agent, cid, reply, duration_s=dur)
+                except Exception:
+                    pass
             if reply.startswith("[error:"):
                 self._log(f"    {agent}: {reply[:200]}")
             elif not self.quiet:
@@ -152,6 +164,7 @@ class Supervisor:
 
         Returns total turns taken; self.stopped says why we stopped.
         """
+        t0 = time.monotonic()
         total = 0
         while self.hops < self.max_hops:
             n = self.step()
@@ -187,6 +200,16 @@ class Supervisor:
                       f"Raise --max-hops or send a new instruction.]")
         else:
             self._log(f"[done after {total} turns — {self.stopped}]")
+        try:
+            dur = time.monotonic() - t0
+            self.observer.record_episode(
+                turns=total,
+                stopped_reason=self.stopped,
+                reviewed=self._has_new_approved_review(),
+                duration_s=dur,
+            )
+        except Exception:
+            pass
         return total
 
     def run_forever(self, stop: threading.Event | None = None) -> None:
@@ -208,6 +231,10 @@ class Supervisor:
         for t in self.transports.values():
             t.close()
         self.user_transport.close()
+        try:
+            self.observer.close()
+        except Exception:
+            pass
 
 
 def _agents_from_roster(team_dir: Path) -> list[str]:
@@ -224,6 +251,8 @@ def main(argv=None):
                     help="Stay up and react to mail as it arrives")
     ap.add_argument("--status", action="store_true",
                     help="Show who has mail waiting, then exit")
+    ap.add_argument("--cost", action="store_true",
+                    help="Show team usage and cost summary, then exit")
     ap.add_argument("--team-dir", default=None)
     ap.add_argument("--max-hops", type=int, default=32)
     ap.add_argument("--poll", type=float, default=1.0,
@@ -236,6 +265,12 @@ def main(argv=None):
 
     team_dir = Path(args.team_dir) if args.team_dir else scope.load().team_dir()
     os.environ.setdefault("AGYTEAM_TEAM_DIR", str(team_dir))
+
+    if args.cost:
+        from . import observer as observer_lib
+        obs = observer_lib.load()
+        print(observer_lib.format_summary(obs.summary()))
+        return
     agents = _agents_from_roster(team_dir)
     if not agents:
         sys.exit(f"no agents on the roster at {team_dir / 'roster.json'}")

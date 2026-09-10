@@ -48,15 +48,14 @@ PERMISSION_HINT = (
 class AgyRunner(Runner):
     label = "agy-cli"
 
-    def __init__(self, config=None):
-        super().__init__(config)
+    def __init__(self, config=None, observer=None):
+        super().__init__(config, observer=observer)
         self.binary = self.config.get("binary", "agy")
         self.timeout = int(self.config.get("timeout", 900))
         self.extra_args = list(self.config.get("extra_args", []))
         self.persist = self.config.get("persist", True)
         if self.config.get("auto_approve"):
             self.extra_args.append("--dangerously-skip-permissions")
-        self._usage_path = self.team_dir / "usage.jsonl"
 
     def _brief(self, agent: str) -> str:
         """The opening brief, from the same source the SDK runner uses."""
@@ -79,21 +78,35 @@ class AgyRunner(Runner):
         return shutil.which(self.binary) or (
             self.binary if os.path.isfile(self.binary) else None)
 
-    def _record_usage(self, agent: str, payload: dict) -> None:
-        usage = payload.get("usage") or {}
-        if not usage:
-            return
-        entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "agent": agent,
-                 "conversation": payload.get("conversation_id", ""),
-                 "duration_s": round(payload.get("duration_seconds", 0), 2),
-                 **{k: usage.get(k, 0) for k in
-                    ("input_tokens", "output_tokens", "cache_read_tokens",
-                     "total_tokens")}}
+    def _record_usage(self, agent: str, payload: dict, conv_id: str | None = None,
+                      duration_s: float | None = None) -> None:
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        dur = payload.get("duration_seconds") if isinstance(payload, dict) else None
+        if dur is None:
+            dur = duration_s or 0.0
+        cid = payload.get("conversation_id") if isinstance(payload, dict) else None
+        cid = cid or conv_id or ""
         try:
-            with self._usage_path.open("a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except OSError:
-            pass        # accounting must never break a turn
+            self.observer.record_turn(
+                agent=agent,
+                conversation=cid,
+                duration_s=dur,
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cache_read_tokens=usage.get("cache_read_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                model=payload.get("model") if isinstance(payload, dict) else None,
+            )
+        except Exception:
+            pass  # accounting must never break a turn
+
+    def _record_failure(self, agent: str, conv_id: str, error: str,
+                        duration_s: float | None = None) -> None:
+        try:
+            self.observer.record_failure(agent, conv_id, error, duration_s=duration_s)
+        except Exception:
+            pass
 
     # --- the turn ---------------------------------------------------------
 
@@ -118,11 +131,14 @@ class AgyRunner(Runner):
                               timeout=self.timeout, env=env)
 
     def wake(self, agent: str, message: str) -> str:
+        t0 = time.monotonic()
         resolved = self.available()
         if not resolved:
-            return (f"[error: '{self.binary}' not found on PATH. Install the "
-                    f"Antigravity CLI, or set AGYTEAM_RUNNER_CONFIG "
-                    f'\'{{"binary": "/path/to/agy"}}\']')
+            err = (f"[error: '{self.binary}' not found on PATH. Install the "
+                   f"Antigravity CLI, or set AGYTEAM_RUNNER_CONFIG "
+                   f'\'{{"binary": "/path/to/agy"}}\']')
+            self._record_failure(agent, "", err, duration_s=time.monotonic() - t0)
+            return err
         self._resolved = resolved
         conv_id = self.conversation_id(agent) if self.persist else None
         # The brief goes in exactly once, on the turn that creates the
@@ -137,25 +153,35 @@ class AgyRunner(Runner):
                 self.reset(agent)
                 r = self._run(agent, message, None)
         except subprocess.TimeoutExpired:
-            return f"[error: {agent} timed out after {self.timeout}s]"
+            err = f"[error: {agent} timed out after {self.timeout}s]"
+            self._record_failure(agent, conv_id or "", err, duration_s=time.monotonic() - t0)
+            return err
         except OSError as e:
-            return f"[error: could not run {resolved}: {e}]"
+            err = f"[error: could not run {resolved}: {e}]"
+            self._record_failure(agent, conv_id or "", err, duration_s=time.monotonic() - t0)
+            return err
 
         out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
+        dur = time.monotonic() - t0
         if r.returncode != 0:
-            return f"[error: {agent} exited {r.returncode}] {err[:500]}"
+            err_msg = f"[error: {agent} exited {r.returncode}] {err[:500]}"
+            self._record_failure(agent, conv_id or "", err_msg, duration_s=dur)
+            return err_msg
 
         try:
             payload = json.loads(out) if out else {}
         except ValueError:
             payload = {}
         if payload:
-            self.remember_conversation(agent, payload.get("conversation_id", ""))
-            self._record_usage(agent, payload)
+            cid = payload.get("conversation_id", "")
+            self.remember_conversation(agent, cid)
+            self._record_usage(agent, payload, conv_id=cid or conv_id, duration_s=dur)
             reply = (payload.get("response") or "").strip()
             status = payload.get("status", "")
             if status and status != "SUCCESS" and not reply:
-                return f"[error: {agent} reported {status}] {err[:300]}"
+                err_msg = f"[error: {agent} reported {status}] {err[:300]}"
+                self._record_failure(agent, cid or conv_id or "", err_msg, duration_s=dur)
+                return err_msg
             if reply:
                 return reply
 
@@ -163,5 +189,7 @@ class AgyRunner(Runner):
         # auto-denied: the reason goes to stderr. Dropping it turns the one
         # actionable message in the whole run into a silent no-op.
         if "cannot prompt for" in err or "auto-denied" in err:
-            return f"[error: {agent} {PERMISSION_HINT}] {err[:300]}"
+            err_msg = f"[error: {agent} {PERMISSION_HINT}] {err[:300]}"
+            self._record_failure(agent, conv_id or "", err_msg, duration_s=dur)
+            return err_msg
         return f"[no output] {err[:300]}".strip() if err else "[no output]"

@@ -13,6 +13,7 @@ Config (AGYTEAM_RUNNER_CONFIG), all optional:
 """
 import asyncio
 import threading
+import time
 
 from google.antigravity import Agent, types
 
@@ -34,8 +35,8 @@ WORKER = types.SubagentConfig(
 class SdkRunner(Runner):
     label = "sdk"
 
-    def __init__(self, config=None):
-        super().__init__(config)
+    def __init__(self, config=None, observer=None):
+        super().__init__(config, observer=observer)
         self.model = self.config.get("model", cfg.DEFAULT_MODEL)
         self.use_workers = self.config.get("workers", True)
         self.scopes = scope.load()
@@ -77,20 +78,67 @@ class SdkRunner(Runner):
         return live
 
     async def _wake(self, agent: str, message: str) -> str:
+        t0 = time.monotonic()
         a = await self._ensure(agent)
-        reply = await (await a.chat(message)).text()
+        chat_resp = await a.chat(message)
+        reply = await chat_resp.text()
+        dur = time.monotonic() - t0
         # build_config points save_dir at the CLI's conversation store, so this
         # session is a real, joinable conversation — but only once somebody
         # records which id belongs to which agent. The id is not assigned until
         # the first exchange, so this has to happen after chat, not at start-up.
-        self.remember_conversation(agent, a.conversation_id or "")
+        conv_id = a.conversation_id or ""
+        self.remember_conversation(agent, conv_id)
+
+        # Extract usage safely from ChatResponse or active conversation
+        usage = getattr(chat_resp, "usage_metadata", None)
+        if usage is None:
+            try:
+                usage = a.conversation.last_turn_usage
+            except Exception:
+                usage = None
+
+        in_tok = getattr(usage, "prompt_token_count", None) if usage else None
+        out_tok = getattr(usage, "candidates_token_count", None) if usage else None
+        cache_tok = getattr(usage, "cached_content_token_count", None) if usage else None
+        tot_tok = getattr(usage, "total_token_count", None) if usage else None
+        thoughts = getattr(usage, "thoughts_token_count", None) if usage else None
+        if out_tok is not None and thoughts:
+            out_tok += thoughts
+
+        spec = self._specs.get(agent, {})
+        model = spec.get("model", self.model)
+
+        try:
+            self.observer.record_turn(
+                agent=agent,
+                conversation=conv_id,
+                duration_s=dur,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cache_tok,
+                total_tokens=tot_tok,
+                model=model,
+            )
+        except Exception:
+            pass
+
         return reply
 
     def wake(self, agent: str, message: str) -> str:
+        t0 = time.monotonic()
         try:
             return self._submit(self._wake(agent, message))
         except Exception as e:
-            return f"[error: {agent} failed: {type(e).__name__}: {e}]"
+            dur = time.monotonic() - t0
+            err = f"[error: {agent} failed: {type(e).__name__}: {e}]"
+            try:
+                self.observer.record_failure(
+                    agent, self.conversation_id(agent) or "", err, duration_s=dur
+                )
+            except Exception:
+                pass
+            return err
 
     def close(self):
         async def shutdown():

@@ -17,8 +17,8 @@ from agyteam.transport import load as load_transport
 class ScriptedRunner(Runner):
     label = "scripted"
 
-    def __init__(self, config=None):
-        super().__init__(config)
+    def __init__(self, config=None, observer=None):
+        super().__init__(config, observer=observer)
         self.script = self.config.get("script", {})
         self.fail = set(self.config.get("fail", []))
         self.log_path = self.config.get("log") or os.environ.get("AGYTEAM_RUNNER_LOG")
@@ -30,6 +30,11 @@ class ScriptedRunner(Runner):
             with open(self.log_path, "a") as f:
                 f.write(json.dumps({"agent": agent, "message": message}) + "\n")
         if agent in self.fail:
+            try:
+                self.observer.record_failure(agent, self.conversation_id(agent) or "scripted",
+                                             f"{agent} blew up on purpose", duration_s=0.01)
+            except Exception:
+                pass
             raise RuntimeError(f"{agent} blew up on purpose")
         # Each scripted reply is sent once; a runner that re-sent on every wake
         # would manufacture the very loop the hop budget exists to catch.
@@ -39,4 +44,9 @@ class ScriptedRunner(Runner):
             for to, content in sends:
                 bus.send(to, content)
             bus.close()
+        try:
+            self.observer.record_turn(agent, self.conversation_id(agent) or "scripted",
+                                      duration_s=0.01)
+        except Exception:
+            pass
         return f"{agent} handled {len(message)} chars, sent {len(sends)}"

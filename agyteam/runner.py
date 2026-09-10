@@ -29,8 +29,20 @@ class Runner(ABC):
     #: shown in supervisor output so you can tell which runner is live
     label = "runner"
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict | None = None, observer=None):
         self.config = config or {}
+        self._observer = observer
+
+    @property
+    def observer(self):
+        if self._observer is None:
+            from . import observer as observer_lib
+            self._observer = observer_lib.load()
+        return self._observer
+
+    @observer.setter
+    def observer(self, value):
+        self._observer = value
 
     # --- conversation continuity, shared by every runner -------------------
     #
@@ -99,6 +111,11 @@ class Runner(ABC):
 
     def close(self) -> None:
         """Release resources (sessions, subprocesses). Default is a no-op."""
+        if self._observer is not None:
+            try:
+                self._observer.close()
+            except Exception:
+                pass
 
 
 def load(spec: str | None = None, config: dict | None = None) -> Runner:
