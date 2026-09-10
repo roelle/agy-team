@@ -200,7 +200,7 @@ def test_stdlib_purity() -> tuple[int, int]:
         return p.returncode == 0, p.stderr
 
     checks = []
-    for mod in ("agyteam.mcp_memory", "agyteam.mcp_bus", "agyteam.scope",
+    for mod in ("agyteam.mcp_memory", "agyteam.mcp_bus", "agyteam.mcp_self", "agyteam.scope",
                 "agyteam.transport_file", "agyteam.store"):
         ok, err = imports(mod, str(ROOT))
         checks.append(check(f"{mod} imports with no third-party deps", ok, err))

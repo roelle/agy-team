@@ -9,6 +9,11 @@
       "command": "__PYTHON__",
       "args": ["-m", "agyteam.mcp_bus"],
       "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
+    },
+    "agyteam_self": {
+      "command": "__PYTHON__",
+      "args": ["-m", "agyteam.mcp_self"],
+      "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
     }
   }
 }
