@@ -206,5 +206,6 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         # agent can be joined with `agy --conversation <id>` and shows up in
         # Remote Control. cfg.CONVERSATION_DIR picks which surface.
         save_dir=str(cfg.conversation_dir()),
-        budget_config=types.BudgetConfig(max_model_calls=cfg.MAX_LOOP_STEPS),
+        budget_config=(types.BudgetConfig(max_model_calls=cfg.MAX_LOOP_STEPS)
+                       if cfg.MAX_LOOP_STEPS else None),
     )

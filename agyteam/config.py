@@ -15,7 +15,17 @@ COMPACT_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_COMPACT_THRESHOLD", 80_00
 KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
-MAX_LOOP_STEPS = 40              # tool-use steps per user turn before forced stop
+# Session-lifetime model-call cap. The SDK's BudgetConfig counts "across the
+# session", NOT per turn, and our sessions now persist across every wake — so a
+# cap here is a budget for the agent's whole life. We shipped 40, which an agent
+# exhausted after a couple of real turns and then returned empty output forever,
+# indistinguishable from an agent that simply did nothing.
+#
+# Unset by default: the SDK imposes no limit of its own, and the supervisor's
+# hop budget already bounds a runaway. Set this only if you want a hard ceiling,
+# and remember it is per session, not per turn.
+MAX_LOOP_STEPS = int(os.environ["AGYTEAM_MAX_LOOP_STEPS"]) \
+    if os.environ.get("AGYTEAM_MAX_LOOP_STEPS") else None
 
 # Where conversations are stored. The agy CLI, the Antigravity IDE and the SDK
 # are three clients of the same store, so this single choice decides which

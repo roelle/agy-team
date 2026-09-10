@@ -67,7 +67,9 @@ class Agent:
         self._maybe_compact(emit)
         self.history.append(types.Content(role="user",
                                           parts=[types.Part(text=user_text)]))
-        for _ in range(config.MAX_LOOP_STEPS):
+        # This loop is per-turn, unlike the SDK's session-wide budget, so it
+        # keeps its own bound rather than inheriting one that may be unset.
+        for _ in range(config.MAX_LOOP_STEPS or 40):
             resp = self.llm.generate(self.model, self.history,
                                      system=self.system_prompt(),
                                      tools=self.declarations)
