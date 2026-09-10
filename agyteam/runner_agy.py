@@ -57,6 +57,16 @@ class AgyRunner(Runner):
         if self.config.get("auto_approve"):
             self.extra_args.append("--dangerously-skip-permissions")
 
+    def _roster_spec(self, agent: str) -> dict:
+        from . import roster as roster_lib
+        try:
+            for a in roster_lib.load(self.team_dir / "roster.json")["agents"]:
+                if a["name"] == agent:
+                    return a
+        except Exception:
+            pass
+        return {}
+
     def _brief(self, agent: str) -> str:
         """The opening brief, from the same source the SDK runner uses."""
         from . import persona
@@ -121,6 +131,16 @@ class AgyRunner(Runner):
         cmd = [self._resolved, "-p", message,
                "--output-format", "json",
                "--print-timeout", f"{max(self.timeout - 10, 30)}s"]
+        # Per-agent model from the roster. The CLI reaches models the SDK cannot
+        # (claude-*, gemini-*-pro), and encodes reasoning effort in the name, so
+        # "model" and "effort" are combined back into a single CLI alias here.
+        spec = self._roster_spec(agent)
+        model = spec.get("model") or self.config.get("model")
+        effort = spec.get("effort") or self.config.get("effort")
+        if model:
+            if effort and not model.endswith(f"-{effort}"):
+                model = f"{model}-{effort}"
+            cmd += ["--model", model]
         if conv_id:
             cmd[1:1] = ["--conversation", conv_id]
         cmd.extend(self.extra_args)
