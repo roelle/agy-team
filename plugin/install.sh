@@ -24,7 +24,8 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
               mcp_memory.py mcp_bus.py mcp_self.py transport.py transport_file.py
               transport_template.py memory.py memory_file.py memory_template.py
-              runner.py runner_agy.py supervisor.py session.py persona.py)
+              runner.py runner_agy.py supervisor.py session.py persona.py
+              observer.py observer_file.py observer_template.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
@@ -66,11 +67,13 @@ import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
 from agyteam.runner import load as load_runner
+from agyteam.observer import load as load_observer
 load_bus('installer-selftest').teammates()      # forces roster parsing
 load_memory('installer-selftest').index()       # forces memory store load
 load_runner()                                   # forces runner load
+load_observer()                                 # forces observer load
 json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
-print('verified: servers import; transport, memory store, and runner all load')" )
+print('verified: servers import; transport, memory store, runner, and observer all load')" )
 
 cat <<NOTE
 
