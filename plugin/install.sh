@@ -48,9 +48,12 @@ if [ ! -f "$DURABLE/team/roster.json" ]; then
 {
   "mission": "General-purpose engineering team ($TEAM).",
   "agents": [
-    {"name": "tpm",    "role": "Coordinates: decomposes work, delegates, reports to the user. No shell, no file writes."},
-    {"name": "coder",  "role": "Implements, runs, and verifies code changes."},
-    {"name": "syseng", "role": "Owns environment and tooling; independently verifies others' work."}
+    {"name": "tpm",    "role": "Coordinates: decomposes work, delegates, tracks what is outstanding, reports to the user. Does not write code or run commands.",
+     "tools_off": ["run_command", "create_file", "edit_file"], "workers": false},
+    {"name": "coder",  "role": "Implements. Reads the surrounding code first and matches its idiom. Writes the change and its tests, and runs them before handing off."},
+    {"name": "syseng", "role": "Owns environment and tooling. Reproduces problems, runs the full board, and reports concrete failures with the command and output that produced them."},
+    {"name": "qa",     "role": "Reviews. Reads the diff rather than re-running the author's tests, constructs cases the author did not write, and records the verdict with record_review. Cannot edit source: findings go back to the implementer. Keeps a durable memory of the defect patterns that recur here.",
+     "tools_off": ["create_file", "edit_file"], "workers": false}
   ]
 }
 JSON
