@@ -22,7 +22,7 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 # google-genai or google-antigravity; if this list ever needs one of those,
 # the plugin has stopped being installable without vendoring.
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
-              mcp_memory.py mcp_bus.py transport.py transport_file.py
+              mcp_memory.py mcp_bus.py mcp_self.py transport.py transport_file.py
               transport_template.py memory.py memory_file.py memory_template.py
               runner.py runner_agy.py supervisor.py session.py persona.py)
 
@@ -62,7 +62,7 @@ fi
 # module missing from PURE_MODULES would slip through. Instantiate it and make a
 # real call.
 ( cd / && PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
-import json, agyteam.mcp_memory, agyteam.mcp_bus
+import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
 from agyteam.runner import load as load_runner
