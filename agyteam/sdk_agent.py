@@ -22,7 +22,12 @@ from . import config as cfg
 from .persona import CONTRACT
 from .store import Toolbox
 
-DANGEROUS = ["rm -rf /", "git push -f", "git push --force", "mkfs", "> /dev/sd"]
+# Commands an agent has no business running. The venv entries are here because
+# one was destroyed mid-run -- replaced by a symlink to itself, which cost the
+# whole task and the environment with it. The interpreter an agent runs its
+# tests with is not a file it should ever be editing.
+DANGEROUS = ["rm -rf /", "git push -f", "git push --force", "mkfs", "> /dev/sd",
+             "rm -rf .venv", "rm -rf /mnt/data/claw-agy/.venv", "ln -s", "ln -sfn"]
 
 
 def make_memory_tools(box: Toolbox):
