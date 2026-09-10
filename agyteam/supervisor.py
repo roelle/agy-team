@@ -18,6 +18,7 @@ budget away), and a failing agent is logged and skipped rather than stopping
 the team.
 """
 import argparse
+import json
 import os
 import sys
 import threading
@@ -60,7 +61,14 @@ class Supervisor:
         self.quiet = quiet
         self.stop_on_answer = stop_on_answer
         if team_dir:
+            self.team_dir = Path(team_dir)
             os.environ.setdefault("AGYTEAM_TEAM_DIR", str(team_dir))
+        elif "AGYTEAM_TEAM_DIR" in os.environ:
+            self.team_dir = Path(os.environ["AGYTEAM_TEAM_DIR"]).resolve()
+        else:
+            self.team_dir = scope.load().team_dir()
+        self.reviews_path = self.team_dir / "reviews.jsonl"
+        self._approved_reviews_at_start = self._approved_reviews_count()
         # One transport per agent: each reads its own mail, exactly as the
         # agent's own MCP server would.
         self.transports = {a: load_transport(a) for a in agents}
@@ -81,6 +89,30 @@ class Supervisor:
         if now is None or self._user_mail_at_start is None:
             return False        # can't tell; fall back to idle/hop budget
         return now > self._user_mail_at_start
+
+    def _approved_reviews_count(self) -> int:
+        """Count approved reviews recorded in reviews.jsonl."""
+        if not self.reviews_path.exists():
+            return 0
+        count = 0
+        try:
+            for line in self.reviews_path.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("verdict") == "approved":
+                        count += 1
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            return 0
+        return count
+
+    def _has_new_approved_review(self) -> bool:
+        """True if an approved review was recorded during this episode."""
+        return self._approved_reviews_count() > self._approved_reviews_at_start
 
     def _log(self, msg: str):
         if not self.quiet:
@@ -131,7 +163,23 @@ class Supervisor:
             # have nothing left to do still owe each other a reply, and a
             # finished team keeps talking until the hop budget kills it.
             if self.stop_on_answer and self._user_was_answered():
-                self.stopped = "the user was answered"
+                # Design Decision: Flagging vs Blocking Unreviewed Answers
+                #
+                # We choose to FLAG unreviewed answers prominently rather than BLOCK them.
+                # Rationale:
+                # 1. Autonomous execution safety: Blocking an answer when a review is missing
+                #    risks hanging the team or causing runaways that consume the entire hop budget,
+                #    particularly if a designated reviewer agent crashes, encounters an error,
+                #    or is slow to respond.
+                # 2. Operator visibility: The supervisor's finish line is answering the user.
+                #    Reporting "the user was answered (unreviewed)" alongside a logged warning
+                #    gives the human operator immediate, unambiguous transparency about review
+                #    status without stranding the supervisor loop in deadlocks.
+                if self._has_new_approved_review():
+                    self.stopped = "the user was answered"
+                else:
+                    self.stopped = "the user was answered (unreviewed)"
+                    self._log("[WARNING: the user was answered without an approved review recorded in reviews.jsonl]")
                 break
         if self.hops >= self.max_hops:
             self.stopped = f"hop budget of {self.max_hops} reached"

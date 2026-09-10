@@ -161,7 +161,7 @@ def test_stop_on_answer() -> tuple[int, int]:
     return sum([
         check("the ack spiral is cut short", turns <= 4, f"{turns} turns"),
         check("it stopped because the user was answered",
-              stopped == "the user was answered", stopped),
+              stopped.startswith("the user was answered"), stopped),
         check("well under the hop budget", woken < 12, str(woken)),
         check("opting out lets it run on (the old behaviour)",
               unbounded >= 12, str(unbounded)),

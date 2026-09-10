@@ -19,8 +19,11 @@ omit the arguments and set AGYTEAM_AGENT (agy CLI path, where mcp_config.json is
 static and the session supplies identity). Refuses to start nameless rather than
 guessing, so messages can never be filed under the wrong agent.
 """
+import json
 import os
 import sys
+import time
+from pathlib import Path
 
 from .mcp_base import serve, string, tool
 from .transport import Transport, load
@@ -47,6 +50,18 @@ TOOLS = [
          "List your teammates (persistent peers you can message) and their "
          "roles. Workers you spawn yourself are not teammates and are not "
          "listed here.", {}),
+    tool("record_review",
+         "Record a verification review of a feature, change, or task. "
+         "Must specify what was reviewed, verdict ('approved' or 'changes_requested'), "
+         "specific cases tried (cannot be empty), and findings.",
+         {"what": string("What was reviewed (feature, branch, PR, or task)"),
+          "verdict": string("Verdict: 'approved' or 'changes_requested'"),
+          "cases_tried": string("Specific test cases and scenarios constructed and executed (required)"),
+          "findings": string("Observations, issues found, or confirmation of behavior")},
+         ["what", "verdict", "cases_tried"]),
+    tool("list_reviews",
+         "List durable verification reviews recorded for this team.",
+         {}),
 ]
 
 # Roster mutation is off unless AGYTEAM_ROSTER_ADMIN=1 *and* the transport
@@ -74,12 +89,115 @@ def _check_inbox(t: Transport) -> str:
     return "\n\n".join(m.render() for m in msgs) if msgs else "[inbox empty]"
 
 
+def _reviews_path(t: Transport) -> Path:
+    if hasattr(t, "dir") and t.dir:
+        return Path(t.dir) / "reviews.jsonl"
+    env = os.environ.get("AGYTEAM_TEAM_DIR")
+    if env:
+        return Path(env) / "reviews.jsonl"
+    from . import scope
+    return scope.load().team_dir() / "reviews.jsonl"
+
+
+def _record_review(t: Transport, a: dict) -> str:
+    what = a.get("what", "")
+    if not isinstance(what, str) or not what.strip():
+        return "[error: what is required and cannot be empty]"
+    what = what.strip()
+
+    verdict = a.get("verdict", "")
+    if verdict not in ("approved", "changes_requested"):
+        return f"[error: verdict must be 'approved' or 'changes_requested', got {verdict!r}]"
+
+    cases_tried = a.get("cases_tried")
+    if cases_tried is None:
+        return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
+    if isinstance(cases_tried, str):
+        if not cases_tried.strip():
+            return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
+        cases = cases_tried.strip()
+    elif isinstance(cases_tried, list):
+        cleaned = [str(c).strip() for c in cases_tried if str(c).strip()]
+        if not cleaned:
+            return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
+        cases = cleaned
+    else:
+        return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
+
+    findings = a.get("findings", "")
+    findings_str = findings.strip() if isinstance(findings, str) else str(findings)
+
+    rev_path = _reviews_path(t)
+    rev_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "reviewer": t.me,
+        "what": what,
+        "verdict": verdict,
+        "cases_tried": cases,
+        "findings": findings_str,
+    }
+    with rev_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    return f"[review recorded: {verdict} for '{what}']"
+
+
+def _list_reviews(t: Transport) -> str:
+    rev_path = _reviews_path(t)
+    if not rev_path.exists():
+        return "[no reviews recorded]"
+    try:
+        content = rev_path.read_text().strip()
+    except OSError as e:
+        return f"[error reading reviews: {e}]"
+    if not content:
+        return "[no reviews recorded]"
+
+    reviews = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            reviews.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    if not reviews:
+        return "[no reviews recorded]"
+
+    lines = ["# Review records", ""]
+    for r in reviews:
+        ts = r.get("ts", "unknown")
+        reviewer = r.get("reviewer", "unknown")
+        what = r.get("what", "unknown")
+        verdict = r.get("verdict", "unknown")
+        cases = r.get("cases_tried", [])
+        findings = r.get("findings", "")
+
+        lines.append(f"- [{ts}] {reviewer} -> {verdict}: {what}")
+        if isinstance(cases, list):
+            lines.append("  Cases tried:")
+            for c in cases:
+                lines.append(f"  * {c}")
+        elif cases:
+            lines.append(f"  Cases tried: {cases}")
+        if findings:
+            lines.append(f"  Findings: {findings}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 def main(transport: Transport, admin: bool = False):
     handlers = {
         "send_to_teammate": lambda a: transport.send(a["to"], a["content"]),
         "broadcast": lambda a: transport.broadcast(a["content"]),
         "check_inbox": lambda a: _check_inbox(transport),
         "list_teammates": lambda a: _list_teammates(transport),
+        "record_review": lambda a: _record_review(transport, a),
+        "list_reviews": lambda a: _list_reviews(transport),
     }
     tools = list(TOOLS)
     if admin and transport.supports_roster_admin:
