@@ -20,7 +20,7 @@ from google.antigravity.hooks import (on_compaction, policy, post_tool_call,
 
 from . import config as cfg
 from .persona import CONTRACT
-from .tools import Toolbox
+from .store import Toolbox
 
 DANGEROUS = ["rm -rf /", "git push -f", "git push --force", "mkfs", "> /dev/sd"]
 

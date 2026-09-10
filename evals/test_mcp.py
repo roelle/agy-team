@@ -206,9 +206,9 @@ def test_stdlib_purity() -> tuple[int, int]:
         checks.append(check(f"{mod} imports with no third-party deps", ok, err))
 
     # the venv-only modules SHOULD fail here — proves the test has teeth
-    ok, _ = imports("agyteam.llm", str(ROOT))
-    checks.append(check("control: agyteam.llm (needs google-genai) does NOT import",
-                        not ok, "llm.py imported on bare python — purity test is "
+    ok, _ = imports("agyteam.sdk_agent", str(ROOT))
+    checks.append(check("control: agyteam.sdk_agent (needs google-antigravity) does NOT import",
+                        not ok, "sdk_agent.py imported on bare python — purity test is "
                                 "not actually discriminating"))
     return sum(checks), len(checks)
 

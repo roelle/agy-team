@@ -6,6 +6,7 @@ agents through the agy CLI while messages travel over a custom bus and memory
 lives in a shared database, changing any one without touching the others.
 
     AGYTEAM_RUNNER=agyteam.runner_agy:AgyRunner        # default
+    AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner        # where the SDK is installed
     AGYTEAM_RUNNER_CONFIG='{"binary": "agy"}'          # optional, JSON
 
 Why this exists: without it, delivery is passive — mail sits in an inbox until
@@ -20,6 +21,11 @@ import json
 import os
 from abc import ABC, abstractmethod
 
+# The default must be the runner that works everywhere. runner_sdk needs
+# google-antigravity, which the plugin deliberately excludes to stay
+# standard-library-only, so defaulting to it leaves a fresh install unable to
+# load any runner at all. SdkRunner is better where its dependency exists —
+# opt in with AGYTEAM_RUNNER, or per agent via runner_mixed.
 DEFAULT_RUNNER = "agyteam.runner_agy:AgyRunner"
 
 
