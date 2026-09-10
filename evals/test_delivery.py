@@ -22,11 +22,19 @@ from rpc_util import ROOT, check
 
 sys.path.insert(0, str(ROOT))
 
-TEAM = os.environ.setdefault("AGYTEAM_TEAM", "delivery-eval")
+# Deliberately an assignment, not setdefault. This eval wipes its team directory
+# to start clean, and inheriting AGYTEAM_TEAM from the environment meant it
+# would wipe *yours* — it once deleted a running team's roster and bus log
+# mid-flight because an agent ran the test board with AGYTEAM_TEAM set.
+TEAM = "delivery-eval"
+os.environ["AGYTEAM_TEAM"] = TEAM
+os.environ.pop("AGYTEAM_TEAM_DIR", None)
+os.environ.pop("AGYTEAM_DURABLE_DIR", None)
+MARKER = "delivery-eval team, safe to wipe"
 SHARED = ROOT / "evals" / "delivery_shared"
 TARGET = SHARED / "kingfisher.txt"
 
-ROSTER = {"mission": f"Delivery eval team ({TEAM}).", "agents": [
+ROSTER = {"mission": MARKER, "agents": [
     {"name": "tpm", "role": "Coordinates. Decomposes the request, delegates to "
      "teammates by name, and reports the consolidated result to the user. Does "
      "not write files or run commands.",
@@ -48,6 +56,17 @@ def main() -> int:
 
     from agyteam import scope
     team_dir = scope.load().team_dir()
+    # Belt and braces: never delete a directory this eval did not create. If a
+    # roster is there without our marker, it belongs to somebody real.
+    existing = team_dir / "roster.json"
+    if existing.exists():
+        try:
+            mission = json.loads(existing.read_text()).get("mission", "")
+        except ValueError:
+            mission = ""
+        if mission != MARKER:
+            sys.exit(f"refusing to wipe {team_dir}: roster is not this eval's "
+                     f"(mission={mission!r}). Move it aside or pick another team.")
     shutil.rmtree(team_dir, ignore_errors=True)
     (team_dir / "inbox").mkdir(parents=True)
     (team_dir / "roster.json").write_text(json.dumps(ROSTER, indent=2))
