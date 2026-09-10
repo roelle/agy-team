@@ -110,6 +110,70 @@ def test_scopes() -> tuple[int, int]:
     ]), 7
 
 
+def test_roster_shapes() -> tuple[int, int]:
+    """Hand-written rosters come in several reasonable shapes; accept them all,
+    and fail readably on the ones that are genuinely ambiguous."""
+    print("\n== roster shapes and migration ==")
+    sys.path.insert(0, str(ROOT))
+    from agyteam.roster import RosterError, normalize_agents
+
+    def names(raw):
+        return [a["name"] for a in normalize_agents(raw)]
+
+    def rejects(raw, fragment):
+        try:
+            normalize_agents(raw)
+            return False, "accepted something malformed"
+        except RosterError as e:
+            return fragment in str(e), str(e)
+
+    # the exact shape that crashed: mapping with redundant "name" keys
+    old_style = {"tpm": {"name": "tpm", "role": "coordinates"},
+                 "coder": {"name": "coder", "role": "implements"}}
+    ok_dup, msg_dup = rejects([{"name": "tpm"}, {"name": "tpm"}], "duplicate")
+    ok_conflict, msg_con = rejects({"tpm": {"name": "other"}}, "disagrees")
+    ok_noname, msg_non = rejects([{"role": "x"}], 'no "name"')
+    ok_type, msg_type = rejects("tpm,coder", "must be a list or an object")
+    ok_reserved, msg_res = rejects([{"name": "user"}], "reserved")
+
+    # end-to-end: the crashing roster now works through the live MCP server
+    td = ROOT / "evals" / "team_shapes"
+    shutil.rmtree(td, ignore_errors=True)
+    (td / "inbox").mkdir(parents=True)
+    (td / "roster.json").write_text(json.dumps({"mission": "m", "agents": old_style}))
+    env = {"AGYTEAM_AGENT": "tpm", "AGYTEAM_TEAM_DIR": str(td)}
+    listed = text_of(rpc("agyteam.mcp_bus", [], [("list_teammates", {})], env=env)[2])
+    rpc("agyteam.mcp_bus", [], [("roster_add", {"name": "qa", "role": "reviews"})],
+        env={**env, "AGYTEAM_ROSTER_ADMIN": "1"})
+    migrated = json.loads((td / "roster.json").read_text())
+
+    return sum([
+        check("mapping of name -> object (the shape that crashed)",
+              names(old_style) == ["tpm", "coder"]),
+        check("mapping of name -> role string",
+              names({"tpm": "coordinates"}) == ["tpm"]),
+        check("canonical list of objects",
+              names([{"name": "tpm", "role": "r"}]) == ["tpm"]),
+        check("list of bare name strings", names(["tpm", "coder"]) == ["tpm", "coder"]),
+        check("missing agents key is empty, not an error", names(None) == []),
+        check("per-agent extras (model, tools_off) survive normalisation",
+              normalize_agents({"tpm": {"role": "r", "model": "m",
+                                        "tools_off": ["run_command"]}})[0]["model"] == "m"),
+        check("duplicate names rejected", ok_dup, msg_dup),
+        check("key/name conflict rejected as ambiguous", ok_conflict, msg_con),
+        check("list entry without a name rejected", ok_noname, msg_non),
+        check("wrong type rejected with a readable message", ok_type, msg_type),
+        check("'user' rejected as a roster name", ok_reserved, msg_res),
+        check("live server reads the old mapping roster",
+              "coder" in listed and "[error:" not in listed, listed),
+        check("editing migrates the file to canonical list form",
+              isinstance(migrated["agents"], list)
+              and {a["name"] for a in migrated["agents"]} == {"tpm", "coder", "qa"},
+              str(migrated)),
+        check("migration preserves unrelated keys", migrated.get("mission") == "m"),
+    ]), 14
+
+
 def test_stdlib_purity() -> tuple[int, int]:
     """The MCP servers must run under a bare system python, no venv.
 
@@ -192,7 +256,7 @@ def test_team_isolation() -> tuple[int, int]:
 
 
 if __name__ == "__main__":
-    totals = [test_memory(), test_roster_file(), test_scopes(),
+    totals = [test_memory(), test_roster_file(), test_roster_shapes(), test_scopes(),
               test_stdlib_purity(), test_team_isolation()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== memory/scope tests: {got}/{want} ==")

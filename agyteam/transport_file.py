@@ -8,6 +8,7 @@ import json
 import time
 from pathlib import Path
 
+from . import roster
 from .transport import Message, Transport
 
 
@@ -31,23 +32,21 @@ class FileTransport(Transport):
     # --- roster ----------------------------------------------------------
 
     def _roster_doc(self) -> dict:
-        if not self.roster_path.exists():
-            return {}
-        try:
-            return json.loads(self.roster_path.read_text())
-        except json.JSONDecodeError:
-            return {}
+        # Accepts list or mapping shapes and raises RosterError with a readable
+        # message on anything malformed — the MCP layer surfaces that as
+        # "[error: ...]" rather than an AttributeError from deep in the stack.
+        return roster.load(self.roster_path)
 
     def _agents(self) -> list[dict]:
-        return self._roster_doc().get("agents", [])
+        return self._roster_doc()["agents"]
 
     def teammates(self) -> list[dict]:
-        return [a for a in self._agents() if a.get("name") != self.me]
+        return [a for a in self._agents() if a["name"] != self.me]
 
     def _write_agents(self, agents: list[dict]) -> None:
         doc = self._roster_doc()
         doc["agents"] = agents
-        self.roster_path.write_text(json.dumps(doc, indent=2))
+        roster.save(self.roster_path, doc)      # always canonical list form
 
     def roster_add(self, name: str, role: str) -> str:
         agents = self._agents()

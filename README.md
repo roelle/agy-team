@@ -205,6 +205,31 @@ Memory is forced into durable scope, so an agent that moves between repos (or
 works on a network mount) keeps what it learned and never strands memory in
 someone else's checkout.
 
+### Roster shapes
+
+The canonical roster is a **list of self-describing entries**, because entries
+get passed around individually (into session configs, transports, log lines) and
+one that carries its own name needs no context to be useful. A `name -> spec`
+mapping forces you to thread the key alongside the value everywhere it travels,
+and forgetting to is precisely the class of bug this caused.
+
+Hand-written config shouldn't have to care, so `agyteam/roster.py` accepts and
+normalises all of these:
+
+```json
+{"agents": [{"name": "tpm", "role": "coordinates"}]}   // canonical
+{"agents": {"tpm": {"role": "coordinates"}}}           // mapping, key is name
+{"agents": {"tpm": "coordinates"}}                     // mapping to role string
+{"agents": ["tpm", "coder"]}                           // bare names
+```
+
+Per-agent extras (`model`, `tools_off`, `workers`) survive normalisation, and
+writes are always canonical — so a mapping-shaped roster **migrates itself** the
+first time it's edited. Genuinely ambiguous input is rejected with a readable
+message rather than an exception from three frames down: duplicate names, a
+mapping key that disagrees with its own `name` field, a list entry with no name,
+`user` as an agent name (it's reserved for the human), or a wrong type.
+
 ### Roster management
 
 `roster_add` / `roster_remove` are exposed over the bus server **only** when
@@ -265,7 +290,7 @@ Current status — all green as of 2026-09-09:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | memory semantics, roster persistence, git-root scopes, stdlib purity, team isolation | 30/30 |
+| `test_mcp.py` | memory, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 44/44 |
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |

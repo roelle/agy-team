@@ -25,6 +25,7 @@ from pathlib import Path
 from google.antigravity import Agent, types
 
 from . import config as cfg
+from . import roster as roster_lib
 from .sdk_agent import SessionFlags, build_config
 
 MAX_HOPS = 16   # agent turns allowed per user stimulus before requiring input
@@ -67,8 +68,11 @@ class Team:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.roster_path = self.dir / "roster.json"
         if not self.roster_path.exists():
-            self.roster_path.write_text(json.dumps(DEFAULT_ROSTER, indent=2))
-        self.roster = json.loads(self.roster_path.read_text())
+            roster_lib.save(self.roster_path, DEFAULT_ROSTER)
+        # Normalises list/mapping shapes and rejects malformed rosters with a
+        # readable message instead of an indexing error mid-startup.
+        self.roster = roster_lib.load(self.roster_path)
+        self.roster.setdefault("mission", DEFAULT_ROSTER["mission"])
         self.bus_log = self.dir / "bus.jsonl"
         self.queues: dict[str, list[dict]] = {}
         self.agents: dict[str, Agent] = {}
@@ -289,7 +293,7 @@ async def repl(team: Team, one_shot: str | None):
                     continue
                 spec = {"name": nm, "role": role, "model": cfg.DEFAULT_MODEL}
                 team.roster["agents"].append(spec)
-                team.roster_path.write_text(json.dumps(team.roster, indent=2))
+                roster_lib.save(team.roster_path, team.roster)
                 await team._start_agent(spec)
                 print(f"  added {nm} (teammates learn of them next session; "
                       "or broadcast an introduction now)")
@@ -297,7 +301,7 @@ async def repl(team: Team, one_shot: str | None):
                 nm = rest.strip()
                 team.roster["agents"] = [a for a in team.roster["agents"]
                                          if a["name"] != nm]
-                team.roster_path.write_text(json.dumps(team.roster, indent=2))
+                roster_lib.save(team.roster_path, team.roster)
                 team.queues.pop(nm, None)
                 await team._close_agent(nm)
                 print(f"  removed {nm} from roster and bus")
