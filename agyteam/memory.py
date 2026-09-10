@@ -149,6 +149,12 @@ def detect_conflicts(name: str, description: str, content: str, why: str,
     """Detect if (name, description, content, why) appears to overlap or conflict
     with existing memories [(other_name, other_desc, other_content), ...].
 
+    Note on content format:
+    Both `content` and `other_content` in `existing` must be provenance-stripped
+    body text (not raw markdown containing '# heading', '- When:', or '- Why:'
+    metadata headers). Passing raw content introduces metadata tokens (timestamps,
+    header labels) that dilute keyword ratios and suppress content_overlap detection.
+
     Returns a list of dicts: [{'name': other_name, 'reason': str, 'kind': str}].
     Deciding what 'appears to overlap' means:
     1. Topic / Name near-duplicate: names share high string similarity or topic slug tokens.
@@ -375,3 +381,193 @@ def load(agent: str, spec: str | None = None,
     if not issubclass(cls, MemoryStore):
         raise SystemExit(f"{spec} is not an agyteam.memory.MemoryStore subclass")
     return cls(agent, config)
+
+
+# Keywords indicating conditional, transient, or workaround lessons in provenance ('why').
+# A memory learned as a workaround for a broken tool, missing feature, or transient outage
+# can become obsolete when the underlying condition resolves.
+#
+# Limitations:
+# Like my_capabilities in mcp_self.py, we acknowledge the heuristic's limits honestly:
+# keyword matching on provenance detects that a lesson was conditional upon a past situation,
+# but cannot independently verify whether that external situation has cleared.
+CONDITIONAL_KEYWORDS = {
+    "blocked",
+    "blocker",
+    "broken",
+    "bug",
+    "bugs",
+    "bypass",
+    "disabled",
+    "down",
+    "failed",
+    "failing",
+    "failure",
+    "hack",
+    "interim",
+    "missing",
+    "outage",
+    "pending",
+    "revert",
+    "reverted",
+    "temporary",
+    "temporarily",
+    "transient",
+    "unavailable",
+    "unresolved",
+    "workaround",
+}
+
+
+def find_conditional_keywords(why: str) -> list[str]:
+    """Extract matching conditional or transient trigger keywords from a memory's 'why'.
+
+    Tokens are matched as lowercase whole words against CONDITIONAL_KEYWORDS.
+    Returns a sorted list of unique matched keywords.
+    """
+    if not why:
+        return []
+    words = re.findall(r"[a-z0-9]+", why.lower())
+    return sorted({w for w in words if w in CONDITIONAL_KEYWORDS})
+
+
+# Bounding constants to protect agent context and bound quadratic comparisons:
+#
+# Comparing memories pairwise scales quadratically O(N^2). An uncapped review
+# across an arbitrarily large memory store would consume excessive CPU time
+# and, worse, flood the calling agent's context window with findings,
+# defeating the purpose of a focused self-review tool.
+#
+# Consistent with my_activity in mcp_self.py:
+# - MAX_REVIEW_MEMORIES (100) caps the number of memories examined.
+# - MAX_FLAGS_PER_SECTION (20) caps findings reported per category.
+MAX_REVIEW_MEMORIES = 100
+MAX_FLAGS_PER_SECTION = 20
+
+
+def review_memories(store: MemoryStore) -> str:
+    """Examine stored memories and report items that deserve a second look.
+
+    Categories flagged:
+    1. Mutual contradictions: pairwise comparison of stored memories using
+       detect_conflicts (evaluating pairs with i < j to avoid duplicate reports).
+    2. Unknown vintage: memories without provenance or missing 'why', which cannot
+       be judged for staleness.
+    3. Conditional lessons: memories whose provenance ('why') describes a situation
+       that may have passed (e.g. broken, unavailable, bug, workaround).
+
+    Non-mutating: does not change or delete anything; reports findings for the agent.
+    """
+    entries = store.index()
+    if not entries:
+        return "# Memory review\n\n(empty — you have not saved anything yet)"
+
+    # Bound pairwise review work
+    examined_entries = entries[:MAX_REVIEW_MEMORIES]
+    records = []
+    for e in examined_entries:
+        raw = store.read(e.name) or ""
+        when, why, body = extract_provenance(raw)
+        records.append({
+            "name": e.name,
+            "description": e.description,
+            "raw": raw,
+            "when": when,
+            "why": why,
+            "body": body,
+        })
+
+    contradiction_flags = []
+    vintage_flags = []
+    conditional_flags = []
+
+    # 1. Mutual contradictions (pairwise comparison i < j)
+    for i in range(len(records)):
+        rec_i = records[i]
+        existing_j = [
+            (records[j]["name"], records[j]["description"], records[j]["body"])
+            for j in range(i + 1, len(records))
+        ]
+        if existing_j:
+            conflicts = detect_conflicts(
+                rec_i["name"],
+                rec_i["description"],
+                rec_i["body"],
+                rec_i["why"] or "",
+                existing_j,
+            )
+            for c in conflicts:
+                contradiction_flags.append(
+                    f"- '{rec_i['name']}' vs '{c['name']}': {c['reason']}"
+                )
+
+    # 2. Unknown vintage & 3. Conditional lessons
+    for rec in records:
+        why = (rec["why"] or "").strip()
+        when = (rec["when"] or "").strip()
+
+        # Unknown vintage: missing 'why' means no situation was recorded,
+        # so staleness cannot be evaluated.
+        if not why and not when:
+            vintage_flags.append(
+                f"- '{rec['name']}': no provenance recorded (missing 'why' and 'when'); "
+                f"cannot be judged for staleness because no situation or trigger was provided"
+            )
+        elif not why:
+            vintage_flags.append(
+                f"- '{rec['name']}': missing 'why' provenance; "
+                f"cannot be judged for staleness because no situation or trigger was provided"
+            )
+        elif not when:
+            vintage_flags.append(
+                f"- '{rec['name']}': missing 'when' timestamp; provenance date is unknown"
+            )
+
+        # Conditional lessons: look for transient triggers in recorded why
+        if why:
+            matched_kw = find_conditional_keywords(why)
+            if matched_kw:
+                kw_str = ", ".join(f"'{k}'" for k in matched_kw)
+                conditional_flags.append(
+                    f"- '{rec['name']}': conditional trigger keyword(s) {kw_str} "
+                    f"in why: \"{why}\""
+                )
+
+    header = "# Memory review"
+    if len(entries) > len(examined_entries):
+        header += f" (showing analysis for first {len(examined_entries)} of {len(entries)} memories)"
+
+    # Clean baseline: if all memories are consistent and well-formed
+    if not contradiction_flags and not vintage_flags and not conditional_flags:
+        return f"{header}\n\nAll memories appear consistent with known provenance; no flags raised."
+
+    sections = [header, ""]
+
+    def _append_section(title: str, flags: list[str], disclaimer: str | None = None):
+        sections.append(f"## {title}")
+        if not flags:
+            sections.append("(none detected)")
+        else:
+            capped = flags[:MAX_FLAGS_PER_SECTION]
+            sections.extend(capped)
+            if len(flags) > len(capped):
+                sections.append(f"  (showing first {len(capped)} of {len(flags)} findings)")
+        if disclaimer and flags:
+            sections.append("")
+            sections.append(disclaimer)
+        sections.append("")
+
+    _append_section("Mutual contradictions", contradiction_flags)
+    _append_section("Unknown vintage", vintage_flags)
+    _append_section(
+        "Conditional lessons",
+        conditional_flags,
+        disclaimer=(
+            "Note: Conditional lesson detection relies on keyword heuristics in recorded "
+            "provenance ('why'). It cannot verify whether external conditions or bugs "
+            "have actually been resolved; verify before acting."
+        ),
+    )
+
+    return "\n".join(sections).rstrip()
+

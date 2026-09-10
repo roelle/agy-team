@@ -21,7 +21,8 @@ import os
 import sys
 
 from .mcp_base import serve, string, tool
-from .memory import MemoryStore, detect_conflicts, normalize_name
+from .memory import (MemoryStore, detect_conflicts, extract_provenance,
+                     normalize_name, review_memories)
 from .memory import load as load_store
 
 TOOLS = [
@@ -47,6 +48,12 @@ TOOLS = [
     tool("memory_index",
          "List everything you remember (name + one-line description each). "
          "Check this before claiming you don't know something.", {}),
+    tool("review_memory",
+         "Examines stored memories and reports items that deserve a second look: "
+         "mutual contradictions, unknown vintage, and conditional lessons whose situation "
+         "may have passed. Does not change or delete anything — reports findings so the "
+         "agent can decide.",
+         {}),
 ]
 
 
@@ -68,7 +75,9 @@ def main(store: MemoryStore):
         existing = []
         for e in store.index():
             if e.name != name:
-                existing.append((e.name, e.description, store.read(e.name) or ""))
+                raw = store.read(e.name) or ""
+                _, _, body = extract_provenance(raw)
+                existing.append((e.name, e.description, body))
         conflicts = detect_conflicts(name, a["description"], a["content"], why, existing)
 
         created = store.save(name, a["description"], a["content"],
@@ -101,7 +110,8 @@ def main(store: MemoryStore):
 
     handlers = {"save_memory": save, "read_memory": read,
                 "delete_memory": delete,
-                "memory_index": lambda a: render_index(store)}
+                "memory_index": lambda a: render_index(store),
+                "review_memory": lambda a: review_memories(store)}
 
     def dispatch(name, args):
         fn = handlers.get(name)
