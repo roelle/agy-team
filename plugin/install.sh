@@ -21,8 +21,9 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 # Modules the MCP servers need. Deliberately excludes anything importing
 # google-genai or google-antigravity; if this list ever needs one of those,
 # the plugin has stopped being installable without vendoring.
-PURE_MODULES=(__init__.py config.py scope.py store.py mcp_base.py mcp_memory.py
-              mcp_bus.py transport.py transport_file.py transport_template.py)
+PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
+              mcp_memory.py mcp_bus.py transport.py transport_file.py
+              transport_template.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
@@ -54,12 +55,18 @@ JSON
   echo "seeded roster: $DURABLE/team/roster.json"
 fi
 
-# Prove the install actually works rather than merely looking right: import the
-# servers using only the installed copy, with this repo off the path.
-( cd / && PYTHONPATH="$PLUGIN_DST" "$PYTHON" -c "
+# Prove the install actually works rather than merely looking right: exercise it
+# using only the installed copy, with this repo off the path. Importing the
+# servers is not enough — the transport is resolved lazily at runtime, so a
+# module missing from PURE_MODULES would slip through. Instantiate it and make a
+# real call.
+( cd / && PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
 import json, agyteam.mcp_memory, agyteam.mcp_bus
+from agyteam.transport import load
+t = load('installer-selftest')
+t.teammates()                      # forces roster parsing end to end
 json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
-print('verified: servers import standalone, manifests are valid JSON')" )
+print('verified: servers import, default transport loads and reads the roster')" )
 
 cat <<NOTE
 
