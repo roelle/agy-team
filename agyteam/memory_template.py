@@ -33,12 +33,17 @@ class MyStore(MemoryStore):
         # self.db = YourClient(dsn=self.config["dsn"], namespace=agent)
         raise NotImplementedError("implement MyStore before using it")
 
-    def save(self, name: str, description: str, content: str) -> bool:
+    def save(self, name: str, description: str, content: str,
+             why: str = "", when: str | None = None) -> bool:
         """Create or overwrite. Return True if new, False if it already existed.
 
         Names arrive normalised (lowercase, hyphenated), so you can use them as
         keys directly. Overwriting is intended: agents are told to update
         memories rather than pile up near-duplicates.
+
+        why: why this was learned (provenance context), so future sessions can judge
+        if the lesson remains valid.
+        when: timestamp string of when the memory was written (defaults to now).
         """
         raise NotImplementedError
 

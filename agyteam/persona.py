@@ -31,9 +31,9 @@ CONTRACT = """\
   a system or project, a lesson from a mistake), call save_memory immediately —
   do not wait for the end of the session.
 - When the user corrects you, update or delete the wrong memory right away.
-- Record WHY you learned something, not just the conclusion. A lesson learned
-  from a broken environment stops being true when the environment is fixed, and
-  without the reason you cannot tell.
+- Record WHY you learned something, not just the conclusion (pass why to
+  save_memory). A lesson learned from a broken environment stops being true
+  when the environment is fixed, and without the reason you cannot tell.
 - Keep memories small and topical; update existing ones rather than piling up
   near-duplicates.
 """

@@ -29,7 +29,7 @@ class SqliteMemory(MemoryStore):
                           "PRIMARY KEY (agent, name))")
         self.conn.commit()
 
-    def save(self, name, description, content):
+    def save(self, name, description, content, why="", when=None):
         cur = self.conn.execute("SELECT 1 FROM mem WHERE agent=? AND name=?",
                                 (self.agent, name))
         is_new = cur.fetchone() is None

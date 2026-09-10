@@ -9,9 +9,10 @@ Layout (per agent, in durable scope):
     <workspace>/memory/<name>.md   the content
 """
 import os
+import time
 from pathlib import Path
 
-from .memory import MemoryEntry, MemoryStore
+from .memory import MemoryEntry, MemoryStore, extract_provenance
 
 
 class FileMemory(MemoryStore):
@@ -31,10 +32,44 @@ class FileMemory(MemoryStore):
     def _path(self, name: str) -> Path:
         return self.memory_dir / f"{name}.md"
 
-    def save(self, name: str, description: str, content: str) -> bool:
+    def save(self, name: str, description: str, content: str,
+             why: str = "", when: str | None = None) -> bool:
         path = self._path(name)
         is_new = not path.exists()
-        path.write_text(f"# {name}\n\n{content}\n")
+        if when is None:
+            when = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Provenance unpacking for read-modify-save workflows:
+        # If incoming content already carries headers (title, - When:, - Why:),
+        # unpack clean_body to avoid accumulating nested headings or duplicate
+        # metadata blocks on re-save.
+        #
+        # Rationale for why precedence: An incoming non-empty why represents a
+        # fresh reason/trigger for this update and supersedes old_why. If incoming
+        # why is omitted or empty, preserve old_why so existing reasoning and
+        # context are not lost during read-modify-save cycles.
+        old_when, old_why, clean_body = extract_provenance(content)
+        first_line = content.lstrip().splitlines()[0] if content.strip() else ""
+        has_name_heading = (first_line.startswith("#") and
+                            first_line.lstrip("#").strip().replace("_", "-") == name.replace("_", "-"))
+        if old_when or old_why or has_name_heading:
+            content = clean_body
+            if not why and old_why:
+                why = old_why
+
+        # Provenance: record when and why this memory was learned so future
+        # sessions can judge whether the context and reasoning remain true.
+        lines = [f"# {name}", ""]
+        if when:
+            lines.append(f"- When: {when}")
+        if why:
+            lines.append(f"- Why: {why}")
+        if when or why:
+            lines.append("")
+        lines.append(content.strip())
+        lines.append("")
+
+        path.write_text("\n".join(lines))
         self._write_index(name, description)
         return is_new
 
