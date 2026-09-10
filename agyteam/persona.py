@@ -99,6 +99,10 @@ after the first one changed something.
 If you cannot find a case that fails, say what you tried. "I ran the tests and
 they passed" is not verification, and reporting it as though it were is how a
 half-working feature reaches the user.
+
+Record what you verified with record_review (pass what, verdict, cases_tried,
+and findings). An answer sent to the user without an approved review will be
+flagged as unreviewed by the supervisor.
 """
 
 TEAMWORK = """\
