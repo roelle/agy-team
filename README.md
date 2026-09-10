@@ -155,7 +155,7 @@ they decide *how* an agent is woken:
 
 | runner | wakes an agent by | needs |
 |---|---|---|
-| `agyteam.runner_agy:AgyRunner` (default) | `agy --agent <name> -p "<message>"` | the agy CLI |
+| `agyteam.runner_agy:AgyRunner` (default) | `agy --conversation <id> -p "<message>"` | the agy CLI |
 | `agyteam.runner_sdk:SdkRunner` | a persistent SDK session per agent | `google-antigravity` |
 | your own | anything | — |
 
@@ -263,13 +263,12 @@ the same memory, register it in `~/.gemini/antigravity/mcp_config.json`:
 
 ## agy CLI plugin (the installable form)
 
-Remote Control drives **agy CLI sessions**, not SDK programs — so the
-installable artifact is a CLI plugin, and that is what `plugin/` contains:
+The plugin supplies **tools**, not agents. Agents are defined in
+[`persona.py`](agyteam/persona.py) and given to whichever runtime starts them:
 
 ```
 plugin/agy-team/
   plugin.json          manifest
-  agents/{tpm,coder,syseng}/agent.md    peer roles (markdown + frontmatter)
   skills/{distill,inbox,handoff}.md     slash commands
   rules/grounding.md   grounding + learning + collaboration contract
   mcp_config.json      rendered at install time with absolute paths
@@ -279,8 +278,18 @@ Install and run:
 
 ```bash
 bash plugin/install.sh                  # → ~/.gemini/antigravity-cli/plugins/agy-team
-AGYTEAM_AGENT=tpm agy --agent tpm       # identity must match --agent
+python -m agyteam.session tpm           # join the conversation tpm works in
 ```
+
+> **Do not use `agy --agent <name>`.** Measured on agy 1.2.0: the default agent
+> has `write_to_file`; an agent loaded from a plugin `agents/` directory has
+> **no builtin tools at all** and cannot write a file, while the default agent
+> plus `AGYTEAM_AGENT=<name>` has both builtin *and* our MCP tools. The
+> mechanism is absent from the documented plugin spec (`plugin.json`,
+> `mcp_config.json`, `hooks.json`, `rules/`, `skills/` — see agy's builtin
+> `agy-customizations` skill) and appears to route through the subagent
+> machinery. Roles therefore live in `persona.py`, and identity travels in
+> `AGYTEAM_AGENT`, which is what the MCP servers read.
 
 The installed plugin is **self-contained**: the stdlib MCP modules are copied in
 beside the manifest and run under system `python3`, so nothing breaks if this
@@ -317,10 +326,10 @@ work from experiments:
 
 ```bash
 AGYTEAM_TEAM=team-b bash plugin/install.sh            # seed a second team
-AGYTEAM_TEAM=team-b AGYTEAM_AGENT=tpm agy --agent tpm
+AGYTEAM_TEAM=team-b python -m agyteam.session tpm
 
 # or point at an exact path, ignoring the <root>/<team> layout entirely
-AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A AGYTEAM_AGENT=tpm agy --agent tpm
+AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A python -m agyteam.session tpm
 ```
 
 `AGYTEAM_TEAMS_ROOT` moves the whole collection; `AGYTEAM_DURABLE_DIR` overrides
@@ -449,6 +458,8 @@ Current status — all green as of 2026-09-09:
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 32/32 |
 | `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 23/23 |
+| `test_delivery.py` | **the product**: one instruction → a verified artifact on disk, via the agy CLI | 8/8 |
+| `test_continuity.py` | whether a wake resumes context or cold-starts, per runner | 4/4 |
 | `test_reactive.py` | real agents woken by teammates, end to end, no human polling | 7/7 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |

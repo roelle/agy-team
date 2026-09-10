@@ -17,7 +17,7 @@ from google.antigravity.hooks import (on_compaction, policy, post_tool_call,
                                       pre_tool_call_decide)
 
 from . import config as cfg
-from .agent import CONTRACT
+from .persona import CONTRACT
 from .tools import Toolbox
 
 DANGEROUS = ["rm -rf /", "git push -f", "git push --force", "mkfs", "> /dev/sd"]
@@ -173,5 +173,11 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         hooks=hooks,
         model=model,
         api_key=cfg.api_key(),
+        # Without this the SDK saves each conversation to a throwaway
+        # tempfile.mkdtemp("antigravity_") and abandons it. Writing to the
+        # CLI's store instead means one conversation store, not two: an SDK
+        # agent can be joined with `agy --conversation <id>` and shows up in
+        # Remote Control. cfg.CONVERSATION_DIR picks which surface.
+        save_dir=str(cfg.conversation_dir()),
         budget_config=types.BudgetConfig(max_model_calls=cfg.MAX_LOOP_STEPS),
     )

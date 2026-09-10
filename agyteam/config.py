@@ -17,6 +17,24 @@ KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
 MAX_LOOP_STEPS = 40              # tool-use steps per user turn before forced stop
 
+# Where conversations are stored. The agy CLI, the Antigravity IDE and the SDK
+# are three clients of the same store, so this single choice decides which
+# surface an SDK-run agent shows up in — and whether it can be joined at all.
+# The SDK's own default is tempfile.mkdtemp("antigravity_"), i.e. a throwaway
+# directory nobody can find again, which is why this is set explicitly.
+CONVERSATION_DIRS = {
+    "cli": Path.home() / ".gemini" / "antigravity-cli" / "conversations",
+    "ide": Path.home() / ".gemini" / "antigravity" / "conversations",
+}
+
+
+def conversation_dir() -> Path:
+    """Conversation store: AGYTEAM_CONVERSATION_DIR, or a 'cli'/'ide' alias."""
+    raw = os.environ.get("AGYTEAM_CONVERSATION_DIR", "cli")
+    path = CONVERSATION_DIRS.get(raw, Path(raw).expanduser())
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 # USD per 1M tokens: (input, output). Estimates for cost display only —
 # update from https://ai.google.dev/pricing when it matters.
 PRICING = {

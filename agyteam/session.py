@@ -67,7 +67,10 @@ def main(argv=None) -> int:
     env = {**os.environ,
            "AGYTEAM_AGENT": args.agent,
            "AGYTEAM_TEAM_DIR": str(team_dir)}
-    cmd = [resolved, "--agent", args.agent]
+    # No --agent: that mechanism strips builtin tools (see persona.py). The
+    # agent's role lives in the conversation we are joining; identity for the
+    # MCP servers comes from AGYTEAM_AGENT below.
+    cmd = [resolved]
     # Join the conversation the agent is actually working in, rather than a
     # fresh copy of it that knows nothing about what the team just did.
     conv_id = None

@@ -17,6 +17,7 @@ import threading
 from google.antigravity import Agent, types
 
 from . import config as cfg
+from . import persona
 from . import roster as roster_lib
 from . import scope
 from .runner import Runner
@@ -56,19 +57,12 @@ class SdkRunner(Runner):
         if agent in self._agents:
             return self._agents[agent]
         spec = self._specs.get(agent, {"name": agent, "role": ""})
-        peers = "\n".join(f"- {a['name']}: {a.get('role','')}"
-                          for a in self.roster["agents"] if a["name"] != agent)
+        # Same brief the CLI runner sends as an opening message, so an agent has
+        # one character regardless of which runtime started it.
         section = types.SystemInstructionSection(
             title="team_contract",
-            content=(f"You are '{agent}'. Role: {spec.get('role','')}\n\n"
-                     f"TEAMMATES (persistent peers with their own memory — reach "
-                     f"them with send_to_teammate):\n{peers}\n"
-                     "- user: the human. Send final results and questions to 'user'.\n\n"
-                     "You are woken when a teammate writes to you, so reply when "
-                     "you finish — silence stalls whoever is waiting. Workers you "
-                     "spawn are not teammates: no memory, no bus, gone when done. "
-                     "Never spawn a worker to do a teammate's job.\n\n"
-                     f"Shared files belong under {self.scopes.shared_dir()}"))
+            content=persona.brief(agent, self.roster["agents"],
+                                  self.scopes.shared_dir()))
         conf = build_config(
             self.scopes.agent_workspace(agent), model=spec.get("model", self.model),
             name=agent, interactive=False, use_mcp=True, with_bus=True,

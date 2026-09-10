@@ -21,3 +21,6 @@ evals/ws_mcp_env/
 evals/reactive_durable/
 evals/reactive_sandbox/
 evals/continuity_scratch/
+
+evals/delivery_shared/
+.agy-team-shared/

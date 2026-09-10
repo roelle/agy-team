@@ -68,6 +68,22 @@ class AgyRunner(Runner):
         from . import scope
         return scope.load().team_dir()
 
+    def _brief(self, agent: str) -> str:
+        """The opening brief, from the same source the SDK runner uses."""
+        from . import persona
+        from . import roster as roster_lib
+        try:
+            agents = roster_lib.load(self._team_dir / "roster.json")["agents"]
+        except Exception:
+            agents = [{"name": agent, "role": ""}]
+        shared = None
+        try:
+            from . import scope
+            shared = scope.load().shared_dir()
+        except Exception:
+            pass
+        return persona.brief(agent, agents, shared)
+
     def available(self) -> str | None:
         """Return the resolved binary path, or None if agy isn't installed."""
         return shutil.which(self.binary) or (
@@ -126,7 +142,11 @@ class AgyRunner(Runner):
         # agy's own print-mode wait defaults to 5m and silently returns partial
         # output when it expires, which looks like an agent that did nothing.
         # Keep it just inside our subprocess timeout so one clock governs.
-        cmd = [self._resolved, "--agent", agent, "-p", message,
+        # Deliberately NOT --agent: agy's custom-agent mechanism is undocumented
+        # and strips every builtin tool, so those agents cannot write a file.
+        # The default agent has full tools; identity comes from AGYTEAM_AGENT
+        # (which the MCP servers read) and the role from the opening brief.
+        cmd = [self._resolved, "-p", message,
                "--output-format", "json",
                "--print-timeout", f"{max(self.timeout - 10, 30)}s"]
         if conv_id:
@@ -146,6 +166,10 @@ class AgyRunner(Runner):
                     f'\'{{"binary": "/path/to/agy"}}\']')
         self._resolved = resolved
         conv_id = self.conversation_id(agent)
+        # The brief goes in exactly once, on the turn that creates the
+        # conversation; every later wake resumes a session that already has it.
+        if not conv_id:
+            message = f"{self._brief(agent)}\n\n---\n\n{message}"
         try:
             r = self._run(agent, message, conv_id)
             # A conversation can vanish (pruned, or a different team dir). One

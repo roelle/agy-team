@@ -24,7 +24,7 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
               mcp_memory.py mcp_bus.py transport.py transport_file.py
               transport_template.py memory.py memory_file.py memory_template.py
-              runner.py runner_agy.py supervisor.py session.py)
+              runner.py runner_agy.py supervisor.py session.py persona.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
@@ -76,9 +76,11 @@ cat <<NOTE
 
 Installed. Run an agent so its memory and mail are attributed correctly:
 
-    AGYTEAM_AGENT=tpm agy --agent tpm
+    $PYTHON -m agyteam.session tpm
 
-Keep AGYTEAM_AGENT equal to what you pass to --agent.
+That joins the conversation tpm is actually working in, with its identity and
+role already set. Do not use 'agy --agent tpm': that mechanism strips every
+builtin tool, so the agent cannot write a file.
 
 Or let the team run itself — teammates are woken when they get mail, so one
 instruction cascades without you checking anything:
@@ -90,11 +92,11 @@ instruction cascades without you checking anything:
 Teams are isolated — separate roster, bus, and memory, no cross-talk:
 
     AGYTEAM_TEAM=team-b bash plugin/install.sh     # seed another team
-    AGYTEAM_TEAM=team-b AGYTEAM_AGENT=tpm agy --agent tpm
+    AGYTEAM_TEAM=team-b $PYTHON -m agyteam.session tpm
 
 Or point somewhere explicit (useful if your backups target a specific tree):
 
-    AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A AGYTEAM_AGENT=tpm agy --agent tpm
+    AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A $PYTHON -m agyteam.session tpm
 
 '$PYTHON -m agyteam.scope' prints what currently resolves where.
 NOTE

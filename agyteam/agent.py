@@ -9,29 +9,9 @@ from . import config
 from .llm import LLM
 from .tools import BASE_DECLARATIONS, Toolbox
 
-# Fixed contract, deliberately NOT agent-editable (identity/memory files are).
-CONTRACT = """\
-## Grounding rules (non-negotiable)
-1. Never state file contents, command output, or facts about this machine unless
-   they appear in a tool result in this conversation. If you haven't looked, look
-   first or say you don't know.
-2. If a tool fails or returns nothing, report that plainly. Never invent plausible
-   output or pretend a tool ran.
-3. Facts about the user or past sessions must come from your memory files (index
-   below, read_memory for details). If memory doesn't cover it, say "I don't have
-   that in memory" — do not guess.
-4. Wrong answers are worse than no answers. "I don't know, here's how I'd find
-   out" is always an acceptable reply.
-
-## Learning rules
-- You wake with no conversation memory. Your files ARE your memory.
-- When you learn something durable (a user preference, a correction, a fact about
-  a system or project, a lesson from a mistake), call save_memory immediately —
-  do not wait for the end of the session.
-- When the user corrects you, update or delete the wrong memory right away.
-- Keep memories small and topical; update existing ones rather than piling up
-  near-duplicates.
-"""
+# The contract now lives in persona.py, which both runtimes share and which
+# the stdlib-only plugin can import. Re-exported here for existing callers.
+from .persona import CONTRACT  # noqa: E402,F401
 
 
 class Agent:
