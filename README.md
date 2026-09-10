@@ -51,9 +51,9 @@ so the installable surface stays dependency-free:
 
 | module | needs | used by |
 |---|---|---|
-| `scope`, `store`, `roster`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*`, `memory*` | **stdlib only** | the agy plugin, any MCP host |
+| `scope`, `store`, `roster`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*`, `memory*`, `runner`, `runner_agy`, `supervisor` | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
 | `tools`, `llm`, `agent`, `cli` | `google-genai` | clean-room agent (cheap eval rig) |
-| `sdk_agent`, `sdk_cli`, `team` | `google-antigravity` | SDK agent + Python team orchestrator |
+| `sdk_agent`, `sdk_cli`, `team`, `runner_sdk` | `google-antigravity` | SDK agent + Python team orchestrator |
 
 `store.py` holds the tool implementations and memory store; `tools.py` holds
 only the Gemini function declarations for them. That split is what keeps the
@@ -125,6 +125,68 @@ verify (the review-before-delivery contract), and reported accurate results.
   scheduler pauses; each agent session has a model-call budget; `quit` distills
   every agent's learnings to memory first.
 - Shared deliverables go in `team/shared/`.
+
+## Reactive teamwork (no human polling)
+
+A teammate's message *wakes* the agent it was sent to. Whatever that agent sends
+in reply lands in another inbox and wakes them in turn, so one instruction
+cascades through the team and comes back to you when it's done. Nobody sits on
+unread mail waiting to be prodded — a message from a teammate causes work the
+same way a message from you does.
+
+```bash
+python -m agyteam.supervisor --say "tpm: get X built and verified"   # until idle
+python -m agyteam.supervisor --daemon        # stay up, react as mail arrives
+python -m agyteam.supervisor --status        # who has mail waiting (non-destructive)
+```
+
+Verified with real agents (`evals/test_reactive.py`, 7/7): one instruction to
+the tpm produced seven turns and this trace, with no inbox ever checked by hand —
+
+```
+user->tpm ; tpm->coder ; coder->tpm ; tpm->syseng ; syseng->tpm ; tpm->user
+```
+
+The tpm delegated (it has no shell), coder wrote the file, syseng independently
+verified by running it, and the confirmation came back to the user unprompted.
+
+**Runners are the third seam**, deliberately parallel to transport and memory —
+they decide *how* an agent is woken:
+
+| runner | wakes an agent by | needs |
+|---|---|---|
+| `agyteam.runner_agy:AgyRunner` (default) | `agy --agent <name> -p "<message>"` | the agy CLI |
+| `agyteam.runner_sdk:SdkRunner` | a persistent SDK session per agent | `google-antigravity` |
+| your own | anything | — |
+
+```bash
+export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
+export AGYTEAM_RUNNER_CONFIG='{"model":"gemini-3.8-flash"}'
+```
+
+The CLI runner is the one that makes a team work *inside Antigravity proper*:
+agents are agy custom agents, so they get the harness's tools, policies, and
+subagents, and the sessions are visible to Remote Control. The SDK runner keeps
+sessions alive between wakes, so an agent woken five times has one continuous
+context rather than five cold starts.
+
+`check_inbox` still exists as a tool — useful mid-task, since a teammate may
+answer while you're working — but it is no longer how delivery happens.
+
+Runaway protection: a hop budget bounds one stimulus (`--max-hops`, default 32)
+so agents can't ping-pong your token budget away, and an agent that fails is
+logged and skipped rather than stopping the team. Both are tested.
+
+### Push instead of polling
+
+The supervisor asks each transport what arrived. The file transport can only be
+polled, so `Transport.peek()` is checked on an interval (`--poll`, default 1s) —
+cheap, since it's a file read, and the *agents* are still event-driven either
+way. A transport backed by a system that can push should override `watch()`
+semantics in its own `fetch`/`peek` implementation and the interval disappears.
+On the SDK path the same effect is available natively through triggers
+(`google.antigravity.triggers.on_file_change` / `every`), which push straight
+into a live session.
 
 ## Session lifecycle: cycling and distillation
 
@@ -351,6 +413,8 @@ symmetric rather than one being a special case.
 .venv/bin/python evals/test_mcp.py                    # wiring, scopes, purity, teams — free
 .venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
 .venv/bin/python evals/test_memory.py                 # memory contract, both stores, free
+.venv/bin/python evals/test_supervisor.py             # reactive dispatch, free
+.venv/bin/python evals/test_reactive.py               # real reactive team, ~30c
 .venv/bin/python evals/run_evals.py                   # clean-room agent
 AGYTEAM_IMPL=agyteam.sdk_cli .venv/bin/python evals/run_evals.py       # SDK agent
 AGYTEAM_IMPL=agyteam.sdk_cli AGYTEAM_EXTRA_ARGS=--mcp \
@@ -365,6 +429,8 @@ Current status — all green as of 2026-09-09:
 | `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 40/40 |
 | `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 28/28 |
 | `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 32/32 |
+| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status | 17/17 |
+| `test_reactive.py` | real agents woken by teammates, end to end, no human polling | 7/7 |
 | `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 on all three paths |
 | `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
 

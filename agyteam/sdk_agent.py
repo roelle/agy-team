@@ -7,10 +7,10 @@ The harness assembles the prompt and runs the loop; our levers are:
 - hooks for tracing and a destructive-command gate
 """
 import datetime
+import os
 import platform
-from pathlib import Path
-
 import sys
+from pathlib import Path
 
 from google.antigravity import (CapabilitiesConfig, LocalAgentConfig, types)
 from google.antigravity.hooks import (on_compaction, policy, post_tool_call,
@@ -75,7 +75,7 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                  trace=None, extra_tools=None, extra_sections=None,
                  subagents=None, identity_default: str | None = None,
                  disabled_tools: list[str] | None = None,
-                 use_mcp: bool = False,
+                 use_mcp: bool = False, with_bus: bool = False,
                  flags: SessionFlags | None = None) -> LocalAgentConfig:
     workspace = Path(workspace)
     box = Toolbox(workspace)  # creates workspace/memory/
@@ -133,10 +133,24 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
 
     mcp_servers = None
     if use_mcp:
-        mcp_servers = [types.McpStdioServer(
-            name="agyteam_memory", type="stdio", command=sys.executable,
-            args=["-m", "agyteam.mcp_memory", str(workspace)],
-            env={"PYTHONPATH": str(cfg.PROJECT_ROOT)})]
+        # Same servers the agy plugin mounts, with the same env-derived
+        # identity — so behaviour verified here transfers to the plugin.
+        mcp_env = {"PYTHONPATH": str(cfg.PROJECT_ROOT), "AGYTEAM_AGENT": name}
+        for k in ("AGYTEAM_TEAM_DIR", "AGYTEAM_TEAM", "AGYTEAM_TEAMS_ROOT",
+                  "AGYTEAM_DURABLE_DIR", "AGYTEAM_BUS_TRANSPORT",
+                  "AGYTEAM_BUS_CONFIG", "AGYTEAM_MEMORY_STORE",
+                  "AGYTEAM_MEMORY_CONFIG"):
+            if os.environ.get(k):
+                mcp_env[k] = os.environ[k]
+        mcp_servers = [
+            types.McpStdioServer(
+                name="agyteam_memory", type="stdio", command=sys.executable,
+                args=["-m", "agyteam.mcp_memory", str(workspace)], env=mcp_env),
+        ]
+        if with_bus:
+            mcp_servers.append(types.McpStdioServer(
+                name="agyteam_bus", type="stdio", command=sys.executable,
+                args=["-m", "agyteam.mcp_bus"], env=mcp_env))
 
     off = [types.BuiltinTools(t) for t in (disabled_tools or [])]
 

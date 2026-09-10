@@ -18,3 +18,5 @@ evals/team_shapes/
 team/
 workspace/
 evals/ws_mcp_env/
+evals/reactive_durable/
+evals/reactive_sandbox/

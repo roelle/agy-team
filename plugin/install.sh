@@ -23,7 +23,8 @@ DURABLE="${AGYTEAM_DURABLE_DIR:-$TEAMS_ROOT/$TEAM}"
 # the plugin has stopped being installable without vendoring.
 PURE_MODULES=(__init__.py config.py scope.py store.py roster.py mcp_base.py
               mcp_memory.py mcp_bus.py transport.py transport_file.py
-              transport_template.py memory.py memory_file.py memory_template.py)
+              transport_template.py memory.py memory_file.py memory_template.py
+              runner.py runner_agy.py supervisor.py)
 
 echo "python      : $PYTHON"
 echo "plugin dest : $PLUGIN_DST"
@@ -64,10 +65,12 @@ fi
 import json, agyteam.mcp_memory, agyteam.mcp_bus
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
+from agyteam.runner import load as load_runner
 load_bus('installer-selftest').teammates()      # forces roster parsing
 load_memory('installer-selftest').index()       # forces memory store load
+load_runner()                                   # forces runner load
 json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
-print('verified: servers import; default transport and memory store both load')" )
+print('verified: servers import; transport, memory store, and runner all load')" )
 
 cat <<NOTE
 
@@ -76,6 +79,13 @@ Installed. Run an agent so its memory and mail are attributed correctly:
     AGYTEAM_AGENT=tpm agy --agent tpm
 
 Keep AGYTEAM_AGENT equal to what you pass to --agent.
+
+Or let the team run itself — teammates are woken when they get mail, so one
+instruction cascades without you checking anything:
+
+    $PYTHON -m agyteam.supervisor --say "tpm: <your task>"    # until idle
+    $PYTHON -m agyteam.supervisor --daemon                    # stay reactive
+    $PYTHON -m agyteam.supervisor --status                    # who has mail
 
 Teams are isolated — separate roster, bus, and memory, no cross-talk:
 

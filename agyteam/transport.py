@@ -72,6 +72,15 @@ class Transport(ABC):
 
     # --- optional ---------------------------------------------------------
 
+    def peek(self) -> list[Message] | None:
+        """Messages waiting for me, WITHOUT consuming them. None = unsupported.
+
+        Used by status displays and supervisor scheduling. Implement it if you
+        can: a status command built on fetch() would destroy the very work it
+        was asked to report on.
+        """
+        return None
+
     def broadcast(self, content: str) -> str:
         names = [t["name"] for t in self.teammates()]
         for n in names:

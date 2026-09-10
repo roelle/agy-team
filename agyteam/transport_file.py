@@ -81,11 +81,20 @@ class FileTransport(Transport):
             return f"[delivered to {to}]"
         return "[delivered to the user — they will see it in the team log]"
 
-    def fetch(self) -> list[Message]:
+    def _read_inbox(self) -> list[Message]:
         path = self.inbox_dir / f"{self.me}.jsonl"
         if not path.exists() or not path.read_text().strip():
             return []
-        raw = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
-        path.write_text("")          # consumed on read; never redelivered
         return [Message(ts=m["ts"], sender=m["from"], to=m["to"],
-                        content=m["content"]) for m in raw]
+                        content=m["content"])
+                for m in (json.loads(l)
+                          for l in path.read_text().splitlines() if l.strip())]
+
+    def peek(self) -> list[Message]:
+        return self._read_inbox()
+
+    def fetch(self) -> list[Message]:
+        msgs = self._read_inbox()
+        if msgs:
+            (self.inbox_dir / f"{self.me}.jsonl").write_text("")  # consumed once
+        return msgs
