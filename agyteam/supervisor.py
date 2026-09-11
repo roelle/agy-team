@@ -523,6 +523,7 @@ class Supervisor:
         self._user_mail_at_start = self._user_mail_count()
         self.hops = 0
         self.stopped = ""
+        self._purged_agents: set[str] = set()
 
     def _user_mail_count(self) -> int | None:
         """How much mail the user is holding. None if peek is unsupported."""
@@ -612,6 +613,44 @@ class Supervisor:
                 first = reply.strip().splitlines()[0] if reply.strip() else ""
                 self._log(f"    {agent}: {first[:120]}")
             dispatched += 1
+
+            anomaly_threshold = int(os.environ.get(
+                "AGYTEAM_ANOMALY_OUTPUT_TOKENS", config.ANOMALY_OUTPUT_TOKENS_THRESHOLD
+            ))
+            try:
+                turn_events = self.observer.events("turn")
+                agent_turns = [
+                    ev for ev in turn_events
+                    if ev.get("agent") == agent
+                ]
+                latest_turn = agent_turns[-1] if agent_turns else None
+                print("LATEST:", latest_turn)
+            except Exception:
+                latest_turn = None
+
+            if (
+                latest_turn
+                and latest_turn.get("output_tokens") is not None
+                and latest_turn["output_tokens"] > anomaly_threshold
+            ):
+                err_msg = (
+                    f"anomaly detected for {agent}: output tokens "
+                    f"({latest_turn['output_tokens']}) exceeded threshold ({anomaly_threshold})"
+                )
+                self._log(f"[WARNING: {err_msg}]")
+                cid = (
+                    latest_turn.get("conversation")
+                    or getattr(self.runner, "conversation_id", lambda a: "")(agent)
+                    or ""
+                )
+                dur = latest_turn.get("duration_s") or (time.monotonic() - t0)
+                self.purge_context(agent)
+                try:
+                    self.observer.record_failure(agent, cid, err_msg, duration_s=dur)
+                except Exception:
+                    pass
+                self.stopped = err_msg
+                return dispatched
         return dispatched
 
     def run_until_idle(self) -> int:
@@ -625,6 +664,8 @@ class Supervisor:
         while self.hops < self.max_hops:
             n = self.step()
             total += n
+            if self.stopped:
+                break
             if n == 0:
                 self.stopped = "team went idle"
                 break
@@ -670,7 +711,7 @@ class Supervisor:
                 self.stopped = "the user was answered (unreviewed)"
                 self._log("[WARNING: the user was answered without an approved review recorded in reviews.jsonl]")
                 break
-        if self.hops >= self.max_hops:
+        if self.hops >= self.max_hops and not self.stopped:
             self.stopped = f"hop budget of {self.max_hops} reached"
             self._log(f"[hop budget of {self.max_hops} reached — stopping. "
                       f"Raise --max-hops or send a new instruction.]")
@@ -695,9 +736,13 @@ class Supervisor:
         self._log(f"supervising {', '.join(self.agents)} "
                   f"via {self.runner.label} — Ctrl+C to stop")
         while not stop.is_set():
+            if self.stopped:
+                break
             if self.step() == 0:
                 self.auto_cycle()
                 stop.wait(self.poll)
+            elif self.stopped:
+                break
             # A long-running daemon should not inherit a budget meant to bound
             # one stimulus; the cap applies per burst of activity.
             elif self.hops >= self.max_hops:
@@ -722,11 +767,25 @@ class Supervisor:
         finally:
             store.close()
 
+    def purge_context(self, agent: str) -> None:
+        """Purge conversation context for an anomalous agent without distillation.
+
+        Bypasses distill() completely to prevent poisoning memory/ or NORMS.md.
+        """
+        self._purged_agents.add(agent)
+        self.runner.reset(agent)
+        self._log(f"    {agent}: purged conversation context (bypassing distillation)")
+
     def distill(self, agent: str) -> tuple[int, int]:
         """Wake `agent` to distill learnings into memory.
 
         Returns (before_count, after_count).
         """
+        if agent in self._purged_agents:
+            self._log(f"    {agent}: distillation bypassed (agent context was purged due to anomaly)")
+            before = self._memory_count(agent)
+            return (before, before)
+
         self._last_distill_failed = False
         before_snap = self._memory_snapshot(agent)
         before = len(before_snap)
@@ -776,6 +835,11 @@ class Supervisor:
         Cycling without distilling first is not permitted.
         Returns (before_count, after_count).
         """
+        if agent in self._purged_agents:
+            self._log(f"    {agent}: cycle aborted (agent context was purged due to anomaly)")
+            before = self._memory_count(agent)
+            return (before, before)
+
         counts = self.distill(agent)
         if getattr(self, "_last_distill_failed", False):
             self._log(f"    {agent}: cycle aborted because distillation failed")
@@ -791,6 +855,7 @@ class Supervisor:
         Returns list of cycled agent names.
         """
         threshold = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", config.CYCLE_THRESHOLD_TOKENS))
+        anomaly_threshold = int(os.environ.get("AGYTEAM_ANOMALY_OUTPUT_TOKENS", config.ANOMALY_OUTPUT_TOKENS_THRESHOLD))
         try:
             turn_events = self.observer.events("turn")
         except Exception:
@@ -800,6 +865,9 @@ class Supervisor:
 
         cycled = []
         for agent in self.agents:
+            if agent in self._purged_agents:
+                continue
+
             conv_id = getattr(self.runner, "conversation_id", lambda a: None)(agent)
             if not conv_id:
                 continue
@@ -812,6 +880,12 @@ class Supervisor:
                 continue
 
             latest_ev = agent_turns[-1]
+            out_tok = latest_ev.get("output_tokens")
+            if out_tok is not None and out_tok > anomaly_threshold:
+                self._log(f"  → skipping auto-cycle for {agent}: latest turn output_tokens ({out_tok}) > anomaly threshold ({anomaly_threshold}); purging context instead")
+                self.purge_context(agent)
+                continue
+
             input_tokens = latest_ev.get("input_tokens")
             if input_tokens is None or input_tokens <= threshold:
                 continue

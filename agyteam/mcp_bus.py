@@ -21,6 +21,7 @@ guessing, so messages can never be filed under the wrong agent.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -53,12 +54,12 @@ TOOLS = [
     tool("record_review",
          "Record a verification review of a feature, change, or task. "
          "Must specify what was reviewed, verdict ('approved' or 'changes_requested'), "
-         "specific cases tried (cannot be empty), and findings.",
+         "proof_file (path to test file containing executable assertions), and findings.",
          {"what": string("What was reviewed (feature, branch, PR, or task)"),
           "verdict": string("Verdict: 'approved' or 'changes_requested'"),
-          "cases_tried": string("Specific test cases and scenarios constructed and executed (required)"),
-          "findings": string("Observations, issues found, or confirmation of behavior")},
-         ["what", "verdict", "cases_tried"]),
+          "proof_file": string("Path to a test file containing executable assertions"),
+          "findings": string("Observations, defect analysis, or behavior notes")},
+         ["what", "verdict", "proof_file"]),
     tool("list_reviews",
          "List durable verification reviews recorded for this team.",
          {}),
@@ -89,14 +90,18 @@ def _check_inbox(t: Transport) -> str:
     return "\n\n".join(m.render() for m in msgs) if msgs else "[inbox empty]"
 
 
-def _reviews_path(t: Transport) -> Path:
+def _team_dir(t: Transport) -> Path:
     if hasattr(t, "dir") and t.dir:
-        return Path(t.dir) / "reviews.jsonl"
+        return Path(t.dir)
     env = os.environ.get("AGYTEAM_TEAM_DIR")
     if env:
-        return Path(env) / "reviews.jsonl"
+        return Path(env)
     from . import scope
-    return scope.load().team_dir() / "reviews.jsonl"
+    return scope.load().team_dir()
+
+
+def _reviews_path(t: Transport) -> Path:
+    return _team_dir(t) / "reviews.jsonl"
 
 
 def _record_review(t: Transport, a: dict) -> str:
@@ -109,21 +114,56 @@ def _record_review(t: Transport, a: dict) -> str:
     if verdict not in ("approved", "changes_requested"):
         return f"[error: verdict must be 'approved' or 'changes_requested', got {verdict!r}]"
 
-    cases_tried = a.get("cases_tried")
-    if cases_tried is None:
-        return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
-    if isinstance(cases_tried, str):
-        if not cases_tried.strip():
-            return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
-        cases = cases_tried.strip()
-    elif isinstance(cases_tried, list):
-        cleaned = [str(c).strip() for c in cases_tried if str(c).strip()]
-        if not cleaned:
-            return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
-        cases = cleaned
-    else:
-        return "[error: cases_tried is required and cannot be empty. A review must state what was attempted.]"
+    proof_file = a.get("proof_file")
+    if proof_file is None:
+        return "[error: proof_file is required and cannot be empty]"
+    if not isinstance(proof_file, str) or not proof_file.strip():
+        return "[error: proof_file is required and cannot be empty]"
+    proof_file = proof_file.strip()
 
+    proof_path = Path(proof_file)
+    if proof_path.is_absolute():
+        if not proof_path.is_file():
+            return f"[error: proof_file not found or not a file: '{proof_file}']"
+    else:
+        team_dir = _team_dir(t)
+        if (Path.cwd() / proof_path).is_file():
+            proof_path = (Path.cwd() / proof_path).resolve()
+        elif (team_dir / proof_path).is_file():
+            proof_path = (team_dir / proof_path).resolve()
+        elif (Path("/mnt/data/agy-exp") / proof_path).is_file():
+            proof_path = (Path("/mnt/data/agy-exp") / proof_path).resolve()
+        else:
+            return f"[error: proof_file not found or not a file: '{proof_file}']"
+
+    python_bin = "/mnt/data/claw-agy/.venv/bin/python"
+    if not Path(python_bin).exists():
+        python_bin = sys.executable
+
+    try:
+        proc = subprocess.run(
+            [python_bin, "-m", "pytest", str(proof_path), "-q"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return "[error: verification failed: proof_file timed out after 30s]"
+    except Exception as e:
+        return f"[error: verification failed: could not execute proof_file: {e}]"
+
+    if verdict == "approved":
+        if proc.returncode != 0:
+            details = f"{proc.stdout}\n{proc.stderr}".strip()
+            if details:
+                return f"[error: verification failed: proof_file did not pass (exit code {proc.returncode})]\n{details}"
+            return f"[error: verification failed: proof_file did not pass (exit code {proc.returncode})]"
+    elif verdict == "changes_requested":
+        if proc.returncode == 0:
+            return "[error: proof_file passed cleanly; changes_requested requires a failing reproduction case]"
+
+    cases_summary = proc.stdout.strip() or proc.stderr.strip()
     findings = a.get("findings", "")
     findings_str = findings.strip() if isinstance(findings, str) else str(findings)
 
@@ -134,13 +174,14 @@ def _record_review(t: Transport, a: dict) -> str:
         "reviewer": t.me,
         "what": what,
         "verdict": verdict,
-        "cases_tried": cases,
+        "proof_file": proof_file,
+        "cases_tried": cases_summary,
         "findings": findings_str,
     }
-    with rev_path.open("a") as f:
+    with rev_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
-    return f"[review recorded: {verdict} for '{what}']"
+    return f"[review recorded: {verdict} for '{what}' with proof {proof_file}]"
 
 
 def _list_reviews(t: Transport) -> str:
@@ -148,7 +189,7 @@ def _list_reviews(t: Transport) -> str:
     if not rev_path.exists():
         return "[no reviews recorded]"
     try:
-        content = rev_path.read_text().strip()
+        content = rev_path.read_text(encoding="utf-8").strip()
     except OSError as e:
         return f"[error reading reviews: {e}]"
     if not content:
@@ -173,10 +214,13 @@ def _list_reviews(t: Transport) -> str:
         reviewer = r.get("reviewer", "unknown")
         what = r.get("what", "unknown")
         verdict = r.get("verdict", "unknown")
+        proof = r.get("proof_file")
         cases = r.get("cases_tried", [])
         findings = r.get("findings", "")
 
         lines.append(f"- [{ts}] {reviewer} -> {verdict}: {what}")
+        if proof:
+            lines.append(f"  Proof file: {proof}")
         if isinstance(cases, list):
             lines.append("  Cases tried:")
             for c in cases:

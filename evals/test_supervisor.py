@@ -215,10 +215,79 @@ def test_loader() -> tuple[int, int]:
     ]), 4
 
 
+def test_anomaly_detection_and_context_purge() -> tuple[int, int]:
+    """Anomalous token explosion triggers immediate purge and halts the episode without distillation."""
+    print("\n== anomaly detection and context purge ==")
+    # Pin the threshold for this test rather than inheriting the shipped
+    # default. The fixture below used to be chosen to exceed whatever config
+    # said, so retuning the production constant broke the test -- which is
+    # backwards: a test of the mechanism should not depend on the tuning.
+    from agyteam import config as _cfg
+    _saved_threshold = _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD
+    _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD = 4_000
+    make_team()
+
+    class AnomalyRunner(ScriptedRunner):
+        def wake(self, agent, message):
+            self.woken.append(agent)
+            cid = f"conv-{agent}-123"
+            self.remember_conversation(agent, cid)
+            if agent == "coder":
+                self.observer.record_turn(
+                    agent, cid, duration_s=0.5,
+                    input_tokens=200, output_tokens=5000, total_tokens=5200,
+                )
+                return "repeating " * 500
+            self.observer.record_turn(
+                agent, cid, duration_s=0.1,
+                input_tokens=100, output_tokens=50, total_tokens=150,
+            )
+            bus = load_transport(agent)
+            bus.send("coder", "do work")
+            bus.close()
+            return "delegated"
+
+    runner = AnomalyRunner({})
+    sup = Supervisor(["tpm", "coder"], runner, max_hops=10, quiet=True)
+    load_transport("user").send("tpm", "kick off task")
+
+    turns = sup.run_until_idle()
+
+    stopped = sup.stopped
+    coder_cid_after = runner.conversation_id("coder")
+    convs_after = runner.conversations()
+
+    events = sup.observer.events()
+    failures = [
+        ev for ev in events
+        if ev.get("event") == "failure" and ev.get("agent") == "coder"
+    ]
+    cycled = sup.auto_cycle()
+    distill_counts = sup.distill("coder")
+
+    sup.close()
+
+    _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD = _saved_threshold   # leave no global set
+    return sum([
+        check("anomaly halts the episode immediately", turns == 2, f"turns: {turns}"),
+        check("supervisor reports anomaly detection in stopped reason",
+              "anomaly detected for coder" in stopped and "exceeded threshold" in stopped, stopped),
+        check("purged agent conversation context was cleared from runner",
+              coder_cid_after is None and "coder" not in convs_after, str(convs_after)),
+        check("observer recorded failure event for anomaly",
+              len(failures) == 1 and "anomaly detected" in failures[0].get("error", ""), str(failures)),
+        check("the shipped threshold is restored after the test",
+              _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD == _saved_threshold),
+        check("distillation was completely bypassed on purged agent",
+              distill_counts[0] == distill_counts[1] and "coder" not in cycled),
+    ]), 6
+
+
 if __name__ == "__main__":
     totals = [test_cascade(), test_hop_budget(), test_failure_isolation(),
               test_peek_is_nondestructive(), test_stop_on_answer(),
-              test_user_mail_survives(), test_loader()]
+              test_user_mail_survives(), test_loader(),
+              test_anomaly_detection_and_context_purge()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== supervisor: {got}/{want} ==")
     sys.exit(0 if got == want else 1)
