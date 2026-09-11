@@ -494,19 +494,32 @@ def test_manager_persona_and_roster() -> tuple[int, int]:
             json_valid = False
         checks.append(check("seeded roster is valid JSON", json_valid, str(json_clean[:100])))
 
-        tpm_entry = next((a for a in roster_data.get("agents", []) if a.get("name") == "tpm"), {})
+        # The four accountability properties belong to whoever holds the gate.
+        # They lived on tpm while the roles were merged; the split moved them to
+        # 'manager', so these assertions follow the subject rather than being
+        # dropped. tpm keeps its own checks below.
+        tpm_entry = next((a for a in roster_data.get("agents", []) if a.get("name") == "manager"), {})
         tpm_role = tpm_entry.get("role", "").lower()
+        boots = next((a for a in roster_data.get("agents", []) if a.get("name") == "tpm"), {})
+        boots_role = boots.get("role", "").lower()
+        checks.append(check("tpm is boots on the ground, reporting to the manager",
+                            "decompos" in boots_role and "manager" in boots_role
+                            and "not to the user" in boots_role,
+                            boots.get("role", "")))
+        checks.append(check("manager does not delegate implementation directly",
+                            "through tpm" in tpm_role,
+                            tpm_entry.get("role", "")))
 
-        checks.append(check("tpm role states Gatekeeper property",
+        checks.append(check("manager role states Gatekeeper property",
                             "gatekeeper" in tpm_role and "reviewed" in tpm_role,
                             tpm_entry.get("role", "")))
-        checks.append(check("tpm role states Final check property",
+        checks.append(check("manager role states Final check property",
                             "final check" in tpm_role and "comes back to the manager" in tpm_role,
                             tpm_entry.get("role", "")))
-        checks.append(check("tpm role states Accountable property",
+        checks.append(check("manager role states Accountable property",
                             "accountable" in tpm_role and "coder said it was done" in tpm_role,
                             tpm_entry.get("role", "")))
-        checks.append(check("tpm role states Interrupt-driven property",
+        checks.append(check("manager role states Interrupt-driven property",
                             "interrupt-driven" in tpm_role and "grounded in the record" in tpm_role,
                             tpm_entry.get("role", "")))
         checks.append(check("tpm preserves tools_off and workers=false",
