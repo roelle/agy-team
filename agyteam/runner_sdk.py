@@ -21,7 +21,7 @@ from . import config as cfg
 from . import persona
 from . import roster as roster_lib
 from . import scope
-from .runner import Runner
+from .runner import Runner, with_retry
 from .sdk_agent import build_config
 
 WORKER = types.SubagentConfig(
@@ -129,8 +129,14 @@ class SdkRunner(Runner):
 
     def wake(self, agent: str, message: str) -> str:
         t0 = time.monotonic()
+
+        def announce(attempt, delay, err):
+            print(f"    {agent}: provider unavailable, retrying in {delay:.0f}s "
+                  f"(attempt {attempt})", flush=True)
+
         try:
-            return self._submit(self._wake(agent, message))
+            return with_retry(lambda: self._submit(self._wake(agent, message)),
+                              on_wait=announce)
         except Exception as e:
             dur = time.monotonic() - t0
             err = f"[error: {agent} failed: {type(e).__name__}: {e}]"

@@ -36,7 +36,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .runner import Runner
+from .runner import Runner, with_retry
 
 PERMISSION_HINT = (
     'called a tool that needs approval, which headless mode cannot prompt for. '

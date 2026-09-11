@@ -19,6 +19,8 @@ Implement `wake`. See runner_template docs in the class below.
 import importlib
 import json
 import os
+import random
+import time
 from abc import ABC, abstractmethod
 
 # The default must be the runner that works everywhere. runner_sdk needs
@@ -26,6 +28,55 @@ from abc import ABC, abstractmethod
 # standard-library-only, so defaulting to it leaves a fresh install unable to
 # load any runner at all. SdkRunner is better where its dependency exists —
 # opt in with AGYTEAM_RUNNER, or per agent via runner_mixed.
+# Transient provider failures, by the text they arrive as. A capacity spike on
+# the model provider killed two unattended runs in ten minutes: the SDK retried
+# twice, gave up, and the supervisor logged it and moved on -- losing a run with
+# real state in it. Retrying here costs a sleep; not retrying costs the episode.
+RETRYABLE = ("503", "unavailable", "high demand", "429", "resource_exhausted",
+             "rate limit", "timeout", "temporarily")
+RETRY_ATTEMPTS = int(os.environ.get("AGYTEAM_RETRY_ATTEMPTS", 4))
+RETRY_BASE_SECONDS = float(os.environ.get("AGYTEAM_RETRY_BASE", 5))
+
+
+def is_retryable(text: str) -> bool:
+    """True if this failure is worth waiting out rather than reporting."""
+    low = (text or "").lower()
+    # A model that does not exist is not a capacity problem, and retrying it
+    # four times just spends four times as long being wrong.
+    if "not found" in low or "not supported" in low or "api key" in low:
+        return False
+    return any(k in low for k in RETRYABLE)
+
+
+def with_retry(fn, *, attempts: int | None = None, on_wait=None):
+    """Run fn(), retrying transient provider failures with backoff.
+
+    fn returns a result; a result that is a string starting with "[error:" is
+    treated as a failure, since that is how runners report rather than raise.
+    """
+    attempts = attempts or RETRY_ATTEMPTS
+    last = None
+    for i in range(attempts):
+        try:
+            out = fn()
+            if not (isinstance(out, str) and out.startswith("[error:")
+                    and is_retryable(out)):
+                return out
+            last = out
+        except Exception as e:              # noqa: BLE001 - runners must not raise
+            if not is_retryable(str(e)):
+                raise
+            last = f"[error: {type(e).__name__}: {e}]"
+        if i < attempts - 1:
+            # Jittered exponential backoff: a capacity spike hits every agent at
+            # once, and synchronised retries reproduce the spike.
+            delay = RETRY_BASE_SECONDS * (2 ** i) * (0.5 + random.random())
+            if on_wait:
+                on_wait(i + 1, delay, last)
+            time.sleep(delay)
+    return last
+
+
 DEFAULT_RUNNER = "agyteam.runner_agy:AgyRunner"
 
 
