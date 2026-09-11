@@ -1,4 +1,4 @@
-"""How to brief and gate this team, seeded into the manager's memory.
+"""How to brief, gate, and run this team, seeded into memory.
 
 Companion to qa_seed.py. That one carries defects the team keeps making; this
 one carries what the maintainer learned about *running* them — how to write a
@@ -8,8 +8,15 @@ None of this is general project-management advice. Every entry is a lesson that
 cost a failed run, a wrong merge, or real money on this project, written down so
 the next person holding this seat does not re-learn it the same way.
 
-    python -m agyteam.manager_seed              # seed the current team's tpm
-    python -m agyteam.manager_seed --agent m    # or whoever holds the role
+Two roles, two bodies of craft. The manager faces outward: it takes the problem
+from the user, decides what "good" means, gates what goes back, and owns the
+answer. The tpm faces inward: it decomposes work into pieces an agent can
+actually finish, tracks what is outstanding, and unblocks people. Seeding them
+identically would blur exactly the distinction the split exists to create.
+
+    python -m agyteam.manager_seed                    # seed both roles
+    python -m agyteam.manager_seed --role manager     # just one
+    python -m agyteam.manager_seed --agent boss --role manager
 
 Re-running updates rather than duplicates. Add to it when running the team
 teaches you something a brief would have prevented.
@@ -19,7 +26,7 @@ import os
 import sys
 
 # (name, description, why, content)
-PATTERNS = [
+TPM_PATTERNS = [
     ("brief-decompose-by-size",
      "Delegate one step at a time; an agent turn is a bounded unit of work",
      "An identical task handed over as one lump died mid-turn with nothing to "
@@ -39,6 +46,9 @@ step returns empty, it was too big — split it, do not retry it. Five small rou
 trips beat one that dies.
 """),
 
+]
+
+MANAGER_PATTERNS = [
     ("brief-make-failure-visible",
      "Acceptance criteria must name the command and the number it must produce",
      "Vague criteria let an agent report success honestly while the feature is "
@@ -152,20 +162,33 @@ observation nobody else in the loop is positioned to make.
 ]
 
 
+ROLES = {"tpm": TPM_PATTERNS, "manager": MANAGER_PATTERNS}
+
+
+def seed(agent: str, patterns) -> None:
+    os.environ["AGYTEAM_AGENT"] = agent
+    from . import memory as memory_lib
+    store = memory_lib.load(agent)
+    for name, description, why, content in patterns:
+        created = store.save(name, description, content, why=why)
+        print(f"  {'saved  ' if created else 'updated'} {agent}/{name}")
+    print(f"  {agent} now knows {len(store.index())} memories.\n")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agyteam.manager_seed",
-                                 description="Seed the manager's craft memory")
-    ap.add_argument("--agent", default="tpm")
+                                 description="Seed craft memory by role")
+    ap.add_argument("--role", choices=sorted(ROLES), default=None,
+                    help="Seed one role only (default: both)")
+    ap.add_argument("--agent", default=None,
+                    help="Agent name to seed (default: same as the role)")
     args = ap.parse_args(argv)
 
-    os.environ["AGYTEAM_AGENT"] = args.agent
-    from . import memory as memory_lib
-    store = memory_lib.load(args.agent)
-
-    for name, description, why, content in PATTERNS:
-        created = store.save(name, description, content, why=why)
-        print(f"  {'saved  ' if created else 'updated'} {name}")
-    print(f"\n{args.agent} now knows {len(store.index())} memories.")
+    roles = [args.role] if args.role else sorted(ROLES)
+    if args.agent and len(roles) > 1:
+        ap.error("--agent needs --role: it names who holds that one role")
+    for role in roles:
+        seed(args.agent or role, ROLES[role])
     return 0
 
 
