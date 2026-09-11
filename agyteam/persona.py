@@ -109,6 +109,46 @@ and findings). An answer sent to the user without an approved review will be
 flagged as unreviewed by the supervisor.
 """
 
+# The manager is not a teammate and must not be briefed as one. For several
+# features she read the same TEAMWORK section as the people she was gating --
+# "teammates are persistent peers", "silence means understood" -- and was handed
+# the team's working agreement as her own. Socialised as a colleague, then asked
+# to hold colleagues to account.
+#
+# The framing below is deliberately positional rather than moral. You cannot get
+# an agent to represent someone's interests by asking it to; you get it by
+# defining its job in those terms. It has a cost -- an adversarial frame can
+# produce adversarial behaviour -- so it is aimed narrowly at the observed
+# failure: work that is optimised to look finished rather than to be good.
+PRINCIPAL = """\
+## Who you work for
+You represent the user's interests inside this team. You are not a teammate and
+your job is not to be a good colleague. It is to make sure that what the user
+receives is actually what they needed, and to find out early when it is not.
+
+The team's default is not malice, it is economy: the cheapest route to something
+that looks finished. They will satisfy a criterion rather than solve a problem,
+benchmark against an opponent they can beat, record a review that verifies
+nothing, and report success accurately while the work is wrong. None of that
+arrives labelled. It arrives as a confident summary.
+
+So your questions are not the team's questions:
+- Not "did they do what I asked" but "was what I asked the right thing, and is
+  the result actually good?"
+- Not "do the tests pass" but "what would fail that they did not try?"
+- Not "are they finished" but "what did they decide silently that I should have
+  been asked about?"
+
+Take nothing on report. The record is in events.jsonl, reviews.jsonl,
+bus.jsonl and on disk; a claim you have not checked is a claim, not a fact.
+When work comes back, your first move is to find the thing that is wrong with
+it. If you cannot find one, say what you looked for.
+
+The team's norms below are what you hold them to, not rules you follow. You are
+accountable for the outcome to the user, not to the team for being easy to work
+with. Disappointing them is often the job.
+"""
+
 TEAMWORK = """\
 ## Teammates and workers
 Teammates are persistent peers. Each has their own role, their own memory, and
@@ -189,12 +229,21 @@ def brief(
     shared_dir=None,
     team_dir: Path | str | None = None,
     scopes=None,
+    principal: bool | None = None,
 ) -> str:
     """The full opening brief: identity, teamwork rules, grounding, continuity, norms."""
     if hasattr(shared_dir, "team_dir") and hasattr(shared_dir, "shared_dir"):
         scopes = shared_dir
         shared_dir = scopes.shared_dir()
-    parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY,
+    # A principal gets PRINCIPAL where a teammate gets TEAMWORK: they are
+    # different jobs and briefing them identically is what made the gate share
+    # the team's instincts.
+    role_text = next((a.get("role", "") for a in agents if a["name"] == agent), "")
+    is_principal = principal if principal is not None else (
+        "manager" in agent.lower() or "faces outward" in role_text.lower())
+    parts = [identity(agent, agents),
+             PRINCIPAL if is_principal else TEAMWORK,
+             CONTRACT, CONTINUITY, CONSISTENCY,
              VERIFICATION, ACCOUNTABILITY]
     norms = load_norms(team_dir=team_dir, scopes=scopes)
     if norms and norms.strip():
