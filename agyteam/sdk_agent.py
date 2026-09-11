@@ -105,6 +105,14 @@ def _model_target(model: str, effort: str = ""):
 def _workspaces(workspace: Path) -> list[str]:
     """Directories an agent may touch: its own, the repo, and the team's."""
     paths = [str(workspace), str(Path.cwd())]
+    # Extra directories an agent legitimately needs but does not live in -- a
+    # toolchain, a reference repo, an interpreter. Without this, telling an
+    # agent to "use /some/other/venv/bin/python" hands it a path it is
+    # forbidden to touch, and it burns a turn discovering that.
+    for extra in os.environ.get("AGYTEAM_EXTRA_WORKSPACES", "").split(os.pathsep):
+        extra = extra.strip()
+        if extra and extra not in paths:
+            paths.append(extra)
     try:
         from . import scope
         team = scope.load().team_dir()
