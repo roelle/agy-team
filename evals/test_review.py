@@ -35,6 +35,13 @@ def test_mcp_review_tools() -> tuple[int, int]:
     print("\n== MCP review tools (record_review, list_reviews) ==")
     td = make_team("agyteam-mcp-rev-")
 
+    # Fixture test files for verification gate
+    pass_file = td / "test_pass.py"
+    pass_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    fail_file = td / "test_fail.py"
+    fail_file.write_text("def test_ng():\n    assert False\n", encoding="utf-8")
+
     def call(agent, calls):
         return rpc("agyteam.mcp_bus", [], calls,
                    env={"AGYTEAM_AGENT": agent, "AGYTEAM_TEAM_DIR": str(td)})
@@ -43,32 +50,36 @@ def test_mcp_review_tools() -> tuple[int, int]:
     r_empty = call("syseng", [("list_reviews", {})])[2:]
     out_empty = text_of(r_empty[0])
 
-    # 2. Validation failures: cases_tried missing, empty string, empty list
+    # 2. Validation failures: proof_file missing, empty, not found, invalid verdict, empty what, verification mismatches
     r_val = call("syseng", [
         ("record_review", {"what": "feature X", "verdict": "approved"}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "cases_tried": ""}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "cases_tried": []}),
-        ("record_review", {"what": "feature X", "verdict": "rejected", "cases_tried": "test 1"}),
-        ("record_review", {"what": "", "verdict": "approved", "cases_tried": "test 1"}),
+        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": ""}),
+        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": "nonexistent_test.py"}),
+        ("record_review", {"what": "feature X", "verdict": "rejected", "proof_file": str(pass_file)}),
+        ("record_review", {"what": "", "verdict": "approved", "proof_file": str(pass_file)}),
+        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
+        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
     ])[2:]
-    out_no_cases = text_of(r_val[0])
-    out_empty_cases_str = text_of(r_val[1])
-    out_empty_cases_list = text_of(r_val[2])
+    out_no_proof = text_of(r_val[0])
+    out_empty_proof = text_of(r_val[1])
+    out_missing_file = text_of(r_val[2])
     out_bad_verdict = text_of(r_val[3])
     out_no_what = text_of(r_val[4])
+    out_approved_failing = text_of(r_val[5])
+    out_changes_passing = text_of(r_val[6])
 
     # 3. Successful recording: approved and changes_requested
     r_rec = call("syseng", [
         ("record_review", {
             "what": "review_memory tool",
             "verdict": "approved",
-            "cases_tried": ["clean store produces 0 flags", "motivating broken tool case"],
+            "proof_file": str(pass_file),
             "findings": "all test suites pass, clean keyword detection"
         }),
         ("record_review", {
             "what": "flaky retry loop",
             "verdict": "changes_requested",
-            "cases_tried": "simulated 504 timeout",
+            "proof_file": str(fail_file),
             "findings": "loop hangs indefinitely without backoff"
         }),
         ("list_reviews", {}),
@@ -77,7 +88,18 @@ def test_mcp_review_tools() -> tuple[int, int]:
     out_changes = text_of(r_rec[1])
     out_list = text_of(r_rec[2])
 
-    # 4. Team directory isolation
+    # 4. Check reviews.jsonl contents directly
+    reviews_file = td / "reviews.jsonl"
+    lines = [json.loads(line) for line in reviews_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    has_proof_and_cases = (
+        len(lines) == 2 and
+        lines[0].get("proof_file") == str(pass_file) and
+        "passed" in lines[0].get("cases_tried", "") and
+        lines[1].get("proof_file") == str(fail_file) and
+        ("failed" in lines[1].get("cases_tried", "") or "FAILED" in lines[1].get("cases_tried", ""))
+    )
+
+    # 5. Team directory isolation
     td2 = make_team("agyteam-mcp-rev2-")
     r_iso = rpc("agyteam.mcp_bus", [], [("list_reviews", {})],
                 env={"AGYTEAM_AGENT": "syseng", "AGYTEAM_TEAM_DIR": str(td2)})[2:]
@@ -86,35 +108,43 @@ def test_mcp_review_tools() -> tuple[int, int]:
     return sum([
         check("missing reviews.jsonl returns [no reviews recorded]",
               out_empty == "[no reviews recorded]", out_empty),
-        check("missing cases_tried rejected loudly",
-              out_no_cases.startswith("[error:") and "cases_tried is required" in out_no_cases,
-              out_no_cases),
-        check("empty string cases_tried rejected loudly",
-              out_empty_cases_str.startswith("[error:") and "cases_tried is required" in out_empty_cases_str,
-              out_empty_cases_str),
-        check("empty list cases_tried rejected loudly",
-              out_empty_cases_list.startswith("[error:") and "cases_tried is required" in out_empty_cases_list,
-              out_empty_cases_list),
+        check("missing proof_file rejected loudly",
+              out_no_proof.startswith("[error:") and "proof_file is required" in out_no_proof,
+              out_no_proof),
+        check("empty string proof_file rejected loudly",
+              out_empty_proof.startswith("[error:") and "proof_file is required" in out_empty_proof,
+              out_empty_proof),
+        check("non-existent proof_file rejected loudly",
+              out_missing_file.startswith("[error:") and "proof_file not found" in out_missing_file,
+              out_missing_file),
         check("invalid verdict rejected loudly",
               out_bad_verdict.startswith("[error:") and "verdict must be" in out_bad_verdict,
               out_bad_verdict),
         check("empty what rejected loudly",
               out_no_what.startswith("[error:") and "what is required" in out_no_what,
               out_no_what),
+        check("approved with failing proof rejected loudly",
+              out_approved_failing.startswith("[error: verification failed: proof_file did not pass"),
+              out_approved_failing),
+        check("changes_requested with passing proof rejected loudly",
+              out_changes_passing.startswith("[error: proof_file passed cleanly"),
+              out_changes_passing),
         check("approved review recorded successfully",
-              "review recorded: approved" in out_approved and "review_memory tool" in out_approved,
+              "review recorded: approved" in out_approved and "review_memory tool" in out_approved and str(pass_file) in out_approved,
               out_approved),
         check("changes_requested recorded successfully",
-              "review recorded: changes_requested" in out_changes and "flaky retry loop" in out_changes,
+              "review recorded: changes_requested" in out_changes and "flaky retry loop" in out_changes and str(fail_file) in out_changes,
               out_changes),
+        check("reviews.jsonl contains proof_file and captured pytest output",
+              has_proof_and_cases, str(lines)),
         check("list_reviews distinguishes approved from changes_requested",
               "approved" in out_list and "changes_requested" in out_list, out_list),
-        check("list_reviews includes reviewer, cases tried, and findings",
-              "syseng" in out_list and "clean store produces 0 flags" in out_list and "loop hangs" in out_list,
+        check("list_reviews includes reviewer, proof file, and findings",
+              "syseng" in out_list and str(pass_file) in out_list and "loop hangs" in out_list,
               out_list),
         check("team directory isolation: reviews do not leak to another team",
               out_iso == "[no reviews recorded]", out_iso),
-    ]), 11
+    ]), 14
 
 
 def test_supervisor_review_gate() -> tuple[int, int]:
@@ -143,7 +173,8 @@ def test_supervisor_review_gate() -> tuple[int, int]:
             "reviewer": "syseng",
             "what": "feature B",
             "verdict": "changes_requested",
-            "cases_tried": ["test case 1"],
+            "proof_file": "tests/test_b.py",
+            "cases_tried": "1 failed in 0.01s",
             "findings": "defect found"
         }) + "\n")
     runner2 = ScriptedRunner({"script": {
@@ -168,7 +199,8 @@ def test_supervisor_review_gate() -> tuple[int, int]:
                         "reviewer": "syseng",
                         "what": "feature C",
                         "verdict": "approved",
-                        "cases_tried": ["offline test suite", "edge case test"],
+                        "proof_file": "tests/test_c.py",
+                        "cases_tried": "1 passed in 0.01s",
                         "findings": "all passed"
                     }) + "\n")
             return super().wake(agent, message)

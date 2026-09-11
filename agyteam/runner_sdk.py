@@ -148,6 +148,31 @@ class SdkRunner(Runner):
                 pass
             return err
 
+    def reset(self, agent: str | None = None) -> None:
+        """Forget stored conversations and close/evict live SDK sessions."""
+        super().reset(agent)
+        targets = [agent] if agent is not None else list(set(self._agents.keys()) | set(self._cms.keys()))
+
+        async def _close_sessions():
+            for a in targets:
+                cm = self._cms.pop(a, None)
+                self._agents.pop(a, None)
+                if cm is not None:
+                    try:
+                        await cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+
+        try:
+            if self._loop and self._loop.is_running():
+                self._submit(_close_sessions())
+            else:
+                for a in targets:
+                    self._cms.pop(a, None)
+                    self._agents.pop(a, None)
+        except Exception:
+            pass
+
     def close(self):
         async def shutdown():
             for cm in self._cms.values():

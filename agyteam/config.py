@@ -33,6 +33,19 @@ KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 # Env-overridable so tests or custom workflows can trigger cycling deterministically.
 CYCLE_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", 100_000))
 
+# Output-token ceiling above which a turn is treated as a model coming apart
+# rather than a turn, derived from this project's own events.jsonl rather than
+# guessed. Across 141 real turns: median 6,282, p90 50,403, and one genuine
+# degeneration at 423,324. The first value shipped here was 4,000, which sat
+# BELOW the median and fired on 60% of healthy turns -- it purged the manager's
+# context mid-task on its first run.
+#
+# 150,000 sits ~3x above p90 and well under the observed breakdown, so it
+# catches the failure without touching normal work. Re-derive it from
+# events.jsonl if the team's turn profile changes; do not guess it.
+ANOMALY_OUTPUT_TOKENS_THRESHOLD = int(
+    os.environ.get("AGYTEAM_ANOMALY_OUTPUT_TOKENS", 150_000))
+
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
 
 # Retrospective bounding and rate-control (Step 3 of TASK.md).
