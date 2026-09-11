@@ -102,6 +102,19 @@ def _model_target(model: str, effort: str = ""):
         api_key=cfg.api_key(), options=GeminiModelOptions(thinking_level=level)))
 
 
+def _workspaces(workspace: Path) -> list[str]:
+    """Directories an agent may touch: its own, the repo, and the team's."""
+    paths = [str(workspace), str(Path.cwd())]
+    try:
+        from . import scope
+        team = scope.load().team_dir()
+        if str(team) not in paths:
+            paths.append(str(team))
+    except Exception:
+        pass            # no team configured is normal for a single agent
+    return paths
+
+
 def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                  name: str = "Agy", interactive: bool = False, effort: str = "",
                  trace=None, extra_tools=None, extra_sections=None,
@@ -200,7 +213,13 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                             else types.AgentBehavior.AUTONOMOUS),
             compaction_threshold=cfg.COMPACT_THRESHOLD_TOKENS,
         ),
-        workspaces=[str(workspace), str(Path.cwd())],
+        # The team directory too, not just the agent's own workspace and the
+        # repo. Shared team state lives there -- NORMS.md, the roster, the bus --
+        # and without it an agent is refused access to the files its own tools
+        # are meant to maintain. The retro could write no norms at all until
+        # this was added, and every test passed regardless because none of them
+        # wrote to a real team directory.
+        workspaces=_workspaces(workspace),
         policies=[policy.allow_all()],
         hooks=hooks,
         model=_model_target(model, effort),

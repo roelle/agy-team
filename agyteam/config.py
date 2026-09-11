@@ -34,6 +34,38 @@ KEEP_RECENT_TURNS = 6            # Content entries preserved verbatim on compact
 CYCLE_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", 100_000))
 
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
+
+# Retrospective bounding and rate-control (Step 3 of TASK.md).
+# A retro costs a turn per participating agent plus the leader's synthesis turn.
+
+# RETRO_MAX_PARTICIPANTS = 4:
+# On teams with large rosters or multiple specialized agents, waking all agents
+# for reflection causes linear growth in turns and quadratic prompt token overhead.
+# Capping non-leader participants to 4 bounds retro turn cost (at most 5 turns total
+# including leader synthesis) while ensuring essential team functions (coordination,
+# implementation, quality assurance, environment) can all participate.
+# When roster size exceeds this cap, agents are ranked by recent activity (turn
+# events, bus messages, reviews) so the contributors who actually did the work
+# provide the reflection, maintaining roster order among selected agents.
+# Env-overridable via AGYTEAM_RETRO_MAX_PARTICIPANTS.
+RETRO_MAX_PARTICIPANTS = int(os.environ.get("AGYTEAM_RETRO_MAX_PARTICIPANTS", 4))
+
+# RETRO_MAX_TRANSCRIPT_CHARS = 10_000:
+# Bounding the history transcript injected into participant reflection and leader
+# synthesis prompts to 10,000 characters (~2,500 tokens). This comfortably accommodates
+# the executive summary, ~5-10 recent episodes, ~5-10 reviews, and message traffic stats
+# without crowding the model's context or accelerating toward compaction/cycle thresholds.
+# Env-overridable via AGYTEAM_RETRO_MAX_TRANSCRIPT_CHARS.
+RETRO_MAX_TRANSCRIPT_CHARS = int(os.environ.get("AGYTEAM_RETRO_MAX_TRANSCRIPT_CHARS", 10_000))
+
+# RETRO_MAX_REFLECTION_CHARS = 2_500:
+# Bounding individual teammate reflection contributions formatted into the leader's
+# synthesis prompt to 2,500 characters (~600 tokens). This prevents a verbose or
+# runaway agent output from overwhelming the leader's prompt or starving other teammates'
+# perspectives.
+# Env-overridable via AGYTEAM_RETRO_MAX_REFLECTION_CHARS.
+RETRO_MAX_REFLECTION_CHARS = int(os.environ.get("AGYTEAM_RETRO_MAX_REFLECTION_CHARS", 2_500))
+
 # Session-lifetime model-call cap. The SDK's BudgetConfig counts "across the
 # session", NOT per turn, and our sessions now persist across every wake — so a
 # cap here is a budget for the agent's whole life. We shipped 40, which an agent
