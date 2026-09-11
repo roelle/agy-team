@@ -10,6 +10,10 @@ mechanism is undocumented, routes through agy's subagent machinery, and strips
 every builtin tool, so agents defined that way could message each other but
 could not write a file. Roles are defined here, in terms both runtimes share.
 """
+from pathlib import Path
+
+from . import scope
+
 # The grounding contract lives here, not in agent.py, for two reasons: it is
 # the same contract on every runtime, and agent.py imports google.genai, which
 # the plugin's stdlib-only module set cannot have.
@@ -139,6 +143,31 @@ Whoever holds the channel to the user owns the answer:
 """
 
 
+SEEDED_NORMS = f"{CONSISTENCY.strip()}\n\n{VERIFICATION.strip()}\n"
+
+
+def load_norms(team_dir: Path | str | None = None, scopes=None) -> str | None:
+    """Read team norms from NORMS.md if present, else None. Absence is normal."""
+    return scope.read_norms(team_dir=team_dir, scopes=scopes)
+
+
+def seed_norms(
+    team_dir: Path | str | None = None,
+    scopes=None,
+    text: str | None = None,
+    overwrite: bool = False,
+    force: bool = False,
+) -> Path:
+    """Seed NORMS.md with default norms if absent (or forced/overwritten)."""
+    return scope.seed_norms(
+        team_dir=team_dir,
+        scopes=scopes,
+        text=text,
+        overwrite=overwrite,
+        force=force,
+    )
+
+
 def roster_lines(agent: str, agents: list[dict]) -> str:
     peers = [f"- {a['name']}: {a.get('role', '')}"
              for a in agents if a["name"] != agent]
@@ -154,10 +183,22 @@ def identity(agent: str, agents: list[dict]) -> str:
             f"## Your teammates\n{roster_lines(agent, agents)}")
 
 
-def brief(agent: str, agents: list[dict], shared_dir=None) -> str:
-    """The full opening brief: identity, teamwork rules, grounding, continuity."""
+def brief(
+    agent: str,
+    agents: list[dict],
+    shared_dir=None,
+    team_dir: Path | str | None = None,
+    scopes=None,
+) -> str:
+    """The full opening brief: identity, teamwork rules, grounding, continuity, norms."""
+    if hasattr(shared_dir, "team_dir") and hasattr(shared_dir, "shared_dir"):
+        scopes = shared_dir
+        shared_dir = scopes.shared_dir()
     parts = [identity(agent, agents), TEAMWORK, CONTRACT, CONTINUITY, CONSISTENCY,
              VERIFICATION, ACCOUNTABILITY]
+    norms = load_norms(team_dir=team_dir, scopes=scopes)
+    if norms and norms.strip():
+        parts.append(norms.strip())
     if shared_dir:
         parts.append(f"## Shared files\nWork the team shares belongs under "
                      f"{shared_dir}. Your own private notes do not.")

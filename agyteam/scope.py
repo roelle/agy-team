@@ -86,6 +86,18 @@ class Scopes:
         self.shared.mkdir(parents=True, exist_ok=True)
         return self.shared
 
+    def norms_file(self) -> Path:
+        """Team norms file — durable and shared across all agents on this team."""
+        return self.team_dir() / "NORMS.md"
+
+    def read_norms(self) -> str | None:
+        """Read NORMS.md if present, else None. Absence is normal."""
+        return read_norms(scopes=self)
+
+    def seed_norms(self, text: str | None = None, overwrite: bool = False, force: bool = False) -> Path:
+        """Seed NORMS.md if absent (or forced/overwritten). Returns the norms path."""
+        return seed_norms(scopes=self, text=text, overwrite=overwrite, force=force)
+
     def describe(self) -> str:
         in_repo = (self.project / ".git").exists()
         return (f"team:    {self.team}\n"
@@ -137,6 +149,47 @@ def write_config(project: Path, scopes: Scopes) -> Path:
         {"team": scopes.team, "durable": str(scopes.durable),
          "shared": str(scopes.shared)}, indent=2))
     return path
+
+
+def norms_file(team_dir: Path | str | None = None, scopes: Scopes | None = None) -> Path:
+    """Path to NORMS.md for a given team_dir, scopes, or current environment."""
+    if team_dir is not None:
+        return Path(team_dir) / "NORMS.md"
+    if scopes is not None:
+        return scopes.norms_file()
+    env = os.environ.get("AGYTEAM_TEAM_DIR")
+    if env:
+        return Path(env) / "NORMS.md"
+    return load().norms_file()
+
+
+def read_norms(team_dir: Path | str | None = None, scopes: Scopes | None = None) -> str | None:
+    """Read NORMS.md if present, else None. Absence is normal."""
+    p = norms_file(team_dir=team_dir, scopes=scopes)
+    if p.is_file():
+        try:
+            return p.read_text(encoding="utf-8")
+        except OSError:
+            return None
+    return None
+
+
+def seed_norms(
+    team_dir: Path | str | None = None,
+    scopes: Scopes | None = None,
+    text: str | None = None,
+    overwrite: bool = False,
+    force: bool = False,
+) -> Path:
+    """Seed NORMS.md if absent (or forced/overwritten). Returns the norms path."""
+    p = norms_file(team_dir=team_dir, scopes=scopes)
+    if not p.exists() or overwrite or force:
+        if text is None:
+            from .persona import SEEDED_NORMS
+            text = SEEDED_NORMS
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    return p
 
 
 if __name__ == "__main__":   # python -m agyteam.scope → show resolved scopes

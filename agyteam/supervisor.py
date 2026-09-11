@@ -20,6 +20,7 @@ the team.
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -27,6 +28,7 @@ from pathlib import Path
 
 from . import config
 from . import memory as memory_lib
+from . import persona
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
@@ -57,6 +59,429 @@ DISTILL_PROMPT = """Write down, using save_memory, what you have learned that a 
 Record durable, specific lessons — what surprised you, what you got wrong, what you would tell your replacement — rather than a summary of the conversation.
 
 Call save_memory now for each lesson (update existing memories rather than duplicating). If there is nothing durable to record that is not already in memory, do not save anything. Reply with what you saved, or confirm that nothing new needed saving."""
+
+TENSION_ACCOUNTABLE = (
+    "a retro led by the person accountable for the outcome is a weaker retro, "
+    "and that tension is worth naming rather than hiding."
+)
+
+RETRO_PARTICIPANT_PROMPT = """You are participating in a team retrospective on recent work.
+The retro is led by {leader}.
+{tension_note}
+Here is the durable record of recent work (episodes, reviews, and cost):
+
+{record}
+
+Reflect on this record and answer these three questions, in this exact order:
+1. What went well
+2. What did not
+3. What should we change
+
+Under "What should we change", provide concrete proposals or improvements for the team.
+Be specific, grounded in the record above, and direct."""
+
+RETRO_LEADER_PROMPT = """You are leading the team retrospective on recent work.
+{tension_note}
+Here is the durable record of recent work:
+
+{record}
+
+Teammate reflections:
+{reflections}
+
+As the retrospective leader, synthesize the discussion and produce the final retrospective report.
+You must answer these three questions, in this exact order:
+1. What went well
+2. What did not
+3. What should we change
+
+MANDATORY REQUIREMENT FOR QUESTION 3:
+Under "What should we change", you MUST produce either:
+- A concrete written change to NORMS.md (e.g. proposed text to add or update in NORMS.md)
+OR
+- An explicit "no change, and here is why" explaining substantively why no norm change is needed.
+
+A retro that produces neither has failed and will be rejected.
+Be direct, constructive, and grounded in the record."""
+
+Q1_RE = re.compile(
+    r"(?im)^\s*(?:#+\s*)?(?:\*{0,2}\s*)?(?:1[\.\)]\s*)?(?:what\s+went\s+well)[\s\:\?\-\*]*"
+)
+Q2_RE = re.compile(
+    r"(?im)^\s*(?:#+\s*)?(?:\*{0,2}\s*)?(?:2[\.\)]\s*)?(?:what\s+did\s+not(?:\s+go\s+well)?|what\s+went\s+wrong)[\s\:\?\-\*]*"
+)
+Q3_RE = re.compile(
+    r"(?im)^\s*(?:#+\s*)?(?:\*{0,2}\s*)?(?:3[\.\)]\s*)?(?:what\s+should\s+we\s+change|what\s+to\s+change)[\s\:\?\-\*]*"
+)
+
+DODGE_PHRASES = {
+    "none", "none.", "n/a", "tbd", "nothing", "nothing.",
+    "no change", "no change.", "no changes", "no changes.",
+    "no changes needed", "no changes needed.", "nil", "pass",
+    "i don't know", "unsure",
+}
+
+
+class RetroResult(str):
+    """Result of a retrospective execution. Subclasses str for convenient display."""
+
+    def __new__(cls, content: str, success: bool, outcome: str,
+                norm_change: str | None = None, leader: str = "tpm",
+                retro_file: Path | None = None, error: str | None = None,
+                refused: bool = False):
+        obj = super().__new__(cls, content)
+        obj.success = success
+        obj.outcome = outcome
+        obj.norm_change = norm_change
+        obj.leader = leader
+        obj.retro_file = retro_file
+        obj.error = error
+        obj.refused = refused
+        return obj
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
+def parse_retro_sections(text: str) -> dict[str, str] | None:
+    """Parse text into 3 ordered sections: q1, q2, q3.
+
+    Returns dict with keys "q1", "q2", "q3", or None if sections are missing,
+    out of order, or empty.
+    """
+    if not text or not isinstance(text, str):
+        return None
+
+    m1 = Q1_RE.search(text)
+    m2 = Q2_RE.search(text)
+    m3 = Q3_RE.search(text)
+
+    if not (m1 and m2 and m3):
+        return None
+
+    # Strict order enforcement: Q1 before Q2 before Q3
+    if not (m1.start() < m2.start() < m3.start()):
+        return None
+
+    q1_text = text[m1.end():m2.start()].strip()
+    q2_text = text[m2.end():m3.start()].strip()
+    q3_text = text[m3.end():].strip()
+
+    if not q1_text or not q2_text or not q3_text:
+        return None
+
+    return {
+        "q1": q1_text,
+        "q2": q2_text,
+        "q3": q3_text,
+    }
+
+
+def extract_norm_text(text: str) -> str:
+    """Extract clean norm text from Question 3 response, trimming conversational preamble."""
+    lines = text.strip().splitlines()
+    heading_or_bullet_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped.startswith("- ") or stripped.startswith("* "):
+            heading_or_bullet_idx = i
+            break
+        if stripped.startswith("```"):
+            heading_or_bullet_idx = i
+            break
+
+    if heading_or_bullet_idx is not None and heading_or_bullet_idx > 0:
+        preamble = "\n".join(lines[:heading_or_bullet_idx]).lower()
+        if any(w in preamble for w in ("propose", "add", "norms.md", "change", "following", "rule", "norm")):
+            extracted = "\n".join(lines[heading_or_bullet_idx:]).strip()
+            if extracted.startswith("```") and extracted.endswith("```"):
+                extracted_lines = extracted.splitlines()[1:-1]
+                extracted = "\n".join(extracted_lines).strip()
+            return extracted
+
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        inner = "\n".join(stripped.splitlines()[1:-1]).strip()
+        return inner
+
+    return stripped
+
+
+def evaluate_question_3(q3_text: str) -> dict:
+    """Evaluate Question 3 to determine whether it provides a norm change or explicit no-change.
+
+    Returns dict with keys:
+    - valid (bool)
+    - outcome ("norm_change", "no_change", or "invalid")
+    - norm_change (str or None)
+    - reason (str)
+    """
+    cleaned = q3_text.strip()
+    if not cleaned or len(cleaned) < 5:
+        return {
+            "valid": False,
+            "outcome": "invalid",
+            "norm_change": None,
+            "reason": "Question 3 answer is empty or too short.",
+        }
+
+    lower_cleaned = cleaned.lower()
+    if lower_cleaned in DODGE_PHRASES:
+        return {
+            "valid": False,
+            "outcome": "invalid",
+            "norm_change": None,
+            "reason": f"Bare non-answer or dodge {cleaned!r} is not accepted. "
+                      "Must produce a concrete norm change or an explicit 'no change, and here is why'.",
+        }
+
+    # Check for "no change" branch
+    is_no_change_signal = bool(re.search(
+        r"(?i)\bno\s+change(?:s)?\b|\bchange\s+nothing\b|\bno\s+norm\s+change\b|\bkeep\s+current\s+norms\b",
+        cleaned
+    ))
+
+    if is_no_change_signal:
+        has_here_is_why = bool(re.search(r"(?i)here\s+is\s+why", cleaned))
+        words = cleaned.split()
+        has_rationale = len(words) >= 7 and any(
+            w in lower_cleaned for w in ("because", "since", "as", "why", "current", "sufficient", "working", "reason", "well")
+        )
+        if has_here_is_why or has_rationale:
+            return {
+                "valid": True,
+                "outcome": "no_change",
+                "norm_change": None,
+                "reason": cleaned,
+            }
+        else:
+            return {
+                "valid": False,
+                "outcome": "invalid",
+                "norm_change": None,
+                "reason": "Explicit 'no change' requires substantive reasoning ('and here is why'), not a bare refusal.",
+            }
+
+    # Proposing a change
+    norm_candidate = extract_norm_text(cleaned)
+    if len(norm_candidate) < 10 or norm_candidate.lower() in DODGE_PHRASES:
+        return {
+            "valid": False,
+            "outcome": "invalid",
+            "norm_change": None,
+            "reason": f"Proposed norm change {norm_candidate!r} is too brief or insubstantial.",
+        }
+
+    return {
+        "valid": True,
+        "outcome": "norm_change",
+        "norm_change": norm_candidate,
+        "reason": "Concrete norm change proposed.",
+    }
+
+
+def get_work_stats(team_dir: Path | str) -> dict:
+    """Return counts of work records (events, reviews, bus messages)."""
+    team_dir = Path(team_dir)
+    stats = {"events": 0, "reviews": 0, "bus": 0}
+    for key, filename in [("events", "events.jsonl"), ("reviews", "reviews.jsonl"), ("bus", "bus.jsonl")]:
+        file_path = team_dir / filename
+        if file_path.exists():
+            try:
+                count = 0
+                with file_path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            count += 1
+                stats[key] = count
+            except OSError:
+                pass
+    return stats
+
+
+def check_new_work(team_dir: Path | str) -> tuple[bool, str]:
+    """Check whether there is new work recorded since the last retrospective.
+
+    Returns (has_new_work, reason).
+    Refuses if no work exists at all or if no events, reviews, or bus messages
+    have been added since the last retro recorded in retro_state.json.
+    """
+    team_dir = Path(team_dir)
+    curr = get_work_stats(team_dir)
+    total_curr = curr["events"] + curr["reviews"] + curr["bus"]
+    if total_curr == 0:
+        return False, "no work has been recorded for this team yet (0 events, 0 reviews, 0 bus messages)"
+
+    state_file = team_dir / "retro_state.json"
+    if not state_file.exists():
+        return True, f"initial retrospective: {curr['events']} events, {curr['reviews']} reviews, {curr['bus']} bus messages"
+
+    try:
+        prev = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True, "corrupted or unreadable previous retro state"
+
+    prev_events = prev.get("events", 0)
+    prev_reviews = prev.get("reviews", 0)
+    prev_bus = prev.get("bus", 0)
+
+    delta_events = curr["events"] - prev_events
+    delta_reviews = curr["reviews"] - prev_reviews
+    delta_bus = curr["bus"] - prev_bus
+
+    if delta_events > 0 or delta_reviews > 0 or delta_bus > 0:
+        parts = []
+        if delta_events > 0:
+            parts.append(f"{delta_events} new event(s)")
+        if delta_reviews > 0:
+            parts.append(f"{delta_reviews} new review(s)")
+        if delta_bus > 0:
+            parts.append(f"{delta_bus} new bus message(s)")
+        return True, f"new work detected: {', '.join(parts)}"
+
+    return False, (
+        f"no new work since last retrospective on {prev.get('last_retro_ts', 'unknown')} "
+        f"(events: {curr['events']}, reviews: {curr['reviews']}, bus: {curr['bus']})"
+    )
+
+
+def save_retro_state(team_dir: Path | str) -> Path:
+    """Save current work stats to retro_state.json after a successful retrospective."""
+    team_dir = Path(team_dir)
+    curr = get_work_stats(team_dir)
+    state = {
+        "last_retro_ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "events": curr["events"],
+        "reviews": curr["reviews"],
+        "bus": curr["bus"],
+    }
+    state_file = team_dir / "retro_state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return state_file
+
+
+def format_retro_record(rep: dict, max_chars: int | None = None) -> str:
+    """Format durable history record into a concise summary for retro participants."""
+    if max_chars is None:
+        max_chars = config.RETRO_MAX_TRANSCRIPT_CHARS
+
+    lines = []
+    lines.append("## Work Record Summary")
+    totals = rep.get("totals", {})
+    cost_str = f"${totals['cost_usd']:.4f}" if totals.get("cost_usd") is not None else "n/a"
+    tokens_str = str(totals["total_tokens"]) if totals.get("total_tokens") is not None else "n/a"
+    lines.append(f"- Episodes: {totals.get('episodes', 0)} ({totals.get('reviewed_episodes', 0)} reviewed)")
+    lines.append(f"- Total turns: {totals.get('turns', 0)} (failures: {totals.get('failures', 0)})")
+    lines.append(f"- Cost: {cost_str} | Total tokens: {tokens_str}")
+
+    episodes = rep.get("episodes", [])
+    if episodes:
+        lines.append("\n### Recent Episodes")
+        for ep in episodes[-5:]:
+            dur = f"{ep['duration_s']:.1f}s" if ep.get("duration_s") is not None else "n/a"
+            lines.append(
+                f"- Episode {ep.get('episode')}: {ep.get('turns')} turns, "
+                f"stopped: {ep.get('stopped_reason')}, reviewed: {ep.get('reviewed')}, "
+                f"duration: {dur}"
+            )
+
+    reviews = rep.get("reviews", [])
+    if reviews:
+        lines.append("\n### Reviews & Verdicts")
+        for r in reviews[-5:]:
+            lines.append(f"- [{r.get('verdict')}] by {r.get('reviewer')} on {r.get('what')}: {r.get('findings', '')}")
+            if r.get("cases_tried"):
+                lines.append(f"  Cases tried: {r.get('cases_tried')}")
+    else:
+        lines.append("\n### Reviews & Verdicts")
+        lines.append("- No reviews recorded.")
+
+    bus_traffic = rep.get("bus_traffic", {})
+    if bus_traffic.get("top_pairs"):
+        lines.append("\n### Communication Patterns")
+        for pair in bus_traffic["top_pairs"][:5]:
+            lines.append(f"- {pair['sender']} -> {pair['recipient']}: {pair['count']} messages")
+
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        trunc_msg = "\n\n[... work record truncated to fit character budget ...]"
+        keep_len = max(0, max_chars - len(trunc_msg))
+        text = text[:keep_len].rstrip() + trunc_msg
+    return text
+
+
+def record_review(team_dir: Path | str, reviewer: str, what: str, verdict: str,
+                  cases_tried: list[str] | str, findings: str = "") -> dict:
+    """Record a review entry in reviews.jsonl matching mcp_bus._record_review schema."""
+    team_dir = Path(team_dir)
+    reviews_file = team_dir / "reviews.jsonl"
+    reviews_file.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(cases_tried, str):
+        cases = [cases_tried]
+    elif isinstance(cases_tried, list):
+        cases = [str(c) for c in cases_tried]
+    else:
+        cases = [str(cases_tried)]
+    entry = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "reviewer": reviewer,
+        "what": what.strip(),
+        "verdict": verdict,
+        "cases_tried": cases,
+        "findings": findings.strip() if isinstance(findings, str) else str(findings),
+    }
+    with reviews_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry
+
+
+def format_retro_report(leader: str, participants: list[str], is_accountable: bool,
+                        q1: str, q2: str, q3: str, outcome: str,
+                        norm_change: str | None = None,
+                        error: str | None = None,
+                        raw_leader_output: str | None = None,
+                        reflections: dict[str, str] | None = None,
+                        capped_note: str | None = None) -> str:
+    """Format the retrospective markdown document."""
+    lines = []
+    lines.append(f"# Team Retrospective ({time.strftime('%Y-%m-%d %H:%M:%S')})")
+    lines.append(f"\n**Leader:** {leader}")
+    parts_str = ", ".join(participants) if participants else "(solo retro)"
+    lines.append(f"**Participants:** {parts_str}")
+    if capped_note:
+        lines.append(f"**Participation Note:** {capped_note}")
+
+    if is_accountable:
+        lines.append(f"\n> [!NOTE]\n> Note on facilitation: {TENSION_ACCOUNTABLE}")
+
+    lines.append("\n## 1. What went well")
+    lines.append(q1)
+
+    lines.append("\n## 2. What did not")
+    lines.append(q2)
+
+    lines.append("\n## 3. What should we change")
+    lines.append(q3)
+
+    lines.append("\n## Outcome")
+    if outcome == "norm_change":
+        lines.append(f"**Norm change adopted and recorded:**\n\n```markdown\n{norm_change}\n```")
+    elif outcome == "no_change":
+        lines.append(f"**No norm change adopted:**\n\n{q3}")
+    else:
+        lines.append(f"**FAILED:** {error or 'Retrospective failed to produce a valid outcome.'}")
+        if raw_leader_output:
+            lines.append(f"\n### Raw Output\n```\n{raw_leader_output}\n```")
+
+    if reflections:
+        lines.append("\n## Teammate Reflections")
+        for agent, text in reflections.items():
+            lines.append(f"\n### {agent}")
+            lines.append(text)
+
+    return "\n".join(lines)
+
 
 
 class Supervisor:
@@ -403,6 +828,326 @@ class Supervisor:
 
         return cycled
 
+    def _is_leader_accountable(self, leader: str) -> bool:
+        """Check if the retro leader holds accountability for shipping/managing."""
+        if not leader:
+            return False
+        leader_lower = leader.lower()
+        if leader_lower in ("tpm", "manager"):
+            return True
+        if self.manager and leader_lower == self.manager.lower():
+            return True
+        mgr = self._find_manager()
+        if mgr and leader_lower == mgr.lower():
+            return True
+        try:
+            roster = roster_lib.load(self.team_dir / "roster.json")
+            for entry in roster.get("agents", []):
+                if entry.get("name", "").lower() == leader_lower:
+                    role = entry.get("role", "").lower()
+                    if any(k in role for k in ("coordinate", "accountab", "ship", "manage", "lead")):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def _apply_norm_change(self, norm_change: str) -> Path:
+        """Seed NORMS.md if absent, and append the proposed norm change."""
+        norms_path = persona.seed_norms(team_dir=self.team_dir)
+        existing = norms_path.read_text(encoding="utf-8")
+        clean_norm = norm_change.strip()
+        new_content = f"{existing.rstrip()}\n\n{clean_norm}\n"
+        norms_path.write_text(new_content, encoding="utf-8")
+        return norms_path
+
+    def _record_norm_review(self, reviewer: str, norm_change: str) -> dict:
+        """Record an approved review in reviews.jsonl for the adopted norm change."""
+        first_line = norm_change.strip().splitlines()[0].lstrip("#*- ").strip()
+        what = f"NORMS.md: {first_line[:80]}" if first_line else "NORMS.md: retrospective norm change"
+        return record_review(
+            team_dir=self.team_dir,
+            reviewer=reviewer,
+            what=what,
+            verdict="approved",
+            cases_tried=["retrospective consensus", "evaluated against work record"],
+            findings=f"Adopted in retro led by {reviewer}: {norm_change.strip()}",
+        )
+
+    def _select_retro_participants(self, leader: str,
+                                   max_participants: int | None = None) -> tuple[list[str], list[str]]:
+        """Select retro participants, capping count and ranking by recent activity."""
+        if max_participants is None:
+            max_participants = config.RETRO_MAX_PARTICIPANTS
+
+        candidates = [a for a in self.agents if a != leader]
+        if len(candidates) <= max_participants:
+            return candidates, []
+
+        # Count activity per candidate from durable history:
+        # turns (from events.jsonl) * 3 + bus messages * 1 + reviews * 2
+        scores = {a: 0 for a in candidates}
+
+        # 1. Events
+        events_file = self.team_dir / "events.jsonl"
+        if events_file.exists():
+            try:
+                for line in events_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        try:
+                            ev = json.loads(line)
+                            ag = ev.get("agent")
+                            if ag in scores:
+                                scores[ag] += 3
+                        except json.JSONDecodeError:
+                            pass
+            except OSError:
+                pass
+
+        # 2. Bus messages
+        bus_file = self.team_dir / "bus.jsonl"
+        if bus_file.exists():
+            try:
+                for line in bus_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        try:
+                            msg = json.loads(line)
+                            sender = msg.get("from")
+                            recip = msg.get("to")
+                            if sender in scores:
+                                scores[sender] += 1
+                            if recip in scores and recip != sender:
+                                scores[recip] += 1
+                        except json.JSONDecodeError:
+                            pass
+            except OSError:
+                pass
+
+        # 3. Reviews
+        reviews_file = self.team_dir / "reviews.jsonl"
+        if reviews_file.exists():
+            try:
+                for line in reviews_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        try:
+                            rev = json.loads(line)
+                            reviewer = rev.get("reviewer")
+                            if reviewer in scores:
+                                scores[reviewer] += 2
+                        except json.JSONDecodeError:
+                            pass
+            except OSError:
+                pass
+
+        # Rank candidates by (score descending, candidate order)
+        ranked = sorted(candidates, key=lambda a: (scores.get(a, 0), -candidates.index(a)), reverse=True)
+        selected_set = set(ranked[:max_participants])
+
+        # Preserve original roster order among selected
+        selected = [a for a in candidates if a in selected_set]
+        omitted = [a for a in candidates if a not in selected_set]
+        return selected, omitted
+
+    def retro(self, leader: str = "tpm",
+              max_participants: int | None = None,
+              max_transcript_chars: int | None = None,
+              force: bool = False) -> RetroResult:
+        """Run a structured retrospective over completed work."""
+        if leader not in self.agents:
+            err = f"retro leader {leader!r} is not on the team roster: {', '.join(self.agents)}"
+            report_text = format_retro_report(
+                leader=leader,
+                participants=[],
+                is_accountable=False,
+                q1="(none)",
+                q2="(none)",
+                q3="(none)",
+                outcome="invalid",
+                error=err,
+            )
+            retro_file = self.team_dir / "retro.md"
+            try:
+                retro_file.write_text(report_text, encoding="utf-8")
+            except OSError:
+                pass
+            return RetroResult(report_text, success=False, outcome="invalid", leader=leader, retro_file=retro_file, error=err)
+
+        if not force:
+            has_new_work, reason = check_new_work(self.team_dir)
+            if not has_new_work:
+                err = f"Retrospective refused: {reason}. Use --force to run anyway."
+                if not self.quiet:
+                    self._log(f"  → {err}")
+                return RetroResult(
+                    err,
+                    success=False,
+                    outcome="refused",
+                    leader=leader,
+                    retro_file=self.team_dir / "retro.md",
+                    error=err,
+                    refused=True,
+                )
+
+        is_accountable = self._is_leader_accountable(leader)
+        tension_note = f"Note on facilitation: {TENSION_ACCOUNTABLE}\n" if is_accountable else ""
+
+        rep = generate_report(self.team_dir)
+        record_text = format_retro_record(rep, max_chars=max_transcript_chars)
+
+        participants, omitted = self._select_retro_participants(leader, max_participants=max_participants)
+        capped_note = None
+        if omitted:
+            capped_note = f"Participation capped at {len(participants)} agents (omitted inactive: {', '.join(omitted)})."
+            if not self.quiet:
+                self._log(f"  → {capped_note}")
+
+        # Teammate reflections turn
+        reflections = {}
+        for agent in participants:
+            prompt = RETRO_PARTICIPANT_PROMPT.format(
+                leader=leader,
+                tension_note=tension_note,
+                record=record_text,
+            )
+            self._log(f"  → retro reflection: waking {agent}")
+            t0 = time.monotonic()
+            try:
+                reply = self.runner.wake(agent, prompt)
+            except Exception as e:
+                dur = time.monotonic() - t0
+                reply = f"[error: {type(e).__name__}: {e}]"
+                try:
+                    cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
+                    self.observer.record_failure(agent, cid, reply, duration_s=dur)
+                except Exception:
+                    pass
+
+            if len(reply) > config.RETRO_MAX_REFLECTION_CHARS:
+                trunc_msg = "\n[... reflection truncated to character cap ...]"
+                keep_chars = max(0, config.RETRO_MAX_REFLECTION_CHARS - len(trunc_msg))
+                reply = reply[:keep_chars].rstrip() + trunc_msg
+
+            reflections[agent] = reply
+            if not self.quiet:
+                first = reply.strip().splitlines()[0] if reply.strip() else ""
+                self._log(f"    {agent}: {first[:120]}")
+
+        # Leader synthesis turn
+        if reflections:
+            reflections_text = "\n\n".join(f"### {ag}\n{txt}" for ag, txt in reflections.items())
+            max_refl = max_transcript_chars if max_transcript_chars is not None else config.RETRO_MAX_TRANSCRIPT_CHARS
+            if len(reflections_text) > max_refl:
+                trunc_msg = "\n\n[... reflections truncated to character budget ...]"
+                reflections_text = reflections_text[:max(0, max_refl - len(trunc_msg))].rstrip() + trunc_msg
+        else:
+            reflections_text = "(Solo retro: no other participants on roster)"
+
+        leader_prompt = RETRO_LEADER_PROMPT.format(
+            tension_note=tension_note,
+            record=record_text,
+            reflections=reflections_text,
+        )
+        self._log(f"  → retro leader synthesis: waking {leader}")
+        t0 = time.monotonic()
+        try:
+            leader_reply = self.runner.wake(leader, leader_prompt)
+        except Exception as e:
+            dur = time.monotonic() - t0
+            leader_reply = f"[error: {type(e).__name__}: {e}]"
+            try:
+                cid = getattr(self.runner, "conversation_id", lambda a: "")(leader) or ""
+                self.observer.record_failure(leader, cid, leader_reply, duration_s=dur)
+            except Exception:
+                pass
+
+        if not self.quiet:
+            first = leader_reply.strip().splitlines()[0] if leader_reply.strip() else ""
+            self._log(f"    {leader}: {first[:120]}")
+
+        retro_file = self.team_dir / "retro.md"
+
+        sections = parse_retro_sections(leader_reply)
+        if not sections:
+            err = "Leader response failed to provide the three required sections in order (1. What went well, 2. What did not, 3. What should we change)."
+            report_text = format_retro_report(
+                leader=leader,
+                participants=participants,
+                is_accountable=is_accountable,
+                q1="(missing or invalid)",
+                q2="(missing or invalid)",
+                q3="(missing or invalid)",
+                outcome="invalid",
+                error=err,
+                raw_leader_output=leader_reply,
+                reflections=reflections,
+                capped_note=capped_note,
+            )
+            try:
+                retro_file.write_text(report_text, encoding="utf-8")
+            except OSError:
+                pass
+            return RetroResult(report_text, success=False, outcome="invalid", leader=leader, retro_file=retro_file, error=err)
+
+        q1 = sections["q1"]
+        q2 = sections["q2"]
+        q3 = sections["q3"]
+
+        eval_res = evaluate_question_3(q3)
+        if not eval_res["valid"]:
+            err = eval_res["reason"]
+            report_text = format_retro_report(
+                leader=leader,
+                participants=participants,
+                is_accountable=is_accountable,
+                q1=q1,
+                q2=q2,
+                q3=q3,
+                outcome="invalid",
+                error=err,
+                raw_leader_output=leader_reply,
+                reflections=reflections,
+                capped_note=capped_note,
+            )
+            try:
+                retro_file.write_text(report_text, encoding="utf-8")
+            except OSError:
+                pass
+            return RetroResult(report_text, success=False, outcome="invalid", leader=leader, retro_file=retro_file, error=err)
+
+        outcome = eval_res["outcome"]
+        norm_change = eval_res.get("norm_change")
+
+        if outcome == "norm_change" and norm_change:
+            self._apply_norm_change(norm_change)
+            self._record_norm_review(leader, norm_change)
+
+        save_retro_state(self.team_dir)
+
+        report_text = format_retro_report(
+            leader=leader,
+            participants=participants,
+            is_accountable=is_accountable,
+            q1=q1,
+            q2=q2,
+            q3=q3,
+            outcome=outcome,
+            norm_change=norm_change,
+            reflections=reflections,
+            capped_note=capped_note,
+        )
+        try:
+            retro_file.write_text(report_text, encoding="utf-8")
+        except OSError:
+            pass
+
+        return RetroResult(
+            report_text,
+            success=True,
+            outcome=outcome,
+            norm_change=norm_change,
+            leader=leader,
+            retro_file=retro_file,
+        )
+
     def reset(self, agent: str | None = None):
         """Reset is not permitted without distilling first."""
         raise RuntimeError(
@@ -456,6 +1201,49 @@ def cycle(agent: str, runner=None, team_dir=None) -> tuple[int, int]:
                 pass
         else:
             sup.close()
+
+
+def retro(leader: str = "tpm", runner=None, team_dir=None,
+          max_participants: int | None = None,
+          max_transcript_chars: int | None = None,
+          force: bool = False) -> RetroResult:
+    """Run a structured retrospective led by `leader` over recorded history."""
+    if team_dir is None:
+        env = os.environ.get("AGYTEAM_TEAM_DIR")
+        if env:
+            team_dir = Path(env)
+        else:
+            team_dir = scope.load().team_dir()
+    else:
+        team_dir = Path(team_dir)
+    team_dir = team_dir.resolve()
+
+    try:
+        agents = _agents_from_roster(team_dir)
+    except Exception:
+        agents = []
+
+    r = runner or runner_lib.load()
+    sup = Supervisor(agents, r, team_dir=team_dir)
+    try:
+        return sup.retro(
+            leader=leader,
+            max_participants=max_participants,
+            max_transcript_chars=max_transcript_chars,
+            force=force,
+        )
+    finally:
+        if runner is not None:
+            for t in sup.transports.values():
+                t.close()
+            sup.user_transport.close()
+            try:
+                sup.observer.close()
+            except Exception:
+                pass
+        else:
+            sup.close()
+
 
 
 def _check_unread_mail(agent: str, team_dir: Path) -> tuple[bool | None, int | None]:
@@ -695,6 +1483,7 @@ def generate_report(team_dir: Path | str | None = None) -> dict:
             cache_tok = None
             tot_tok = None
             cost_usd = None
+            unpriced = 0
 
         unread_mail, unread_count = _check_unread_mail(agent, team_dir)
 
@@ -876,6 +1665,16 @@ def main(argv=None, runner=None):
                     help="Show who has mail waiting, then exit")
     ap.add_argument("--cost", action="store_true",
                     help="Show team usage and cost summary, then exit")
+    ap.add_argument("--retro", action="store_true",
+                    help="Run structured retrospective over recent work, then exit")
+    ap.add_argument("--retro-leader", metavar="AGENT", default="tpm",
+                    help="Agent leading the retrospective (default: tpm)")
+    ap.add_argument("--retro-max-participants", type=int, default=None,
+                    help="Maximum participants in retro (default: config.RETRO_MAX_PARTICIPANTS)")
+    ap.add_argument("--retro-max-transcript", type=int, default=None,
+                    help="Maximum characters of history transcript in retro prompts (default: config.RETRO_MAX_TRANSCRIPT_CHARS)")
+    ap.add_argument("--retro-force", "--force", action="store_true", dest="retro_force",
+                    help="Force retrospective even if no new work has been recorded")
     ap.add_argument("--report", action="store_true",
                     help="Show team status and activity report from history, then exit")
     ap.add_argument("--report-json", action="store_true",
@@ -940,7 +1739,20 @@ def main(argv=None, runner=None):
                      require_review=not args.no_require_review,
                      manager=args.manager)
     try:
-        if args.distill:
+        if args.retro:
+            if args.retro_leader not in agents:
+                sys.exit(f"unknown retro leader {args.retro_leader!r}; roster has: {', '.join(agents)}")
+            res = sup.retro(
+                leader=args.retro_leader,
+                max_participants=args.retro_max_participants,
+                max_transcript_chars=args.retro_max_transcript,
+                force=args.retro_force,
+            )
+            print(str(res))
+            if not res.success:
+                sys.exit(1)
+            return
+        elif args.distill:
             if args.distill not in agents:
                 sys.exit(f"unknown agent {args.distill!r}; roster has: {', '.join(agents)}")
             sup.distill(args.distill)
