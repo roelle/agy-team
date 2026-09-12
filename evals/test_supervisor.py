@@ -271,7 +271,7 @@ def test_anomaly_detection_and_context_purge() -> tuple[int, int]:
     return sum([
         check("anomaly halts the episode immediately", turns == 2, f"turns: {turns}"),
         check("supervisor reports anomaly detection in stopped reason",
-              "anomaly detected for coder" in stopped and "exceeded threshold" in stopped, stopped),
+              "anomaly detected for coder" in stopped and "degenerate" in stopped, stopped),
         check("purged agent conversation context was cleared from runner",
               coder_cid_after is None and "coder" not in convs_after, str(convs_after)),
         check("observer recorded failure event for anomaly",
@@ -283,11 +283,71 @@ def test_anomaly_detection_and_context_purge() -> tuple[int, int]:
     ]), 6
 
 
+def test_busy_turn_is_not_an_anomaly() -> tuple[int, int]:
+    """A big turn is expensive, not sick. Volume alone must not purge.
+
+    This is a regression test with a date on it: on 2026-09-11 the guard purged
+    syseng and halted the episode seconds after he finished a working build,
+    because 229 shell invocations legitimately cost 225,493 output tokens. The
+    work survived only because it was already on disk.
+    """
+    print("\n== a busy turn is not a sick turn ==")
+    from agyteam import config as _cfg
+    saved = _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD
+    _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD = 4_000
+    make_team()
+
+    class BusyRunner(ScriptedRunner):
+        def wake(self, agent, message):
+            self.woken.append(agent)
+            cid = f"conv-{agent}-busy"
+            self.remember_conversation(agent, cid)
+            self.observer.record_turn(agent, cid, duration_s=1.0, input_tokens=200,
+                                      output_tokens=99_000, total_tokens=99_200)
+            if agent == "tpm":
+                bus = load_transport(agent)
+                bus.send("coder", "please build the thing")
+                bus.close()
+                return "delegating the build"
+            # Large and varied, the way a real build report is: distinct
+            # commands, paths and numbers rather than one phrase repeated.
+            return "\n".join(
+                f"step {i}: ran /venv/bin/python sweep_{i}.py --alpha {i/997:.6f} "
+                f"-> converged in {i * 7 % 991} samples, residual {i * 13 % 877}e-9"
+                for i in range(600))
+
+    runner = BusyRunner({})
+    sup = Supervisor(["tpm", "coder"], runner, max_hops=10, quiet=True)
+    load_transport("user").send("tpm", "kick off the build")
+    turns = sup.run_until_idle()
+    stopped, cid_after = sup.stopped, runner.conversation_id("coder")
+    sup.close()
+    _cfg.ANOMALY_OUTPUT_TOKENS_THRESHOLD = saved
+
+    from agyteam.supervisor import repetition_ratio
+    healthy = repetition_ratio("\n".join(
+        f"step {i}: ran sweep_{i}.py --alpha {i/997:.6f}" for i in range(600)))
+    spew = repetition_ratio("the quick brown fox. " * 8000)
+
+    return sum([
+        check("the episode was not halted by volume alone",
+              "anomaly" not in stopped, stopped),
+        check("both agents still ran", turns == 2, f"turns: {turns}"),
+        check("the busy agent kept its context", cid_after == "conv-coder-busy",
+              str(cid_after)),
+        check("varied output scores as healthy",
+              healthy < _cfg.ANOMALY_REPETITION_RATIO, f"{healthy:.2f}x"),
+        check("repeated output still scores as degenerate",
+              spew > _cfg.ANOMALY_REPETITION_RATIO, f"{spew:.2f}x"),
+    ]), 5
+
+
 if __name__ == "__main__":
     totals = [test_cascade(), test_hop_budget(), test_failure_isolation(),
               test_peek_is_nondestructive(), test_stop_on_answer(),
               test_user_mail_survives(), test_loader(),
-              test_anomaly_detection_and_context_purge()]
+              test_anomaly_detection_and_context_purge(),
+              test_busy_turn_is_not_an_anomaly()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== supervisor: {got}/{want} ==")
     sys.exit(0 if got == want else 1)

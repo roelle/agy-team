@@ -72,7 +72,8 @@ class SdkRunner(Runner):
             extra_sections=[section],
             subagents=[WORKER] if (self.use_workers and spec.get("workers", True))
             else None,
-            disabled_tools=spec.get("tools_off"))
+            disabled_tools=spec.get("tools_off"),
+            extra_workspaces=spec.get("workspaces"))
         cm = Agent(conf)
         live = await cm.__aenter__()
         self._agents[agent] = live
