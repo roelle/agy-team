@@ -6,14 +6,14 @@ external observability service (e.g. OpenTelemetry, Datadog, Prometheus, BigQuer
 or internal metrics pipelines) instead of or in addition to local JSONL files.
 
     cp agyteam/observer_template.py example_observer.py
-    # implement the three recording methods and events query
+    # implement the four recording methods and events query
     export AGYTEAM_OBSERVER=example_observer:MyObserver
     export AGYTEAM_OBSERVER_CONFIG='{"endpoint": "..."}'
     .venv/bin/python evals/test_observer.py
 
 Contract requirements:
 - Must inherit from agyteam.observer.Observer.
-- record_turn, record_failure, record_episode must be implemented.
+- record_turn, record_tool_call, record_failure, record_episode must be implemented.
 - Recording failures must not crash the caller (safe exception handling).
 - Absent token fields should remain None rather than 0.
 - events(event_type=None) returns list of event dicts or []. Missing storage is normal.
@@ -43,6 +43,15 @@ class CustomObserver(Observer):
         Keep absent token counts as None. Never raise: turn execution must
         not fail because telemetry failed.
         """
+        raise NotImplementedError
+
+    def record_tool_call(self, agent: str, conversation: str, tool: str,
+                         args: dict | None = None,
+                         result: str | None = None,
+                         error: str | None = None,
+                         duration_s: float | None = None,
+                         **kwargs) -> None:
+        """Record an agent tool invocation."""
         raise NotImplementedError
 
     def record_failure(self, agent: str, conversation: str, error: str,

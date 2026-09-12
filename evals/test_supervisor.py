@@ -283,11 +283,260 @@ def test_anomaly_detection_and_context_purge() -> tuple[int, int]:
     ]), 6
 
 
+
+def test_user_mail_priority() -> tuple[int, int]:
+    """User mail takes precedence both across agents and within an inbox."""
+    print("\n== user mail priority ==")
+    make_team()
+
+    wake_log = []
+
+    class PriorityRunner(ScriptedRunner):
+        def wake(self, agent, message):
+            self.woken.append(agent)
+            wake_log.append((agent, message))
+            return "ack"
+
+    runner = PriorityRunner({})
+    # Initial agents registered in order: tpm, coder, syseng
+    sup = Supervisor(["tpm", "coder", "syseng"], runner, max_hops=10, quiet=True)
+
+    # 1. tpm (first in transports) receives only peer mail
+    load_transport("coder").send("tpm", "peer status for tpm")
+
+    # 2. coder receives peer mail, then user mail, then peer mail
+    load_transport("tpm").send("coder", "routine task 1")
+    load_transport("user").send("coder", "urgent user interrupt")
+    load_transport("tpm").send("coder", "routine task 2")
+
+    # 3. syseng (last in transports) receives user mail
+    load_transport("user").send("syseng", "urgent user question for syseng")
+
+    # Run one supervisor step
+    dispatched = sup.step()
+    sup.close()
+
+    coder_wake_msg = next(m for a, m in wake_log if a == "coder")
+    u_pos = coder_wake_msg.find("urgent user interrupt")
+    p1_pos = coder_wake_msg.find("routine task 1")
+    p2_pos = coder_wake_msg.find("routine task 2")
+    first_sender_line = next(line for line in coder_wake_msg.splitlines() if "] from " in line)
+
+    # Defensive: transport whose peek() raises an exception does not crash step()
+    class BrokenPeekTransport:
+        def peek(self):
+            raise RuntimeError("peek failed")
+
+        def fetch(self):
+            return []
+
+        def close(self):
+            pass
+
+    sup2 = Supervisor([], runner, max_hops=10, quiet=True)
+    sup2.transports = {"broken": BrokenPeekTransport()}
+    step_res = sup2.step()
+    sup2.close()
+
+    return sum([
+        check("all three agents dispatched in one step", dispatched == 3, f"dispatched: {dispatched}"),
+        check("agents with user mail dispatched before agent with only peer mail",
+              runner.woken.index("coder") < runner.woken.index("tpm")
+              and runner.woken.index("syseng") < runner.woken.index("tpm"),
+              str(runner.woken)),
+        check("within-inbox user message rendered before peer messages",
+              0 <= u_pos < p1_pos < p2_pos,
+              coder_wake_msg),
+        check("first message in wake prompt is from user",
+              "from user" in first_sender_line,
+              first_sender_line),
+        check("peek exception handled defensively without crashing",
+              step_res == 0,
+              f"step_res: {step_res}"),
+    ]), 5
+
+
+def test_turn_failure_requeues_mail() -> tuple[int, int]:
+    """Messages are not lost when an agent turn fails (exception or [error: reply)."""
+    print("\n== turn failure requeues unconsumed mail ==")
+    import os
+
+    class FlakyRunner(ScriptedRunner):
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            self.turn_count = 0
+            self.woken_bodies = []
+
+        def wake(self, agent, message):
+            self.woken.append(agent)
+            self.woken_bodies.append(message)
+            self.turn_count += 1
+            if self.turn_count == 1:
+                raise RuntimeError("transient network 429")
+            elif self.turn_count == 2:
+                return "[error: context length exceeded]"
+            else:
+                return "ack: work completed"
+
+    # 1. FileTransport (default)
+    make_team()
+    load_transport("user").send("coder", "urgent user instructions")
+    load_transport("tpm").send("coder", "peer follow-up")
+
+    runner1 = FlakyRunner({})
+    sup1 = Supervisor(["coder"], runner1, max_hops=10, quiet=True)
+
+    # Turn 1: Runner raises exception
+    sup1.step()
+    p1 = sup1.transports["coder"].peek()
+
+    # Turn 2: Runner returns [error: ...]
+    sup1.step()
+    p2 = sup1.transports["coder"].peek()
+
+    # Turn 3: Runner succeeds
+    sup1.step()
+    p3 = sup1.transports["coder"].peek()
+    sup1.close()
+
+    turn3_prompt = runner1.woken_bodies[2] if len(runner1.woken_bodies) >= 3 else ""
+
+    # 2. SqliteTransport (independent fixture)
+    sqlite_db = Path(tempfile.mkdtemp(prefix="agyteam-fixture-sqlsup-")) / "bus.db"
+    sql_cfg = json.dumps({"db": str(sqlite_db), "roster": [{"name": "coder", "role": "implements"}]})
+    saved_trans = os.environ.get("AGYTEAM_BUS_TRANSPORT")
+    saved_cfg = os.environ.get("AGYTEAM_BUS_CONFIG")
+    os.environ["AGYTEAM_BUS_TRANSPORT"] = "fixture_transport:SqliteTransport"
+    os.environ["AGYTEAM_BUS_CONFIG"] = sql_cfg
+    try:
+        sql_user_trans = load_transport("user")
+        sql_user_trans.send("coder", "urgent sqlite user instruction")
+        sql_peer_trans = load_transport("tpm")
+        sql_peer_trans.send("coder", "sqlite peer task")
+
+        runner2 = FlakyRunner({})
+        sup2 = Supervisor(["coder"], runner2, max_hops=10, quiet=True)
+
+        sup2.step()
+        sql_p1 = sup2.transports["coder"].peek()
+
+        sup2.step()
+        sql_p2 = sup2.transports["coder"].peek()
+
+        sup2.step()
+        sql_p3 = sup2.transports["coder"].peek()
+        sup2.close()
+
+        sql_turn3_prompt = runner2.woken_bodies[2] if len(runner2.woken_bodies) >= 3 else ""
+    finally:
+        if saved_trans is not None:
+            os.environ["AGYTEAM_BUS_TRANSPORT"] = saved_trans
+        else:
+            os.environ.pop("AGYTEAM_BUS_TRANSPORT", None)
+        if saved_cfg is not None:
+            os.environ["AGYTEAM_BUS_CONFIG"] = saved_cfg
+        else:
+            os.environ.pop("AGYTEAM_BUS_CONFIG", None)
+        shutil.rmtree(sqlite_db.parent, ignore_errors=True)
+
+    return sum([
+        check("file transport retains 2 messages after wake exception",
+              p1 is not None and len(p1) == 2, str(p1)),
+        check("file transport retains 2 messages after [error: wake reply",
+              p2 is not None and len(p2) == 2, str(p2)),
+        check("file transport drains inbox on successful turn",
+              p3 is not None and len(p3) == 0, str(p3)),
+        check("file transport third turn received both preserved messages in prompt",
+              "urgent user instructions" in turn3_prompt and "peer follow-up" in turn3_prompt,
+              turn3_prompt),
+        check("sqlite transport retains 2 messages after wake exception",
+              sql_p1 is not None and len(sql_p1) == 2, str(sql_p1)),
+        check("sqlite transport retains 2 messages after [error: wake reply",
+              sql_p2 is not None and len(sql_p2) == 2, str(sql_p2)),
+        check("sqlite transport drains inbox on successful turn",
+              sql_p3 is not None and len(sql_p3) == 0, str(sql_p3)),
+        check("sqlite transport third turn received both preserved messages in prompt",
+              "urgent sqlite user instruction" in sql_turn3_prompt and "sqlite peer task" in sql_turn3_prompt,
+              sql_turn3_prompt),
+    ]), 8
+
+
+def test_sdk_runner_close_timeout() -> tuple[int, int]:
+    """SdkRunner.close() and reset() gracefully time out if session __aexit__ hangs."""
+    print("\n== sdk runner close timeout ==")
+    import asyncio
+    import os
+    import threading
+    import time
+    from agyteam.runner_sdk import SdkRunner
+
+    td = Path(tempfile.mkdtemp(prefix="agyteam-sdkclose-")) / "team"
+    td.mkdir(parents=True)
+    (td / "roster.json").write_text(json.dumps({"agents": [
+        {"name": "coder", "role": "implements"},
+        {"name": "syseng", "role": "verifies"},
+    ]}))
+    saved_team_dir = os.environ.get("AGYTEAM_TEAM_DIR")
+    os.environ["AGYTEAM_TEAM_DIR"] = str(td)
+
+    class StuckCM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            await asyncio.get_running_loop().create_future()
+
+    try:
+        runner = SdkRunner()
+
+        # 1. Test reset timeout with stuck CM
+        runner._cms["coder"] = StuckCM()
+        runner._agents["coder"] = "fake_agent"
+        t0_reset = time.monotonic()
+        t_reset = threading.Thread(target=lambda: runner.reset("coder"))
+        t_reset.start()
+        t_reset.join(timeout=6.0)
+        reset_dur = time.monotonic() - t0_reset
+        reset_finished = not t_reset.is_alive()
+
+        # 2. Test close timeout with stuck CM
+        runner._cms["syseng"] = StuckCM()
+        runner._agents["syseng"] = "fake_agent"
+        t0_close = time.monotonic()
+        t_close = threading.Thread(target=runner.close)
+        t_close.start()
+        t_close.join(timeout=6.0)
+        close_dur = time.monotonic() - t0_close
+        close_finished = not t_close.is_alive()
+
+        thread_alive = runner._thread.is_alive()
+    finally:
+        if saved_team_dir is not None:
+            os.environ["AGYTEAM_TEAM_DIR"] = saved_team_dir
+        else:
+            os.environ.pop("AGYTEAM_TEAM_DIR", None)
+        shutil.rmtree(td.parent, ignore_errors=True)
+
+    return sum([
+        check("reset with hanging session returns within bounded timeout",
+              reset_finished and 1.8 <= reset_dur < 5.0, f"reset_dur: {reset_dur:.2f}s, finished: {reset_finished}"),
+        check("session removed from runner after reset",
+              "coder" not in runner._cms and "coder" not in runner._agents),
+        check("close with hanging session returns within bounded timeout",
+              close_finished and 1.8 <= close_dur < 5.0, f"close_dur: {close_dur:.2f}s, finished: {close_finished}"),
+        check("runner background thread terminated on close",
+              not thread_alive, f"thread_alive: {thread_alive}"),
+    ]), 4
+
+
 if __name__ == "__main__":
     totals = [test_cascade(), test_hop_budget(), test_failure_isolation(),
               test_peek_is_nondestructive(), test_stop_on_answer(),
               test_user_mail_survives(), test_loader(),
-              test_anomaly_detection_and_context_purge()]
+              test_anomaly_detection_and_context_purge(),
+              test_user_mail_priority(),
+              test_turn_failure_requeues_mail(),
+              test_sdk_runner_close_timeout()]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== supervisor: {got}/{want} ==")
     sys.exit(0 if got == want else 1)

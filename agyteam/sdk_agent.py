@@ -102,7 +102,7 @@ def _model_target(model: str, effort: str = ""):
         api_key=cfg.api_key(), options=GeminiModelOptions(thinking_level=level)))
 
 
-def _workspaces(workspace: Path) -> list[str]:
+def _workspaces(workspace: Path, extra: list[str | Path] | None = None) -> list[str]:
     """Directories an agent may touch: its own, the repo, and the team's."""
     paths = [str(workspace), str(Path.cwd())]
     try:
@@ -112,16 +112,22 @@ def _workspaces(workspace: Path) -> list[str]:
             paths.append(str(team))
     except Exception:
         pass            # no team configured is normal for a single agent
+    if extra:
+        for p in extra:
+            resolved = str(Path(p).expanduser().resolve())
+            if resolved not in paths:
+                paths.append(resolved)
     return paths
 
 
 def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                  name: str = "Agy", interactive: bool = False, effort: str = "",
-                 trace=None, extra_tools=None, extra_sections=None,
+                 trace=None, pre_trace=None, extra_tools=None, extra_sections=None,
                  subagents=None, identity_default: str | None = None,
                  disabled_tools: list[str] | None = None,
                  use_mcp: bool = False, with_bus: bool = False,
-                 flags: SessionFlags | None = None) -> LocalAgentConfig:
+                 flags: SessionFlags | None = None,
+                 workspaces: list[str | Path] | None = None) -> LocalAgentConfig:
     workspace = Path(workspace)
     box = Toolbox(workspace)  # creates workspace/memory/
     ident_file = workspace / "IDENTITY.md"
@@ -163,6 +169,16 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         return types.HookResult(allow=True)
 
     hooks.append(block_dangerous)
+
+    if pre_trace is not None:
+        @pre_tool_call_decide
+        def pre_trace_tools(call):
+            try:
+                pre_trace(call)
+            except Exception:
+                pass
+            return types.HookResult(allow=True)
+        hooks.append(pre_trace_tools)
 
     if flags is not None:
         @on_compaction
@@ -219,7 +235,7 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         # are meant to maintain. The retro could write no norms at all until
         # this was added, and every test passed regardless because none of them
         # wrote to a real team directory.
-        workspaces=_workspaces(workspace),
+        workspaces=_workspaces(workspace, extra=workspaces),
         policies=[policy.allow_all()],
         hooks=hooks,
         model=_model_target(model, effort),

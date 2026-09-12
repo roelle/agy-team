@@ -55,15 +55,86 @@ class SqliteTransport(Transport):
         return (f"[delivered to {to}]" if to != "user"
                 else "[delivered to the user — they will see it in the team log]")
 
+    def peek(self):
+        rows = list(self.conn.execute(
+            "SELECT id, ts, sender, recipient, content FROM msg "
+            "WHERE recipient=? AND consumed=0 ORDER BY (CASE WHEN sender='user' THEN 0 ELSE 1 END), id", (self.me,)))
+        return [Message(ts=r[1], sender=r[2], to=r[3], content=r[4], id=r[0]) for r in rows]
+
     def fetch(self):
         rows = list(self.conn.execute(
             "SELECT id, ts, sender, recipient, content FROM msg "
-            "WHERE recipient=? AND consumed=0 ORDER BY id", (self.me,)))
-        if rows:
-            self.conn.executemany("UPDATE msg SET consumed=1 WHERE id=?",
-                                  [(r[0],) for r in rows])
+            "WHERE recipient=? AND consumed=0 ORDER BY (CASE WHEN sender='user' THEN 0 ELSE 1 END), id", (self.me,)))
+        return [Message(ts=r[1], sender=r[2], to=r[3], content=r[4], id=r[0]) for r in rows]
+
+    def acknowledge(self, msgs=None):
+        if msgs is None:
+            self.conn.execute(
+                "UPDATE msg SET consumed=1 WHERE recipient=? AND consumed=0",
+                (self.me,),
+            )
             self.conn.commit()
-        return [Message(ts=r[1], sender=r[2], to=r[3], content=r[4]) for r in rows]
+            return
+        ids = []
+        fallback_msgs = []
+        for m in msgs:
+            msg_id = getattr(m, "id", None)
+            if msg_id is not None:
+                ids.append(msg_id)
+            else:
+                fallback_msgs.append(m)
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            self.conn.execute(
+                f"UPDATE msg SET consumed=1 WHERE id IN ({placeholders})",
+                ids,
+            )
+        for m in fallback_msgs:
+            sender = getattr(m, "sender", getattr(m, "from", "unknown"))
+            ts = getattr(m, "ts", None)
+            content = getattr(m, "content", "")
+            self.conn.execute(
+                "UPDATE msg SET consumed=1 WHERE id IN ("
+                "SELECT id FROM msg WHERE recipient=? AND sender=? AND ts=? AND content=? AND consumed=0 LIMIT 1)",
+                (self.me, sender, ts, content),
+            )
+        self.conn.commit()
+
+    def requeue(self, msgs_or_role, msgs=None):
+        if msgs is None:
+            if isinstance(msgs_or_role, str):
+                return
+            messages = list(msgs_or_role or [])
+            explicit_role = None
+        else:
+            explicit_role = msgs_or_role
+            messages = list(msgs or [])
+        if not messages:
+            return
+
+        for m in messages:
+            recip = explicit_role or getattr(m, "to", None) or self.me
+            sender = getattr(m, "sender", getattr(m, "from", "unknown"))
+            ts = getattr(m, "ts", time.strftime("%Y-%m-%d %H:%M:%S"))
+            content = getattr(m, "content", "")
+            unconsumed = self.conn.execute(
+                "SELECT id FROM msg WHERE recipient=? AND sender=? AND ts=? AND content=? AND consumed=0 LIMIT 1",
+                (recip, sender, ts, content),
+            ).fetchone()
+            if unconsumed:
+                continue
+            row = self.conn.execute(
+                "SELECT id FROM msg WHERE recipient=? AND sender=? AND ts=? AND content=? AND consumed=1 ORDER BY id DESC LIMIT 1",
+                (recip, sender, ts, content),
+            ).fetchone()
+            if row:
+                self.conn.execute("UPDATE msg SET consumed=0 WHERE id=?", (row[0],))
+            else:
+                self.conn.execute(
+                    "INSERT INTO msg (ts, sender, recipient, content, consumed) VALUES (?,?,?,?,0)",
+                    (ts, sender, recip, content),
+                )
+        self.conn.commit()
 
     def roster_add(self, name, role):
         if name in self._names():

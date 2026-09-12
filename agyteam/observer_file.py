@@ -15,6 +15,11 @@ from pathlib import Path
 
 from .observer import Observer
 
+try:
+    from .config import MAX_TOOL_OUTPUT_CHARS
+except ImportError:
+    MAX_TOOL_OUTPUT_CHARS = 20_000
+
 
 class FileObserver(Observer):
     """File-backed observer writing JSONL records to the team directory."""
@@ -46,8 +51,8 @@ class FileObserver(Observer):
         try:
             self.events_path.parent.mkdir(parents=True, exist_ok=True)
             with self.events_path.open("a") as f:
-                f.write(json.dumps(record) + "\n")
-        except OSError:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception:
             pass  # accounting must never break a turn
 
     def record_turn(self, agent: str, conversation: str, duration_s: float,
@@ -80,15 +85,50 @@ class FileObserver(Observer):
             "conversation": conversation,
             "duration_s": event["duration_s"] if event["duration_s"] is not None else 0.0,
         }
-        for k in ("input_tokens", "output_tokens", "cache_read_tokens", "total_tokens"):
+        for k in ("input_tokens", "output_tokens", "cache_read_tokens", "total_tokens", "model"):
             v = event.get(k)
             if v is not None:
                 usage_entry[k] = v
         try:
             self.usage_path.parent.mkdir(parents=True, exist_ok=True)
             with self.usage_path.open("a") as f:
-                f.write(json.dumps(usage_entry) + "\n")
-        except OSError:
+                f.write(json.dumps(usage_entry, default=str) + "\n")
+        except Exception:
+            pass
+
+    def record_tool_call(self, agent: str, conversation: str, tool: str,
+                         args: dict | None = None,
+                         result: str | None = None,
+                         error: str | None = None,
+                         duration_s: float | None = None,
+                         **kwargs) -> None:
+        try:
+            truncated_res = result
+            if truncated_res is not None:
+                if not isinstance(truncated_res, str):
+                    try:
+                        truncated_res = json.dumps(truncated_res, default=str)
+                    except Exception:
+                        truncated_res = str(truncated_res)
+                if len(truncated_res) > MAX_TOOL_OUTPUT_CHARS:
+                    truncated_res = (
+                        truncated_res[:MAX_TOOL_OUTPUT_CHARS]
+                        + f"\n...[truncated {len(truncated_res) - MAX_TOOL_OUTPUT_CHARS} chars]"
+                    )
+            event = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "event": "tool_call",
+                "agent": agent,
+                "conversation": conversation,
+                "tool": tool,
+                "args": args,
+                "result": truncated_res,
+                "error": str(error) if error is not None else None,
+                "duration_s": round(duration_s, 2) if duration_s is not None else None,
+                **kwargs,
+            }
+            self._write_event(event)
+        except Exception:
             pass
 
     def record_failure(self, agent: str, conversation: str, error: str,

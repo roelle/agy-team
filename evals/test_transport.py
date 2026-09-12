@@ -51,6 +51,16 @@ def contract(label: str, env_for) -> tuple[int, int]:
     u = call("tpm", [("send_to_teammate", {"to": "user", "content": "done: X"})])[2:]
     u_read = call("user", [("check_inbox", {})])[2:]
 
+    # User messages take precedence over peer messages in fetch(), preserving FIFO.
+    # coder already has 'standup' from syseng's broadcast; add user and peer messages.
+    call("user", [("send_to_teammate", {"to": "coder", "content": "urgent user interrupt"})])
+    call("tpm", [("send_to_teammate", {"to": "coder", "content": "peer follow-up"})])
+    call("user", [("send_to_teammate", {"to": "coder", "content": "second user instruction"})])
+    prio_read = call("coder", [("check_inbox", {})])[2:]
+    prio_text = text_of(prio_read[0])
+    u1, u2 = prio_text.find("urgent user interrupt"), prio_text.find("second user instruction")
+    p1, p2 = prio_text.find("standup"), prio_text.find("peer follow-up")
+
     return sum([
         check("teammates listed, self excluded, user included",
               "coder" in text_of(a_res[0]) and "tpm" not in text_of(a_res[0])
@@ -85,7 +95,9 @@ def contract(label: str, env_for) -> tuple[int, int]:
               "delivered to the user" in text_of(u[0]), text_of(u[0])),
         check("the user's answer is retrievable, not just logged",
               "done: X" in text_of(u_read[0]), text_of(u_read[0])),
-    ]), 14
+        check("user messages take precedence over peer messages and preserve FIFO",
+              0 <= u1 < u2 < p1 < p2, prio_text),
+    ]), 15
 
 
 def file_env():

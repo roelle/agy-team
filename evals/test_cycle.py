@@ -568,6 +568,7 @@ def test_auto_cycle_never_mid_episode_with_work_outstanding() -> tuple[int, int]
 
     # Now consume/clear coder's pending mail to simulate work completed
     sup.transports["coder"].fetch()
+    sup.transports["coder"].acknowledge()
     with redirect_stdout(buf):
         cycled_after_work = sup.auto_cycle()
     sup.close()

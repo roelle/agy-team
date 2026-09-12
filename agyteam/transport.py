@@ -28,6 +28,7 @@ class Message:
     sender: str
     to: str
     content: str
+    id: str | int | None = None
 
     def render(self) -> str:
         return f"[{self.ts}] from {self.sender}:\n{self.content}"
@@ -55,11 +56,18 @@ class Transport(ABC):
 
     @abstractmethod
     def fetch(self) -> list[Message]:
-        """Return messages addressed to me, and mark them consumed.
+        """Return messages addressed to me.
 
-        Must not redeliver: an agent that keeps seeing the same message will
-        loop. If the underlying system is push-based or has no ack, buffer in
-        the transport and drain here.
+        In at-least-once delivery, messages remain in the queue until explicitly
+        acknowledged via acknowledge().
+        """
+
+    def acknowledge(self, msgs: list[Message] | None = None) -> None:
+        """Acknowledge receipt and successful processing of messages.
+
+        Removes acknowledged messages from the durable queue. If msgs is None,
+        acknowledges all currently unacknowledged messages.
+        Default is a no-op; subclasses should override.
         """
 
     @abstractmethod
@@ -80,6 +88,13 @@ class Transport(ABC):
         was asked to report on.
         """
         return None
+
+    def requeue(self, msgs_or_role, msgs=None) -> None:
+        """Return unconsumed messages to the inbox (e.g. after a failed turn).
+
+        Accepts either requeue(msgs) or requeue(role, msgs).
+        Default is a no-op; subclasses should override.
+        """
 
     def broadcast(self, content: str) -> str:
         names = [t["name"] for t in self.teammates()]

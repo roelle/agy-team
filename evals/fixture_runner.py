@@ -20,6 +20,7 @@ class ScriptedRunner(Runner):
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)
         self.script = self.config.get("script", {})
+        self.tool_calls = dict(self.config.get("tool_calls", {}))
         self.fail = set(self.config.get("fail", []))
         self.log_path = self.config.get("log") or os.environ.get("AGYTEAM_RUNNER_LOG")
         self.woken: list[str] = []
@@ -44,6 +45,19 @@ class ScriptedRunner(Runner):
             for to, content in sends:
                 bus.send(to, content)
             bus.close()
+        for tc in self.tool_calls.pop(agent, []):
+            try:
+                self.observer.record_tool_call(
+                    agent=agent,
+                    conversation=self.conversation_id(agent) or "scripted",
+                    tool=tc.get("tool", "unknown"),
+                    args=tc.get("args"),
+                    result=tc.get("result"),
+                    error=tc.get("error"),
+                    duration_s=tc.get("duration_s", 0.01),
+                )
+            except Exception:
+                pass
         try:
             self.observer.record_turn(agent, self.conversation_id(agent) or "scripted",
                                       duration_s=0.01)

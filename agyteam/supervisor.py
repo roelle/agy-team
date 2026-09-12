@@ -583,10 +583,64 @@ class Supervisor:
         """Mail waiting, without consuming it. None where unsupported."""
         return {a: t.peek() for a, t in self.transports.items()}
 
+    @staticmethod
+    def _has_user_mail(transport) -> bool:
+        try:
+            pending = transport.peek()
+            if pending:
+                for m in pending:
+                    sender = getattr(m, "sender", None)
+                    if sender is None and isinstance(m, dict):
+                        sender = m.get("sender") or m.get("from")
+                    if sender == "user":
+                        return True
+        except Exception:
+            pass
+        return False
+
     def step(self) -> int:
         """One pass: wake every agent that has mail. Returns turns dispatched."""
+        stop_file = self.team_dir / ".stop"
+        if stop_file.exists():
+            try:
+                reason = stop_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                reason = ""
+            reason = reason or "stop requested via lifecycle"
+            self.stopped = f"team stopped via lifecycle: {reason}"
+            self._log(f"[supervisor] team stopped via lifecycle: {reason}")
+            return 0
+
+        roster_path = self.team_dir / "roster.json"
+        if roster_path.exists():
+            try:
+                current_roster = roster_lib.load(roster_path)
+                current_roster = roster_lib.normalize(current_roster)
+                roster_agent_names = [a["name"] for a in current_roster.get("agents", [])]
+                if set(roster_agent_names) != set(self.transports.keys()):
+                    for name in roster_agent_names:
+                        if name not in self.transports:
+                            self.transports[name] = load_transport(name)
+                    for name in list(self.transports.keys()):
+                        if name not in roster_agent_names:
+                            t = self.transports.pop(name)
+                            if hasattr(t, "close") and callable(t.close):
+                                try:
+                                    t.close()
+                                except Exception:
+                                    pass
+                    self.agents = roster_agent_names
+                if hasattr(self.runner, "sync_roster") and callable(self.runner.sync_roster):
+                    self.runner.sync_roster(current_roster)
+            except Exception:
+                pass
+
         dispatched = 0
-        for agent, transport in self.transports.items():
+        ordered_transports = sorted(
+            self.transports.items(),
+            key=lambda item: 0 if self._has_user_mail(item[1]) else 1,
+        )
+        for agent, transport in ordered_transports:
             if self.hops >= self.max_hops:
                 return dispatched
             msgs = transport.fetch()
@@ -597,21 +651,36 @@ class Supervisor:
             body = "\n\n".join(m.render() for m in msgs)
             self.hops += 1
             t0 = time.monotonic()
+            failed = False
             try:
                 reply = self.runner.wake(agent, WAKE_PROMPT.format(messages=body))
             except Exception as e:                      # one agent must not
                 dur = time.monotonic() - t0
                 reply = f"[error: {type(e).__name__}: {e}]"   # stop the team
+                failed = True
                 try:
                     cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
                     self.observer.record_failure(agent, cid, reply, duration_s=dur)
                 except Exception:
                     pass
             if reply.startswith("[error:"):
+                failed = True
                 self._log(f"    {agent}: {reply[:200]}")
             elif not self.quiet:
                 first = reply.strip().splitlines()[0] if reply.strip() else ""
                 self._log(f"    {agent}: {first[:120]}")
+            if failed:
+                if hasattr(transport, "requeue") and callable(transport.requeue):
+                    try:
+                        transport.requeue(msgs)
+                    except TypeError:
+                        transport.requeue(agent, msgs)
+            else:
+                if hasattr(transport, "acknowledge") and callable(transport.acknowledge):
+                    try:
+                        transport.acknowledge(msgs)
+                    except TypeError:
+                        transport.acknowledge()
             dispatched += 1
 
             anomaly_threshold = int(os.environ.get(
@@ -624,7 +693,6 @@ class Supervisor:
                     if ev.get("agent") == agent
                 ]
                 latest_turn = agent_turns[-1] if agent_turns else None
-                print("LATEST:", latest_turn)
             except Exception:
                 latest_turn = None
 
@@ -1231,8 +1299,10 @@ class Supervisor:
     def close(self):
         self.runner.close()
         for t in self.transports.values():
-            t.close()
-        self.user_transport.close()
+            if hasattr(t, "close") and callable(t.close):
+                t.close()
+        if hasattr(self.user_transport, "close") and callable(self.user_transport.close):
+            self.user_transport.close()
         try:
             self.observer.close()
         except Exception:
@@ -1849,8 +1919,15 @@ def main(argv=None, runner=None):
             sup.run_until_idle()
             # The agents' stdout is just a self-summary; what they actually
             # addressed to the user is the real answer, so show it.
-            for m in load_transport("user").fetch():
+            user_t = load_transport("user")
+            user_msgs = user_t.fetch()
+            for m in user_msgs:
                 print(f"\n[{m.sender} → you] {m.content}")
+            if hasattr(user_t, "acknowledge") and callable(user_t.acknowledge):
+                try:
+                    user_t.acknowledge(user_msgs)
+                except TypeError:
+                    user_t.acknowledge()
         elif args.daemon:
             try:
                 sup.run_forever()

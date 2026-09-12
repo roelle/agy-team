@@ -33,6 +33,32 @@ class RosterError(ValueError):
     """Malformed roster. The message is meant to be shown to a human."""
 
 
+def normalize_workspaces(raw, source: str = "workspaces") -> list[str]:
+    """Coerce accepted workspace shape into a deduplicated list of resolved paths."""
+    if raw is None:
+        return []
+    if isinstance(raw, (str, Path)):
+        items = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise RosterError(
+            f"{source}: workspaces must be a list of paths or a path string, got {type(raw).__name__}"
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for i, item in enumerate(items):
+        if not isinstance(item, (str, Path)) or not str(item).strip():
+            raise RosterError(
+                f"{source}: workspace[{i}] must be a non-empty path string, got {type(item).__name__}"
+            )
+        resolved = str(Path(item).expanduser().resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return out
+
+
 def normalize_agents(raw, source: str = "roster") -> list[dict]:
     """Coerce any accepted `agents` shape into a list of dicts with "name"."""
     if raw is None:
@@ -90,6 +116,10 @@ def normalize_agents(raw, source: str = "roster") -> list[dict]:
         seen.add(name)
         e["name"] = name
         e.setdefault("role", "")
+        if "workspaces" in e:
+            e["workspaces"] = normalize_workspaces(
+                e["workspaces"], source=f"{source}: {name}.workspaces"
+            )
     return entries
 
 
@@ -98,6 +128,10 @@ def normalize(doc: dict, source: str = "roster") -> dict:
         raise RosterError(f"{source}: roster must be a JSON object, got "
                           f"{type(doc).__name__}")
     out = dict(doc)
+    if "workspaces" in doc:
+        out["workspaces"] = normalize_workspaces(
+            doc.get("workspaces"), source=f"{source}: workspaces"
+        )
     out["agents"] = normalize_agents(doc.get("agents"), source)
     return out
 

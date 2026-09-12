@@ -16,6 +16,7 @@ Observability is runner/supervisor-side plumbing.
 Events recorded:
 - turn: agent, conversation, duration_s, input_tokens, output_tokens,
   cache_read_tokens, total_tokens, model.
+- tool_call: agent, conversation, tool, args, result, error, duration_s.
 - failure: agent, conversation, error, duration_s.
 - episode: turns, stopped_reason, reviewed, duration_s.
 
@@ -54,6 +55,15 @@ class Observer(ABC):
         """
 
     @abstractmethod
+    def record_tool_call(self, agent: str, conversation: str, tool: str,
+                         args: dict | None = None,
+                         result: str | None = None,
+                         error: str | None = None,
+                         duration_s: float | None = None,
+                         **kwargs) -> None:
+        """Record an agent tool invocation."""
+
+    @abstractmethod
     def record_failure(self, agent: str, conversation: str, error: str,
                        duration_s: float | None = None, **kwargs) -> None:
         """Record a turn failure with error details."""
@@ -81,6 +91,7 @@ class Observer(ABC):
         agent_data: dict[str, dict] = {}
         episodes: list[dict] = []
         failures = 0
+        total_tool_calls = 0
         total_duration = 0.0
         total_input = 0
         total_output = 0
@@ -98,6 +109,7 @@ class Observer(ABC):
                 if agent not in agent_data:
                     agent_data[agent] = {
                         "turns": 0,
+                        "tool_calls": 0,
                         "failures": 0,
                         "duration_s": 0.0,
                         "input_tokens": 0,
@@ -152,12 +164,31 @@ class Observer(ABC):
                     ag["cost_usd"] += cost
                     total_cost += cost
 
+            elif etype == "tool_call":
+                total_tool_calls += 1
+                agent = ev.get("agent", "unknown")
+                if agent not in agent_data:
+                    agent_data[agent] = {
+                        "turns": 0,
+                        "tool_calls": 0,
+                        "failures": 0,
+                        "duration_s": 0.0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "total_tokens": 0,
+                        "cost_usd": 0.0,
+                        "unknown_tokens_turns": 0,
+                    }
+                agent_data[agent]["tool_calls"] += 1
+
             elif etype == "failure":
                 failures += 1
                 agent = ev.get("agent", "unknown")
                 if agent not in agent_data:
                     agent_data[agent] = {
                         "turns": 0,
+                        "tool_calls": 0,
                         "failures": 0,
                         "duration_s": 0.0,
                         "input_tokens": 0,
@@ -192,6 +223,7 @@ class Observer(ABC):
             "episodes": episodes,
             "totals": {
                 "turns": turns_count,
+                "tool_calls": total_tool_calls,
                 "failures": failures,
                 "duration_s": round(total_duration, 2),
                 "input_tokens": total_input,
@@ -243,15 +275,15 @@ def format_summary(data: dict) -> str:
         lines.append("(no agent activity recorded)")
     else:
         lines.append("\nPer-Agent Activity:")
-        lines.append(f"  {'Agent':<12} {'Turns':<7} {'Fails':<7} {'Duration':<10} {'Tokens (In / Out / Cached / Total)':<38} {'Est. Cost':<10}")
-        lines.append("  " + "-" * 86)
+        lines.append(f"  {'Agent':<12} {'Turns':<7} {'Tools':<7} {'Fails':<7} {'Duration':<10} {'Tokens (In / Out / Cached / Total)':<38} {'Est. Cost':<10}")
+        lines.append("  " + "-" * 94)
         for name, ag in sorted(agents.items()):
             dur = f"{ag['duration_s']:.1f}s"
             tokens_str = f"{ag['input_tokens']} / {ag['output_tokens']} / {ag['cache_read_tokens']} / {ag['total_tokens']}"
             if ag.get("unknown_tokens_turns", 0) > 0:
                 tokens_str += f" (+{ag['unknown_tokens_turns']} unk)"
             cost_str = f"${ag['cost_usd']:.4f}"
-            lines.append(f"  {name:<12} {ag['turns']:<7} {ag['failures']:<7} {dur:<10} {tokens_str:<38} {cost_str:<10}")
+            lines.append(f"  {name:<12} {ag['turns']:<7} {ag.get('tool_calls', 0):<7} {ag['failures']:<7} {dur:<10} {tokens_str:<38} {cost_str:<10}")
 
     episodes = data.get("episodes", [])
     lines.append("\nEpisodes:")
@@ -270,6 +302,7 @@ def format_summary(data: dict) -> str:
     totals = data.get("totals", {})
     lines.append("\nTotals:")
     lines.append(f"  Turns:       {totals.get('turns', 0)}")
+    lines.append(f"  Tool Calls:  {totals.get('tool_calls', 0)}")
     lines.append(f"  Failures:    {totals.get('failures', 0)}")
     lines.append(f"  Duration:    {totals.get('duration_s', 0.0):.2f}s")
     lines.append(f"  Tokens:      {totals.get('input_tokens', 0)} input, {totals.get('output_tokens', 0)} output, "

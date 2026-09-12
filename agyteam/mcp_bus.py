@@ -77,6 +77,25 @@ ADMIN_TOOLS = [
          ["name", "role"]),
     tool("roster_remove", "Remove a teammate from the roster.",
          {"name": string("Agent name to remove")}, ["name"]),
+    tool("grant_workspace",
+         "Grant a workspace directory path to the team or a specific agent.",
+         {"workspace": string("Path to workspace directory"),
+          "agent": string("Optional agent name. If omitted, granted to the whole team")},
+         ["workspace"]),
+    tool("revoke_workspace",
+         "Revoke a workspace directory path from the team or a specific agent.",
+         {"workspace": string("Path to workspace directory"),
+          "agent": string("Optional agent name. If omitted, revoked from the whole team")},
+         ["workspace"]),
+    tool("stop_team",
+         "Stop the running team by writing the .stop sentinel.",
+         {"reason": string("Optional reason for stopping the team")}),
+    tool("start_team",
+         "Resume team execution by removing the .stop sentinel.",
+         {}),
+    tool("team_status",
+         "Get current team configuration, agents, workspaces, and stop state.",
+         {}),
 ]
 
 
@@ -87,6 +106,8 @@ def _list_teammates(t: Transport) -> str:
 
 def _check_inbox(t: Transport) -> str:
     msgs = t.fetch()
+    if msgs and hasattr(t, "acknowledge") and callable(t.acknowledge):
+        t.acknowledge(msgs)
     return "\n\n".join(m.render() for m in msgs) if msgs else "[inbox empty]"
 
 
@@ -234,6 +255,68 @@ def _list_reviews(t: Transport) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _handle_grant_workspace(t: Transport, a: dict) -> str:
+    from . import lifecycle
+    ws = a.get("workspace")
+    if not ws:
+        return "[error: workspace is required]"
+    try:
+        res = lifecycle.grant_workspace(
+            workspace=ws,
+            agent=a.get("agent"),
+            team_dir=_team_dir(t),
+        )
+        return json.dumps(res)
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _handle_revoke_workspace(t: Transport, a: dict) -> str:
+    from . import lifecycle
+    ws = a.get("workspace")
+    if not ws:
+        return "[error: workspace is required]"
+    try:
+        res = lifecycle.revoke_workspace(
+            workspace=ws,
+            agent=a.get("agent"),
+            team_dir=_team_dir(t),
+        )
+        return json.dumps(res)
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _handle_stop_team(t: Transport, a: dict) -> str:
+    from . import lifecycle
+    try:
+        res = lifecycle.stop_team(
+            reason=a.get("reason", ""),
+            team_dir=_team_dir(t),
+        )
+        return json.dumps(res)
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _handle_start_team(t: Transport, a: dict) -> str:
+    from . import lifecycle
+    try:
+        res = lifecycle.start_team(team_dir=_team_dir(t))
+        return json.dumps(res)
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _handle_team_status(t: Transport, a: dict) -> str:
+    from . import lifecycle
+    try:
+        res = lifecycle.team_status(team_dir=_team_dir(t))
+        return json.dumps(res)
+    except Exception as e:
+        return f"[error: {e}]"
+
+
 def main(transport: Transport, admin: bool = False):
     handlers = {
         "send_to_teammate": lambda a: transport.send(a["to"], a["content"]),
@@ -248,6 +331,11 @@ def main(transport: Transport, admin: bool = False):
         tools += ADMIN_TOOLS
         handlers["roster_add"] = lambda a: transport.roster_add(a["name"], a["role"])
         handlers["roster_remove"] = lambda a: transport.roster_remove(a["name"])
+        handlers["grant_workspace"] = lambda a: _handle_grant_workspace(transport, a)
+        handlers["revoke_workspace"] = lambda a: _handle_revoke_workspace(transport, a)
+        handlers["stop_team"] = lambda a: _handle_stop_team(transport, a)
+        handlers["start_team"] = lambda a: _handle_start_team(transport, a)
+        handlers["team_status"] = lambda a: _handle_team_status(transport, a)
 
     def dispatch(name, args):
         fn = handlers.get(name)

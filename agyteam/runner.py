@@ -154,6 +154,13 @@ class Runner(ABC):
         self.conversations_path.write_text(
             json.dumps(convs, indent=2, sort_keys=True))
 
+    def recycle_agent(self, agent: str, reason: str = "") -> None:
+        """Explicitly terminate and recycle an agent session. Default calls reset."""
+        self.reset(agent)
+
+    def sync_roster(self, roster_doc: dict | None = None) -> None:
+        """Sync running agent configurations with an updated roster document. Default is a no-op."""
+
     @abstractmethod
     def wake(self, agent: str, message: str) -> str:
         """Run `agent` against `message` and return whatever it said.
@@ -168,7 +175,7 @@ class Runner(ABC):
 
     def close(self) -> None:
         """Release resources (sessions, subprocesses). Default is a no-op."""
-        if self._observer is not None:
+        if getattr(self, "_observer", None) is not None:
             try:
                 self._observer.close()
             except Exception:
