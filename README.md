@@ -1,48 +1,141 @@
-# Agy-Team
+# agy-team
 
-Persistent, learning agents — and a team platform of them — for Google
-Antigravity 2.0: as an installable **agy CLI plugin**, or driven directly
-through the **google-antigravity SDK**.
+A persistent, learning agent for Google Antigravity — and a team of them that
+argue with each other, review each other's work, and keep durable memories
+between sessions.
 
-## Setup
+It is two things at once, and it is worth being honest about which is which:
 
-The plugin path needs **nothing installed** — its MCP servers are pure standard
-library and run under system `python3` (see [Dependencies](#dependencies)):
+- **A working agent platform.** Five agents with different jobs, a message bus,
+  a review gate, memory that survives restarts, and four swappable seams so you
+  can replace the parts that touch your infrastructure.
+- **A lab for watching agent teams fail.** Most of what is interesting here came
+  from provoking mistakes and reading the wreckage. The findings are written
+  down in the code comments, usually next to the thing they explain.
 
-```bash
-bash plugin/install.sh
-```
-
-The SDK and eval paths need a virtualenv:
+## Quick start
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install google-antigravity
-cp .env.example .env   # or create .env with GEMINI_API_KEY=...
+echo "GEMINI_API_KEY=..." > .env
 ```
 
-## Provenance of claims about Antigravity
+Talk to a single agent. It remembers you next time:
 
-This README asserts a few things about Antigravity's internals that aren't in
-the product documentation. All of them came from two public sources, and each is
-reproducible:
+```bash
+.venv/bin/python -m agyteam.sdk_cli -p "what did we talk about last time?"
+```
 
-1. **The shipped SDK source.** `google-antigravity` is on PyPI under Apache-2.0;
-   its Python source installs into your virtualenv. Statements like "`PreTurnHook`
-   is decide-only, it cannot inject context", "`compaction_threshold` maps to a
-   hard `max_token_limit`", and the `mcp_config.json` field list are from reading
-   that installed package (`.venv/lib/python3.12/site-packages/google/antigravity/`).
-2. **Observed behavior on this machine**, running the SDK against a personal
-   Gemini API key. The compaction-without-event note, the `create_file` "brain"
-   artifact-directory quirk, and token/cost figures are empirical, and the tests
-   that produced them are in `evals/`.
+Run a team. One message to the manager cascades through everyone who needs to
+act, and stops when the work is answered:
 
-Feature-availability claims ("no public peer-to-peer messaging", "Teamwork
-coordinates through workspace artifacts", "remote harness is roadmap") are from
-the public docs at antigravity.google, checked 2026-09-09. Nothing here is
-derived from non-public information, and no design decision below encodes
-knowledge of any unreleased or internal capability — see the note on the
-transport seam in [A2A messaging](#a2a-messaging-swappable-transport).
+```bash
+export AGYTEAM_TEAM=build
+export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
+.venv/bin/python -m agyteam.supervisor --say "manager: read src/, find the
+  worst bug in it, and prove it is a bug before you tell me"
+```
+
+Useful while it runs, or after:
+
+```bash
+--report          who did what, from the record rather than from memory
+--cost            spend per agent
+--status          who has mail waiting
+--retro           the team reflects on recent work and writes team norms
+--cycle <agent>   distil an agent's context into memory, then start fresh
+--daemon          stay up and react to mail as it arrives
+```
+
+Everything durable lives in `~/agy-teams/<team>/`: one directory per agent for
+identity and memories, plus the shared bus, roster, reviews and event log.
+
+## The team
+
+| agent | job |
+|---|---|
+| `manager` | faces you. Decides what "done" means, gates what reaches you, and is accountable for it. Has a shell so she can check claims rather than take them on report. |
+| `tpm` | faces the team. Breaks work into pieces one agent can finish, tracks what is outstanding, runs retros. |
+| `coder` | implements, with tests. |
+| `syseng` | owns the environment. Reproduces problems and reports the command and output that produced them. |
+| `qa` | reviews. Cannot edit source, so findings go back to the author. Keeps a memory of defects that recur here. |
+
+Oversight roles run a different model family from the implementers on purpose.
+Three reviewers with different blind spots caught three defects that none of
+them found alone; difference did that, not capability.
+
+## The four seams
+
+Each is one env var plus a config blob, each has a template to copy and a
+contract suite that any implementation must pass. They exist so this can be
+dropped into an environment whose messaging, storage, or accounting is not ours.
+
+| seam | what it swaps | env |
+|---|---|---|
+| transport | how agents talk | `AGYTEAM_BUS_TRANSPORT` |
+| memory | where memories live | `AGYTEAM_MEMORY_STORE` |
+| runner | how an agent is woken | `AGYTEAM_RUNNER` |
+| observer | turns, cost, tool calls | `AGYTEAM_OBSERVER` |
+
+## What is in flight
+
+Being worked on right now, by the team itself:
+
+- **At-least-once mail delivery.** `fetch()` deletes on read, so a message in
+  flight dies with the process. `requeue()` covers caught failures; `SIGKILL`
+  runs no `except` block. In progress with a test that hard-kills a supervisor
+  mid-turn.
+- **Bootstrap / lifecycle.** Workspace grants are read once at launch, so new
+  context arriving mid-session cannot come with the file access it needs. Add
+  and remove agents, start and stop the team, without hand-editing JSON.
+- **Tool-call recording.** `ToolResult` carries no `args`; they live on
+  `ToolCall` in the pre hook. Correlating the two is the fix.
+
+## Todo
+
+- **Handoff kit.** What a new operator reads first, and which decisions are
+  load-bearing and why. Assume the person who built this is gone.
+- **Supervisor hangs on exit.** `close()` waits on a shutdown future with no
+  timeout, so a hung session leaves a live process driving agents that a later
+  run is also driving.
+- **The proof gate proves less than it looks.** `record_review` runs the
+  reviewer's proof file, but a file with one passing test satisfies an approval
+  and a file that collects no tests satisfies a rejection. It cannot tell "I
+  demonstrated a failure" from "my file did not run".
+- **Validate on a codebase nobody here has seen.** Everything so far has been
+  this repo or a problem we already knew the answer to.
+
+## What we learned by getting it wrong
+
+The findings that survived contact, in short form. Each one cost something.
+
+- **Make the honest path the cheap path.** Not "make gaming hard" — align the
+  gradient. A rule anchored to reality stays cheap to satisfy honestly; a rule
+  that accepts an artifact gets cheaper to fake as they learn its shape.
+- **Watch for rules that create a new artifact to produce.** If a mechanism can
+  be satisfied by generating a document, it will be. Rules that remove a
+  capability or read the world hold up; rules that ask for evidence decay.
+- **The observed reward is "produce output that would be accepted", not "be
+  correct".** That substitution explains manufactured compliance artifacts,
+  benchmarks chosen because they pass, and reviews that verify nothing.
+- **Substitution is the failure mode.** Nearly every real defect here came from
+  replacing the thing under test with a representation of it: a transcribed
+  class instead of an included one, a mock instead of a live payload, a
+  benchmark that could only succeed, a result pasted where a computation
+  belonged. A test that *contains* a copy of the code under test is testing the
+  copy.
+- **Correct numbers are better camouflage than wrong ones.** A laundered
+  constant that happens to be right passes every check that asks "is this
+  true", and fails only one that asks "where did this come from".
+- **A lesson only sticks if it names an action a gate could check.** One agent
+  wrote "grep the tests for mocks and fail if found" and changed behaviour the
+  next day. Another wrote "inspect ground truth before writing" and did not.
+  Virtues lose to deadlines.
+- **Separate roles positionally, not morally.** You cannot ask an agent to
+  represent your interests; you define its job in those terms. The gatekeeper
+  reading the same teammate brief as the people she gates is socialised into
+  the group she is meant to hold to account.
 
 ## Dependencies
 
