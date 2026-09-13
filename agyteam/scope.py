@@ -68,6 +68,15 @@ class Scopes:
     project: Path
     shared: Path
     team: str = DEFAULT_TEAM
+    # Resolved once, at load, with AGYTEAM_TEAM_DIR taking precedence over
+    # <durable>/team. A field rather than a computed path because the two used
+    # to disagree: this method derived from `durable` and ignored
+    # AGYTEAM_TEAM_DIR, while module-level helpers read AGYTEAM_TEAM_DIR
+    # first. Set only the env var -- as any test or embedder naturally does --
+    # and the object pointed at one team while the functions pointed at
+    # another. The supervisor papered over it by writing BOTH env vars at
+    # startup, which fixed its own process and left every other caller split.
+    team_dir_override: Path | None = None
 
     def agent_workspace(self, agent: str) -> Path:
         """Identity + memory for one agent — always durable, never in the repo."""
@@ -76,8 +85,13 @@ class Scopes:
         return ws
 
     def team_dir(self) -> Path:
-        """Roster and message bus — durable, so history survives project churn."""
-        d = self.durable / "team"
+        """Roster and message bus — durable, so history survives project churn.
+
+        AGYTEAM_TEAM_DIR wins when set; otherwise <durable>/team. This is the
+        single definition — module-level helpers defer to it, so the function
+        and the method cannot drift apart again.
+        """
+        d = self.team_dir_override or (self.durable / "team")
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -139,7 +153,25 @@ def load(durable=None, project=None, shared=None, team=None) -> Scopes:
     shr = _expand(shared or os.environ.get("AGYTEAM_SHARED_DIR")
                   or cfg.get("shared") or proj / ".agy-team-shared")
     dur.mkdir(parents=True, exist_ok=True)
-    return Scopes(durable=dur, project=proj, shared=shr, team=tm)
+    override = os.environ.get("AGYTEAM_TEAM_DIR")
+    return Scopes(durable=dur, project=proj, shared=shr, team=tm,
+                  team_dir_override=_expand(override) if override else None)
+
+
+def team_dir(team_dir: Path | str | None = None,
+             scopes: Scopes | None = None) -> Path:
+    """The team directory for an explicit path, given scopes, or the env.
+
+    Deliberately the same resolution order the Scopes method uses, by
+    delegating to it: an explicit argument, then a passed Scopes, then the
+    environment. Callers that only have a path and callers that have a Scopes
+    object must land in the same directory.
+    """
+    if team_dir is not None:
+        d = Path(team_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return (scopes or load()).team_dir()
 
 
 def write_config(project: Path, scopes: Scopes) -> Path:
@@ -157,10 +189,9 @@ def norms_file(team_dir: Path | str | None = None, scopes: Scopes | None = None)
         return Path(team_dir) / "NORMS.md"
     if scopes is not None:
         return scopes.norms_file()
-    env = os.environ.get("AGYTEAM_TEAM_DIR")
-    if env:
-        return Path(env) / "NORMS.md"
-    return load().norms_file()
+    # Via the shared resolver, so this cannot develop its own opinion about
+    # where the team lives.
+    return globals()["team_dir"]() / "NORMS.md"
 
 
 def read_norms(team_dir: Path | str | None = None, scopes: Scopes | None = None) -> str | None:

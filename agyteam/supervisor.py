@@ -512,17 +512,15 @@ class Supervisor:
         self.stop_on_answer = stop_on_answer
         self.require_review = require_review
         self.manager = manager
+        # One resolver, no reconciliation. This used to back-derive
+        # AGYTEAM_DURABLE_DIR from AGYTEAM_TEAM_DIR (and vice versa) so that
+        # Scopes and the module helpers would agree -- a fix that only held
+        # inside this process, and silently wrote env vars its caller never
+        # set. scope.team_dir() now honours AGYTEAM_TEAM_DIR directly, so
+        # everyone agrees without anyone mutating the environment.
         if team_dir:
-            self.team_dir = Path(team_dir)
-            os.environ["AGYTEAM_TEAM_DIR"] = str(self.team_dir)
-            if self.team_dir.name == "team":
-                os.environ["AGYTEAM_DURABLE_DIR"] = str(self.team_dir.parent)
-        elif "AGYTEAM_TEAM_DIR" in os.environ:
-            self.team_dir = Path(os.environ["AGYTEAM_TEAM_DIR"]).resolve()
-            if self.team_dir.name == "team":
-                os.environ.setdefault("AGYTEAM_DURABLE_DIR", str(self.team_dir.parent))
-        else:
-            self.team_dir = scope.load().team_dir()
+            os.environ["AGYTEAM_TEAM_DIR"] = str(Path(team_dir))
+        self.team_dir = scope.team_dir(team_dir)
         from . import observer as observer_lib
         self.observer = observer or getattr(runner, "_observer", None) or observer_lib.load()
         if hasattr(runner, "observer"):

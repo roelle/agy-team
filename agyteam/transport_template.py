@@ -8,12 +8,30 @@ the agents' tools keep the same names and semantics.
     # implement the three methods
     export AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
     export AGYTEAM_BUS_CONFIG='{"endpoint": "..."}'      # optional
-    .venv/bin/python evals/test_transport.py             # must pass 12/12
+    .venv/bin/python evals/test_transport.py     # 15 checks per transport
 
 Run that suite before trusting it — it is transport-agnostic and checks the
 contract (delivery, no redelivery, unknown recipients, isolation between
-agents) that the rest of the system relies on.
+agents) that the rest of the system relies on. It runs those 15 checks against
+your transport and against the file transport, so the headline total is 34;
+what matters for yours is that none of its 15 fail.
+
+## What this contract cannot express
+
+Every check here is pull-shaped: the suite sends, then calls fetch/peek and
+inspects what came back. A transport that delivers out of band — pushing
+straight into a live agent session — can satisfy all 15 and still break the
+system, because a delivery the supervisor never saw is a delivery outside its
+hop budget, its stop-on-answer condition, its failure isolation and its
+requeue path. The contract has no way to observe that. This is a known gap,
+documented rather than fixed: see "Push instead of polling" in the README. If
+you push, you are taking over the supervisor's scheduling role, and those four
+guarantees become yours to reimplement.
 """
+# Relative import, because this file ships inside the package. The moment you
+# copy it out to example_transport.py at the repo root, change this line to
+#     from agyteam.transport import Message, Transport
+# or the copy raises ImportError before any of your code runs.
 from .transport import Message, Transport
 
 

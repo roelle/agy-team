@@ -9,7 +9,7 @@ names and semantics.
     # implement the four methods
     export AGYTEAM_MEMORY_STORE=example_memory:MyStore
     export AGYTEAM_MEMORY_CONFIG='{"dsn": "..."}'    # optional
-    .venv/bin/python evals/test_memory.py            # must pass 14/14
+    .venv/bin/python evals/test_memory.py    # 14 checks per store (64 total)
 
 Run that suite before trusting it. It is store-agnostic and checks the contract
 the rest of the system relies on — round-tripping, overwrite-not-duplicate,
@@ -20,6 +20,10 @@ Note on scope: one store instance serves one agent. If your backend is shared
 between agents, namespace records by `self.agent` so teammates cannot read or
 overwrite each other's memories unless you intend them to.
 """
+# Relative import, because this file ships inside the package. The moment you
+# copy it out to example_memory.py at the repo root, change this line to
+#     from agyteam.memory import MemoryEntry, MemoryStore
+# or the copy raises ImportError before any of your code runs.
 from .memory import MemoryEntry, MemoryStore
 
 

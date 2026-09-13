@@ -86,7 +86,7 @@ launcher once and it stops asking:
 
 - **Missing or Invalid API Key**: If `./run` reports `GEMINI_API_KEY is unset or invalid`, grab a key from [Google AI Studio](https://aistudio.google.com/) and paste it when prompted, or save `GEMINI_API_KEY=your_key_here` in `.env` in the repository root.
 - **Billing / Quota Limits**: If you see quota or 429 rate limit errors, verify your Google AI Studio project has billing enabled and tier quotas configured for Gemini API access.
-- **Python Version**: `agy-exp` requires Python 3.10 or newer. If `./run` reports an older version, install Python 3.10+ using your system package manager (e.g. `sudo apt install python3 python3-venv` on Ubuntu/Debian, or `brew install python` on macOS).
+- **Python Version**: `agy-team` requires Python 3.10 or newer. If `./run` reports an older version, install Python 3.10+ using your system package manager (e.g. `sudo apt install python3 python3-venv` on Ubuntu/Debian, or `brew install python` on macOS).
 
 ## Developer / Manual Quick Start
 
@@ -401,7 +401,7 @@ knowledge service, or an internal store:
 ```bash
 export AGYTEAM_MEMORY_STORE=example_memory:MyStore
 export AGYTEAM_MEMORY_CONFIG='{"dsn":"..."}'     # optional, JSON
-.venv/bin/python evals/test_memory.py            # must pass 14/14
+.venv/bin/python evals/test_memory.py     # 14 checks per store
 ```
 
 Copy `agyteam/memory_template.py` and implement four methods (`save`, `read`,
@@ -564,7 +564,7 @@ your class — no agyteam source changes, and agents notice nothing:
 ```bash
 export AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
 export AGYTEAM_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
-.venv/bin/python evals/test_transport.py            # must pass 12/12
+.venv/bin/python evals/test_transport.py  # 15 checks per transport
 ```
 
 Copy `agyteam/transport_template.py` and implement three methods (`send`,

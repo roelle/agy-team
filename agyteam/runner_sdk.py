@@ -77,7 +77,12 @@ class SdkRunner(Runner):
                 ws_list.append(w)
         return ws_list
 
-    def _submit(self, coro, timeout: float | None = None):
+    # Default to a bounded wait, not None. Every caller that forgot to pass a
+    # timeout inherited "block forever": a unit test that only builds an agent
+    # hung the entire offline suite, and the symptom -- silence -- looked
+    # identical to slow work. Callers that legitimately take longer (a model
+    # turn) pass their own, larger ceiling.
+    def _submit(self, coro, timeout: float | None = cfg.OP_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
             return fut.result(timeout=timeout)

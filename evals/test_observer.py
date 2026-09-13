@@ -311,7 +311,9 @@ def test_sdk_runner_tool_tracing() -> tuple[int, int]:
     try:
         obs = FileObserver({"team_dir": str(td)})
         runner = SdkRunner(observer=obs)
-        agent = runner._submit(runner._ensure("coder"))
+        # Explicit and short: this only builds a local session, and it must not
+        # be the thing that decides how long the offline suite runs.
+        agent = runner._submit(runner._ensure("coder"), timeout=30)
         pre_hook = next(h for h in agent._config.hooks if getattr(h, "__name__", None) == "pre_trace_tools")
         post_hook = next(h for h in agent._config.hooks if getattr(h, "__name__", None) == "trace_tools")
 

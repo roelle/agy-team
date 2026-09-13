@@ -29,7 +29,17 @@ def rpc(module: str, args: list[str], calls: list[tuple[str, dict]],
                      "params": {"name": name, "arguments": a}})
     proc = subprocess.run(
         [str(PY), "-m", module, *args], cwd=ROOT, text=True, timeout=60,
-        env={**os.environ, "PYTHONPATH": f"{ROOT}:{ROOT / 'evals'}", **(env or {})},
+        # PREPEND, never replace. Replacing meant the conformance suite could
+        # only ever import a transport or store that lives in this repo, so
+        # the one deployment that matters -- a bundle installed elsewhere by
+        # plugin/install.sh, or an internal implementation on the operator's
+        # own PYTHONPATH -- was unreachable by the very suite that exists to
+        # certify it. The repo still comes first so our fixtures win ties.
+        env={**os.environ,
+             "PYTHONPATH": os.pathsep.join(
+                 p for p in (str(ROOT), str(ROOT / "evals"),
+                             os.environ.get("PYTHONPATH", "")) if p),
+             **(env or {})},
         input="\n".join(json.dumps(m) for m in msgs) + "\n", capture_output=True)
     if proc.returncode != 0:
         raise AssertionError(f"{module} exited {proc.returncode}: {proc.stderr}")

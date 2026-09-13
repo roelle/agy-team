@@ -114,10 +114,23 @@ MAX_LOOP_STEPS = int(os.environ["AGYTEAM_MAX_LOOP_STEPS"]) \
 # Wall-clock ceiling on one agent turn. Waiting forever is not a safe default:
 # with no credentials configured the SDK can block on the transport rather than
 # returning an auth error, and an unattended supervisor then sits silent with
-# nothing to distinguish "thinking hard" from "will never return". A turn that
-# genuinely needs longer than this is a turn we want to see reported.
+# nothing to distinguish "thinking hard" from "will never return".
+#
+# 10 minutes, not 30. Two reasons, both measured. A first-run user who has
+# misconfigured something learns that in ten minutes rather than half an hour,
+# and 30 minutes of silence is indistinguishable from broken anyway. And the
+# worst turn this project ever had ran 97 minutes and burned $7.93 emitting
+# repeated junk: a ceiling here would have stopped it at a tenth of the cost,
+# which makes this a degeneration bound as much as a liveness one.
 # Set AGYTEAM_TURN_TIMEOUT=0 to restore unbounded waiting.
-TURN_TIMEOUT_S = float(os.environ.get("AGYTEAM_TURN_TIMEOUT", 1800)) or None
+TURN_TIMEOUT_S = float(os.environ.get("AGYTEAM_TURN_TIMEOUT", 600)) or None
+
+# Ceiling on everything that is NOT a model turn: creating a session, closing
+# one, any internal coroutine the runner submits. These talk to the local
+# harness and should take seconds, so a minute is already generous -- and this
+# is the default for SdkRunner._submit, because a default of "wait forever" is
+# how a unit test that merely builds an agent hangs a whole suite.
+OP_TIMEOUT_S = float(os.environ.get("AGYTEAM_OP_TIMEOUT", 60)) or None
 
 # Where conversations are stored. The agy CLI, the Antigravity IDE and the SDK
 # are three clients of the same store, so this single choice decides which
