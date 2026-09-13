@@ -8,7 +8,7 @@
       "file": "ringbuffer.py",
       "summary": "read_all() starts at _head, which is only the oldest item once the buffer has wrapped. While partially filled it reads unwritten slots.",
       "repro": "RingBuffer(4); push 1,2,3; read_all() -> [None, 1, 2]; want [1, 2, 3]",
-      "patterns": ["read_all", "_head", "partial", "not.{0,12}full", "None"]
+      "patterns": ["read_all", "partial|before.{0,20}(wrap|full)|not.{0,12}full", "None|empty slot|unwritten"]
     },
     {
       "id": "D2",

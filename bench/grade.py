@@ -90,8 +90,11 @@ def main() -> int:
         print(f"  [{'PASS' if not fp else 'FAIL'}] {c['id']}: {c['summary'][:74]}")
 
     print("\n-- did they check, or did they read? --")
-    # a concrete reproduction contains real values, not prose about values
-    concrete = bool(re.search(r"(->|returns?|got)\s*\[?\s*(None|\d)", said, re.I))
+    # a concrete reproduction contains real values, not prose about values.
+    # Allow punctuation and markdown between the verb and the value: real
+    # reports write "returns: `[None]`", and the first team graded lost a
+    # point to this regex despite pasting literal program output.
+    concrete = bool(re.search(r"(->|returns?|got)\W{0,4}(None|[\d\[])", said, re.I))
     ran_fixture = [c for c in executed if "fixture" in c or "ringbuffer" in c
                    or "stats" in c or "pytest" in c]
     checks = [
