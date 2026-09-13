@@ -59,3 +59,8 @@ def test_correlation_map_memory_leak():
         else:
             os.environ.pop("AGYTEAM_TEAM_DIR", None)
         shutil.rmtree(td, ignore_errors=True)
+
+if __name__ == "__main__":
+    import sys
+    import pytest
+    sys.exit(pytest.main(["-v", __file__]))

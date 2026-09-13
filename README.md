@@ -127,27 +127,8 @@ dropped into an environment whose messaging, storage, or accounting is not ours.
 
 Being worked on right now, by the team itself:
 
-- **At-least-once mail delivery.** `fetch()` deletes on read, so a message in
-  flight dies with the process. `requeue()` covers caught failures; `SIGKILL`
-  runs no `except` block. In progress with a test that hard-kills a supervisor
-  mid-turn.
-- **Bootstrap / lifecycle.** Workspace grants are read once at launch, so new
-  context arriving mid-session cannot come with the file access it needs. Add
-  and remove agents, start and stop the team, without hand-editing JSON.
-- **Tool-call recording.** `ToolResult` carries no `args`; they live on
-  `ToolCall` in the pre hook. Correlating the two is the fix.
-
 ## Todo
 
-- **Handoff kit.** What a new operator reads first, and which decisions are
-  load-bearing and why. Assume the person who built this is gone.
-- **Supervisor hangs on exit.** `close()` waits on a shutdown future with no
-  timeout, so a hung session leaves a live process driving agents that a later
-  run is also driving.
-- **The proof gate proves less than it looks.** `record_review` runs the
-  reviewer's proof file, but a file with one passing test satisfies an approval
-  and a file that collects no tests satisfies a rejection. It cannot tell "I
-  demonstrated a failure" from "my file did not run".
 - **Validate on a codebase nobody here has seen.** Everything so far has been
   this repo or a problem we already knew the answer to.
 
@@ -599,13 +580,13 @@ Current status — all green:
 
 | suite | what it proves | score |
 |---|---|---|
-| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 41/41 |
-| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 32/32 |
+| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 42/42 |
+| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 34/34 |
 | `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 64/64 |
 | `test_self.py` | agent introspection server, tool functionality, robust isolation | 22/22 |
-| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 23/23 |
-| `test_review.py` | durable review records, approval gate, and supervisor integration | 14/14 |
-| `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 49/49 |
+| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 51/51 |
+| `test_review.py` | durable review records, approval gate, and supervisor integration | 21/21 |
+| `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 69/69 |
 | `test_cycle.py` | conversation cycle, distill abort safety, frontmatter parsing | 83/83 |
 | `test_continuity.py` | whether a wake resumes context or cold-starts, per runner | 4/4 |
 | `test_delivery.py` | **the product**: one instruction → a verified artifact on disk, via the agy CLI | 8/8 |

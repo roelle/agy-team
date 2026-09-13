@@ -21,3 +21,8 @@ def test_gitignore_contains_build_dirs():
         content = f.read()
     assert "build/" in content
     assert ".venv" in content
+
+if __name__ == "__main__":
+    import sys
+    import pytest
+    sys.exit(pytest.main(["-v", __file__]))

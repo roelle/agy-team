@@ -289,3 +289,8 @@ def test_correlation_maps_cleared_on_trace():
         else:
             os.environ.pop("AGYTEAM_TEAM_DIR", None)
         shutil.rmtree(td.parent, ignore_errors=True)
+
+if __name__ == "__main__":
+    import sys
+    import pytest
+    sys.exit(pytest.main(["-v", __file__]))

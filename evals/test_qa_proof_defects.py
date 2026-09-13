@@ -36,3 +36,8 @@ def test_qa_defect3_runner_waitfor():
         assert duration < 5.0, "Runner close took too long or hung!"
     finally:
         runner.close()
+
+if __name__ == "__main__":
+    import sys
+    import pytest
+    sys.exit(pytest.main(["-v", __file__]))

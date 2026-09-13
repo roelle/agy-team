@@ -488,3 +488,8 @@ def test_import_agent_memory_overwrite_allowed(tmp_path):
     assert agents_dir.joinpath("victim.txt").read_text() == "overwritten"
     assert agents_dir.joinpath("new_agent.txt").read_text() == "brand new"
 
+
+if __name__ == "__main__":
+    import sys
+    import pytest
+    sys.exit(pytest.main(["-v", __file__]))
