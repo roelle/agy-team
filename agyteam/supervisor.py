@@ -1965,10 +1965,14 @@ def main(argv=None, runner=None):
                     help="Agent acting as manager (default: auto-detect from roster)")
     args = ap.parse_args(argv)
 
-    team_dir = Path(args.team_dir) if args.team_dir else scope.load().team_dir()
+    # Set the team directory and nothing else. This used to also write
+    # AGYTEAM_DURABLE_DIR, which meant the SAME team_dir put agent memory in
+    # two different places depending on whether you came through the CLI (which
+    # set durable) or the library (which did not), with no error either way.
+    # scope now derives everything from the team directory, so one variable is
+    # the whole story.
+    team_dir = scope.team_dir(args.team_dir)
     os.environ["AGYTEAM_TEAM_DIR"] = str(team_dir)
-    if team_dir.name == "team":
-        os.environ["AGYTEAM_DURABLE_DIR"] = str(team_dir.parent)
 
     if args.report_json:
         rep = generate_report(team_dir)

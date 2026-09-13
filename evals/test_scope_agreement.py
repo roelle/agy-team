@@ -77,6 +77,74 @@ def test_explicit_argument_beats_environment():
         os.environ.update(saved)
 
 
+def test_two_teams_never_share_an_agent_memory_dir():
+    """The silent one: agent_workspace derived only from `durable`.
+
+    Two teams that each set only AGYTEAM_TEAM_DIR both landed on
+    ~/agy-teams/default/agents/coder -- one memory directory, two teams,
+    each reading and overwriting the other's learnings, and nothing anywhere
+    reported a problem.
+    """
+    saved = dict(os.environ)
+    try:
+        root = Path(tempfile.mkdtemp())
+        got = {}
+        for team in ("teamA", "teamB"):
+            _isolate({"AGYTEAM_TEAM_DIR": str(root / team / "team")})
+            s = scope.load()
+            got[team] = (s.team_dir(), s.agent_workspace("coder"))
+        assert got["teamA"][0] != got["teamB"][0]
+        assert got["teamA"][1] != got["teamB"][1], (
+            f"both teams share {got['teamA'][1]}")
+        # And agents live beside their own team dir, not somewhere unrelated.
+        for team in ("teamA", "teamB"):
+            assert got[team][1] == root / team / "agents" / "coder"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_cli_entry_point_and_library_agree_on_agent_memory():
+    """Same team_dir must mean the same memory dir by either entry point.
+
+    The supervisor CLI used to ALSO write AGYTEAM_DURABLE_DIR, so identical
+    arguments produced different agent-memory locations depending on whether
+    you arrived via the CLI or the library.
+    """
+    saved = dict(os.environ)
+    try:
+        root = Path(tempfile.mkdtemp())
+        td = root / "myteam" / "team"
+
+        _isolate({"AGYTEAM_TEAM_DIR": str(td)})
+        library = scope.load().agent_workspace("coder")
+
+        # What the CLI used to do in addition to setting the team dir.
+        _isolate({"AGYTEAM_TEAM_DIR": str(td),
+                  "AGYTEAM_DURABLE_DIR": str(td.parent)})
+        cli = scope.load().agent_workspace("coder")
+
+        assert library == cli, f"library {library} != cli {cli}"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_unconventional_team_dir_name_does_not_collide():
+    """A team dir not named 'team' is its own root, not its parent's."""
+    saved = dict(os.environ)
+    try:
+        root = Path(tempfile.mkdtemp())
+        got = []
+        for name in ("alpha", "beta"):
+            _isolate({"AGYTEAM_TEAM_DIR": str(root / name)})
+            got.append(scope.load().agent_workspace("coder"))
+        assert got[0] != got[1], f"both resolved to {got[0]}"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))

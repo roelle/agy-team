@@ -76,7 +76,10 @@ def whoami(agent: str, scopes: scope.Scopes | None = None, team_dir: Path | None
         "\n".join(teammates),
         "",
         "Paths:",
-        f"- durable:   {scopes.durable}",
+        # durable_root, not durable: when AGYTEAM_TEAM_DIR is set the two
+        # differ, and an agent asking where it lives should be told where its
+        # memory actually is, not where the default layout would have put it.
+        f"- durable:   {scopes.durable_root()}",
         f"- workspace: {scopes.agent_workspace(agent)}",
         f"- memory:    {scopes.agent_workspace(agent) / 'memory'}",
         f"- shared:    {scopes.shared_dir()}",

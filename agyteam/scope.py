@@ -78,9 +78,29 @@ class Scopes:
     # startup, which fixed its own process and left every other caller split.
     team_dir_override: Path | None = None
 
+    def durable_root(self) -> Path:
+        """The directory that holds BOTH `team/` and `agents/` for this team.
+
+        Derived from the team directory, because a team is the unit of
+        isolation: its roster, bus and its agents' memories have to move
+        together. When only AGYTEAM_TEAM_DIR was set, `durable` stayed at the
+        default and every team's agents landed in
+        ~/agy-teams/default/agents/<name> — two teams, one memory directory,
+        each reading the other's learnings, and no error anywhere.
+
+        Layout is <root>/team and <root>/agents, so a team dir named "team"
+        means its root is the parent. A team dir named anything else is taken
+        as its own root, which keeps two differently-named team dirs under one
+        parent from colliding.
+        """
+        td = self.team_dir_override
+        if td is None:
+            return self.durable
+        return td.parent if td.name == "team" else td
+
     def agent_workspace(self, agent: str) -> Path:
         """Identity + memory for one agent — always durable, never in the repo."""
-        ws = self.durable / "agents" / agent
+        ws = self.durable_root() / "agents" / agent
         (ws / "memory").mkdir(parents=True, exist_ok=True)
         return ws
 
