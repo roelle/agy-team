@@ -13,6 +13,27 @@ It is two things at once, and it is worth being honest about which is which:
   from provoking mistakes and reading the wreckage. The findings are written
   down in the code comments, usually next to the thing they explain.
 
+## How to train your team (read this before installing)
+
+The team does not arrive perfect; it arrives **trainable**. Out of the box the
+first runs may cut corners — one agent doing everything, work approved by the
+person who wrote it. That is normal, and the system corrects it, but only if
+the loop runs: **tell the manager what you liked and didn't, in plain chat**
+("qa never saw that — why?"), then run `--retro` and `--cycle-all`. Learnings
+become team norms and durable memories, and behaviour measurably changes on
+the next task.
+
+You never need to read logs to see how the work happened: **every answer ends
+with a brief "how we worked" note** — who did the work, who reviewed it and
+their verdict, anything skipped. If the same name wrote and approved something,
+or nobody was delegated to, that note is where you'll see it. Say so to the
+manager; that sentence is the training.
+
+Measured, not promised: a team started from zero went from solo, self-approved
+work to a full delegate-implement-review pipeline — at lower cost — after one
+retro-and-cycle. Reproduce it on your own hardware with
+`bench/convergence.py` (spends real money; see `bench/README.md`).
+
 ## Quick Start (Zero-Friction Launcher)
 
 ```bash
