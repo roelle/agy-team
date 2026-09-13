@@ -111,6 +111,14 @@ RETRO_MAX_REFLECTION_CHARS = int(os.environ.get("AGYTEAM_RETRO_MAX_REFLECTION_CH
 MAX_LOOP_STEPS = int(os.environ["AGYTEAM_MAX_LOOP_STEPS"]) \
     if os.environ.get("AGYTEAM_MAX_LOOP_STEPS") else None
 
+# Wall-clock ceiling on one agent turn. Waiting forever is not a safe default:
+# with no credentials configured the SDK can block on the transport rather than
+# returning an auth error, and an unattended supervisor then sits silent with
+# nothing to distinguish "thinking hard" from "will never return". A turn that
+# genuinely needs longer than this is a turn we want to see reported.
+# Set AGYTEAM_TURN_TIMEOUT=0 to restore unbounded waiting.
+TURN_TIMEOUT_S = float(os.environ.get("AGYTEAM_TURN_TIMEOUT", 1800)) or None
+
 # Where conversations are stored. The agy CLI, the Antigravity IDE and the SDK
 # are three clients of the same store, so this single choice decides which
 # surface an SDK-run agent shows up in — and whether it can be joined at all.

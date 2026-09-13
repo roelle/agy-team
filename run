@@ -49,6 +49,27 @@ ensure_api_key() {
         fi
     fi
 
+    # A Gemini API key is ONE way to reach a model, not the only one. Inside an
+    # organisation the models usually arrive through an internal endpoint,
+    # application-default credentials, or a custom runner -- all of which make
+    # demanding a key here a wall in front of the people best placed to use
+    # this. AGYTEAM_NO_API_KEY=1 (env or .env) means "I supply credentials
+    # another way": get out of the way and let a real call fail with a real
+    # error if they were wrong.
+    if [ -z "${AGYTEAM_NO_API_KEY:-}" ] && [ -f "$REPO_DIR/.env" ] \
+       && grep -qE '^[[:space:]]*AGYTEAM_NO_API_KEY=1' "$REPO_DIR/.env" 2>/dev/null; then
+        export AGYTEAM_NO_API_KEY=1
+    fi
+    if [ -n "${AGYTEAM_NO_API_KEY:-}" ]; then
+        return 0
+    fi
+
+    # A non-SDK runner is the operator saying they own model access entirely.
+    if [ -n "${AGYTEAM_RUNNER:-}" ] && \
+       ! printf '%s' "${AGYTEAM_RUNNER:-}" | grep -q "runner_sdk"; then
+        return 0
+    fi
+
     if [ -z "${GEMINI_API_KEY:-}" ]; then
         cmd_setup
     fi
@@ -56,6 +77,21 @@ ensure_api_key() {
 
 cmd_setup() {
     local force="${1:-}"
+    # Explicit opt-out, so "I do not need a key" is a supported answer rather
+    # than something you discover by reading the shell script.
+    if [ "$force" = "--no-key" ]; then
+        if [ -f "$REPO_DIR/.env" ]; then
+            grep -v '^[[:space:]]*AGYTEAM_NO_API_KEY=' "$REPO_DIR/.env" > "$REPO_DIR/.env.tmp" 2>/dev/null || true
+            mv "$REPO_DIR/.env.tmp" "$REPO_DIR/.env"
+        fi
+        printf "AGYTEAM_NO_API_KEY=1\n" >> "$REPO_DIR/.env"
+        chmod 600 "$REPO_DIR/.env"
+        echo "Recorded: this checkout does not need a GEMINI_API_KEY."
+        echo "Model access is yours to supply (internal endpoint, ADC, or a"
+        echo "custom AGYTEAM_RUNNER). Offline suites already need no key:"
+        echo "    ./run test"
+        return 0
+    fi
     echo "=== AgyTeam Gemini API Setup ==="
     echo "A Google Gemini API key is required to power the agents."
     echo ""
@@ -96,15 +132,20 @@ except Exception as e:
     fi
 
     if [ ! -t 0 ]; then
-        echo "Error: Non-interactive terminal. Please set GEMINI_API_KEY in your environment or in $REPO_DIR/.env." >&2
+        echo "Error: Non-interactive terminal. Set GEMINI_API_KEY in your" >&2
+        echo "environment or $REPO_DIR/.env, or run './run setup --no-key' if" >&2
+        echo "you supply model access another way." >&2
         exit 1
     fi
 
-    read -r -p "Enter your GEMINI_API_KEY: " user_key
+    echo "If you reach models another way (internal endpoint, application"
+    echo "default credentials, or your own AGYTEAM_RUNNER), press Enter on an"
+    echo "empty line and we will stop asking."
+    read -r -p "Enter your GEMINI_API_KEY (or Enter to skip): " user_key
     user_key="$(echo "$user_key" | tr -d '[:space:]')"
     if [ -z "$user_key" ]; then
-        echo "Error: API key cannot be empty." >&2
-        exit 1
+        cmd_setup --no-key
+        return 0
     fi
     export GEMINI_API_KEY="$user_key"
     printf "GEMINI_API_KEY=%s\n" "$user_key" > "$REPO_DIR/.env"
@@ -203,6 +244,8 @@ Commands:
   export <bundle>  Export team configuration, state, and memory to archive (.tar.gz)
   import <bundle>  Import team configuration, state, and memory from archive (.tar.gz)
   setup            Configure and verify your GEMINI_API_KEY with zero token burn
+  setup --no-key   Record that you supply model access another way (internal
+                   endpoint, ADC, custom runner); stops the key prompt for good
   test [args...]   Run test suite (offline pytest by default, --live for run_evals.py)
   help, --help     Show this help message
 

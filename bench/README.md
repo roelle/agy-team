@@ -64,8 +64,24 @@ access to a directory containing the paper it was being asked to derive.
 Check before you run:
 
 ```bash
-python -m agyteam.lifecycle status --json | grep -c bench      # want 0
+python3 bench/check_leak.py --team <your-team> --cwd <where you will launch>
+# exit 0 clean, 1 leaked, 2 could not tell
 ```
+
+**The default is leaked, and this is the trap.** Every agent is granted the
+working directory unconditionally, so a team launched from this repo can read
+`bench/keys/` — which is how the first team measured here burned both tasks.
+Either launch the team from somewhere else, or point its roster `workspaces`
+at a staging directory holding only the fixtures.
+
+An earlier version of this file documented
+`agyteam.lifecycle status --json | grep -c bench`. That check could not work:
+`status --json` reports team-level grants plus each agent's name and role, so
+per-agent `workspaces`, `AGYTEAM_EXTRA_WORKSPACES` and the working directory
+never appear in it. It printed 0 whether or not the keys were reachable — a
+check that passed because it was blind, which is precisely the defect class
+this bench exists to measure. It is kept here as a reminder that the
+instrument needs the same scrutiny as the subject.
 
 If you add tasks, keep the fixtures out of the team's repo checkout too — an
 agent that finds the fixture in its own tree will find the key beside it.

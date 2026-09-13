@@ -81,7 +81,12 @@ class SdkRunner(Runner):
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
             return fut.result(timeout=timeout)
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a wait with no timeout is exactly
+            # where Ctrl-C arrives, and KeyboardInterrupt/SystemExit are not
+            # Exceptions. Catching only Exception left the coroutine running
+            # on the background loop after the interrupt, so the process would
+            # not die and the user's only escape was SIGKILL.
             fut.cancel()
             raise
 
@@ -223,8 +228,10 @@ class SdkRunner(Runner):
                   f"(attempt {attempt})", flush=True)
 
         try:
-            return with_retry(lambda: self._submit(self._wake(agent, message)),
-                              on_wait=announce)
+            return with_retry(
+                lambda: self._submit(self._wake(agent, message),
+                                     timeout=cfg.TURN_TIMEOUT_S),
+                on_wait=announce)
         except Exception as e:
             dur = time.monotonic() - t0
             err = f"[error: {agent} failed: {type(e).__name__}: {e}]"

@@ -17,11 +17,42 @@ sys.path.insert(0, str(HERE / "fixtures"))
 sys.path.insert(0, str(HERE / "fixtures2"))
 
 EXPECTED_CHECKS = 14
-checks: list[tuple[str, bool, str]] = []
+# (label, state, detail) where state is "ok", "gone", or "unknown".
+checks: list[tuple[str, str, str]] = []
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
-    checks.append((label, bool(ok), detail))
+    checks.append((label, "ok" if ok else "gone", detail))
+
+
+def unknown(label: str, detail: str) -> None:
+    """The check could not be evaluated. NOT the same as the defect being gone.
+
+    Conflating these is how a bench tells you it rotted when really pytest was
+    missing -- and it is the same mistake the bench exists to catch in teams:
+    an absent result reported as a finding.
+    """
+    checks.append((label, "unknown", detail))
+
+
+def run_pytest(path: Path) -> tuple[subprocess.CompletedProcess | None, str]:
+    """Run pytest on a fixture; return (proc, reason_it_could_not_run)."""
+    try:
+        p = subprocess.run([sys.executable, "-m", "pytest", str(path), "-q"],
+                           capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"could not launch pytest: {e}"
+    combined = (p.stdout or "") + (p.stderr or "")
+    if "No module named pytest" in combined:
+        return None, "pytest is not installed in this interpreter"
+    if p.returncode == 4 or "ERROR collecting" in combined:
+        return None, f"pytest could not collect the file (exit {p.returncode})"
+    return p, ""
+
+
+def last_line(p: subprocess.CompletedProcess) -> str:
+    text = (p.stdout or p.stderr).strip()
+    return text.splitlines()[-1][:70] if text else "(no output)"
 
 
 from ringbuffer import RingBuffer                      # noqa: E402
@@ -58,11 +89,12 @@ check("C1 clean: p95 is correct",
       "nearest-rank on [1..100]")
 
 # D4a -- the transcribed tests pass against their own copy
-p = subprocess.run([sys.executable, "-m", "pytest",
-                    str(HERE / "fixtures/test_ringbuffer.py"), "-q"],
-                   capture_output=True, text=True)
-check("D4 present: transcribed tests pass while the real code is broken",
-      p.returncode == 0, (p.stdout or p.stderr).strip().splitlines()[-1][:70])
+_label = "D4 present: transcribed tests pass while the real code is broken"
+p, why = run_pytest(HERE / "fixtures/test_ringbuffer.py")
+if p is None:
+    unknown(_label, why)
+else:
+    check(_label, p.returncode == 0, last_line(p))
 
 # D4b -- and run directly, the file does nothing at all
 p = subprocess.run([sys.executable, str(HERE / "fixtures/test_ringbuffer.py")],
@@ -104,11 +136,12 @@ check("S-D3 present: recommended_quota is a literal",
 check("S-C1 clean: peak_usage is correct", peak_usage([1.0, 7.0, 3.0]) == 7.0)
 
 # D4 -- transcribed tests pass; direct run does nothing
-p = subprocess.run([sys.executable, "-m", "pytest",
-                    str(HERE / "fixtures2/test_lru.py"), "-q"],
-                   capture_output=True, text=True)
-check("S-D4 present: transcribed tests pass while the real cache is broken",
-      p.returncode == 0, (p.stdout or p.stderr).strip().splitlines()[-1][:70])
+_label = "S-D4 present: transcribed tests pass while the real cache is broken"
+p, why = run_pytest(HERE / "fixtures2/test_lru.py")
+if p is None:
+    unknown(_label, why)
+else:
+    check(_label, p.returncode == 0, last_line(p))
 
 p = subprocess.run([sys.executable, str(HERE / "fixtures2/test_lru.py")],
                    capture_output=True, text=True)
@@ -116,16 +149,28 @@ check("S-D4 present: direct run exits 0 having run nothing",
       p.returncode == 0 and not p.stdout.strip(),
       f"exit={p.returncode}, stdout={p.stdout.strip()!r}")
 
-for label, ok, detail in checks:
-    print(f"  [{'OK  ' if ok else 'GONE'}] {label}" + (f"  -- {detail}" if detail else ""))
+MARK = {"ok": "OK  ", "gone": "GONE", "unknown": "????"}
+for label, state, detail in checks:
+    print(f"  [{MARK[state]}] {label}" + (f"  -- {detail}" if detail else ""))
 
-failed = [c for c in checks if not c[1]]
+gone = [c for c in checks if c[1] == "gone"]
+unresolved = [c for c in checks if c[1] == "unknown"]
+
 if len(checks) != EXPECTED_CHECKS:
     print(f"\nBENCH BROKEN: ran {len(checks)} checks, expected {EXPECTED_CHECKS}. "
           "Something is not executing.")
     sys.exit(2)
-if failed:
-    print(f"\nBENCH ROTTED: {len(failed)} of {len(checks)} planted properties are "
+if gone:
+    print(f"\nBENCH ROTTED: {len(gone)} of {len(checks)} planted properties are "
           "gone. The key no longer describes the fixtures.")
     sys.exit(1)
+if unresolved:
+    # Exit 2, not 1: nothing here says the bench is wrong, only that this
+    # environment could not tell. Do not grade a team against a bench you
+    # could not verify -- but do not go rewriting fixtures either.
+    print(f"\nBENCH UNVERIFIED: {len(unresolved)} of {len(checks)} checks could "
+          "not run in this environment. This is NOT evidence the fixtures "
+          "changed; fix the environment (most often: pip install pytest) and "
+          "re-run before trusting any score.")
+    sys.exit(2)
 print(f"\n{len(checks)}/{EXPECTED_CHECKS} planted properties intact.")

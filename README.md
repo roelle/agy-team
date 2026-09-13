@@ -37,8 +37,8 @@ retro-and-cycle. Reproduce it on your own hardware with
 ## Quick Start (Zero-Friction Launcher)
 
 ```bash
-git clone https://github.com/roelle/agy-exp.git
-cd agy-exp
+git clone https://github.com/roelle/agy-team.git
+cd agy-team
 ./run
 ```
 
@@ -46,6 +46,15 @@ The `./run` launcher automates the entire environment lifecycle:
 - Verifies Python >= 3.10 and creates/repairs an isolated local virtual environment (`.venv`).
 - Installs `agyteam` and required dependencies in editable mode (`pip install -e ".[dev]"`).
 - Guides you through configuring your `GEMINI_API_KEY` (saved locally in `.env`) and validates it via a zero-token API probe before any model calls.
+
+**No Gemini key?** You do not need one. The offline suites never did
+(`./run test`), and if you reach models another way — an internal endpoint,
+application default credentials, or your own `AGYTEAM_RUNNER` — tell the
+launcher once and it stops asking:
+
+```bash
+./run setup --no-key
+```
 
 ### Primary Commands
 
@@ -345,11 +354,27 @@ reply never stop. Three things fix it:
 The supervisor asks each transport what arrived. The file transport can only be
 polled, so `Transport.peek()` is checked on an interval (`--poll`, default 1s) —
 cheap, since it's a file read, and the *agents* are still event-driven either
-way. A transport backed by a system that can push should override `watch()`
-semantics in its own `fetch`/`peek` implementation and the interval disappears.
-On the SDK path the same effect is available natively through triggers
-(`google.antigravity.triggers.on_file_change` / `every`), which push straight
-into a live session.
+way.
+
+**A push transport replaces the supervisor's scheduling role; it does not
+accelerate it.** These are two scheduling models and they do not compose. The
+supervisor owns a loop: it decides who wakes next, counts hops against
+`--max-hops`, stops the episode when the user is answered, isolates a failed
+turn, and requeues mail the turn did not survive. A transport that delivers by
+pushing into a live session bypasses that loop entirely — the wake happens
+without the supervisor's knowledge, so the hop budget does not count it, the
+stop condition does not see it, and a failure has no requeue path. Running both
+gets you two schedulers driving the same agents, which is the concrete failure
+we hit from a different direction when a stale supervisor process stayed alive:
+one agent, two drivers, messages delivered twice.
+
+So if you implement a pushing transport, plan to own what the supervisor was
+doing: runaway bounds, episode termination, failure isolation, and at-least-once
+delivery. Either drive it *through* `peek`/`fetch` so the supervisor stays the
+scheduler and the interval simply stops mattering, or take the loop over
+deliberately and reimplement those four guarantees. The SDK's native triggers
+(`google.antigravity.triggers.on_file_change` / `every`) push straight into a
+live session and are firmly in the second category.
 
 ## Session lifecycle: cycling and distillation
 
