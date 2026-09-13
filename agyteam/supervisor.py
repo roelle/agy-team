@@ -24,10 +24,25 @@ import re
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from . import config
 from . import memory as memory_lib
+
+
+def repetition_ratio(text: str) -> float:
+    """How repetitive a turn's output is, as a zlib compression ratio.
+
+    This is the health signal the token count is not. Real agent output across
+    188 messages measured 1.46x-3.25x; a model looping on itself compresses
+    orders of magnitude harder. Short text compresses badly for reasons that
+    have nothing to do with health, so anything small is reported as fine.
+    """
+    raw = (text or "").encode("utf-8", "replace")
+    if len(raw) < 2000:
+        return 1.0
+    return len(raw) / max(len(zlib.compress(raw, 6)), 1)
 from . import persona
 from . import roster as roster_lib
 from . import runner as runner_lib
@@ -707,14 +722,24 @@ class Supervisor:
             except Exception:
                 latest_turn = None
 
-            if (
-                latest_turn
-                and latest_turn.get("output_tokens") is not None
-                and latest_turn["output_tokens"] > anomaly_threshold
-            ):
+            out_tok = (latest_turn or {}).get("output_tokens")
+            if out_tok is not None and out_tok > anomaly_threshold:
+                # A big turn is expensive, which is worth saying out loud, but it
+                # is not by itself a sick turn. This guard used to purge the
+                # agent and halt the whole episode on volume alone; it did that
+                # to syseng seconds after he finished a working build, because
+                # 229 shell invocations legitimately cost 225k output tokens.
+                # Volume is reported. Only repetition acts.
+                rep = repetition_ratio(reply)
+                self._log(f"[WARNING: {agent} produced {out_tok:,} output tokens "
+                          f"(threshold {anomaly_threshold:,}), repetition "
+                          f"{rep:.1f}x]")
+                if rep < config.ANOMALY_REPETITION_RATIO:
+                    continue            # expensive, not broken: let it work
                 err_msg = (
-                    f"anomaly detected for {agent}: output tokens "
-                    f"({latest_turn['output_tokens']}) exceeded threshold ({anomaly_threshold})"
+                    f"anomaly detected for {agent}: {out_tok} output tokens at "
+                    f"repetition {rep:.1f}x (limit "
+                    f"{config.ANOMALY_REPETITION_RATIO}x) — output is degenerate"
                 )
                 self._log(f"[WARNING: {err_msg}]")
                 cid = (
@@ -960,10 +985,14 @@ class Supervisor:
 
             latest_ev = agent_turns[-1]
             out_tok = latest_ev.get("output_tokens")
+            # Volume alone does not condemn a turn here either. step() has
+            # already seen the reply text and purged if it was degenerate, so by
+            # the time we get here an expensive agent is an expensive agent --
+            # and the right treatment for a big healthy context is the cycle we
+            # were about to skip, not a purge that throws the learning away.
             if out_tok is not None and out_tok > anomaly_threshold:
-                self._log(f"  → skipping auto-cycle for {agent}: latest turn output_tokens ({out_tok}) > anomaly threshold ({anomaly_threshold}); purging context instead")
-                self.purge_context(agent)
-                continue
+                self._log(f"  → {agent}: large turn ({out_tok:,} output tokens); "
+                          f"cycling rather than purging (step() found no degeneration)")
 
             input_tokens = latest_ev.get("input_tokens")
             if input_tokens is None or input_tokens <= threshold:

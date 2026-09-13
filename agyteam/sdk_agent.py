@@ -7,6 +7,7 @@ The harness assembles the prompt and runs the loop; our levers are:
 - hooks for tracing and a destructive-command gate
 """
 import datetime
+import json
 import os
 import platform
 import sys
@@ -103,8 +104,30 @@ def _model_target(model: str, effort: str = ""):
 
 
 def _workspaces(workspace: Path, extra: list[str | Path] | None = None) -> list[str]:
-    """Directories an agent may touch: its own, the repo, and the team's."""
+    """Directories an agent may touch: its own, the repo, and the team's.
+
+    `extra` is the roster's per-agent "workspaces" list. It exists because
+    reach is not uniform across roles: the manager has to read teammate
+    memories and transcripts to diagnose the team, and giving every agent that
+    reach would let an implementer read the reviewer's defect patterns and
+    write code shaped to dodge them. Grant per role, not per team.
+    """
     paths = [str(workspace), str(Path.cwd())]
+    # Extra directories an agent legitimately needs but does not live in -- a
+    # toolchain, a reference repo, an interpreter. Without this, telling an
+    # agent to "use /some/other/venv/bin/python" hands it a path it is
+    # forbidden to touch, and it burns a turn discovering that.
+    #
+    # Grant the narrowest path that works. Granting the enclosing DIRECTORY to
+    # reach one interpreter once handed the team a folder that also held the
+    # finished answer to the problem they were working on, and nothing in the
+    # system noticed for two hours.
+    env_extra = os.environ.get("AGYTEAM_EXTRA_WORKSPACES", "").split(os.pathsep)
+    for src in (env_extra, extra or []):
+        for path in src:
+            path = str(path).strip()
+            if path and path not in paths:
+                paths.append(path)
     try:
         from . import scope
         team = scope.load().team_dir()
@@ -127,7 +150,8 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                  disabled_tools: list[str] | None = None,
                  use_mcp: bool = False, with_bus: bool = False,
                  flags: SessionFlags | None = None,
-                 workspaces: list[str | Path] | None = None) -> LocalAgentConfig:
+                 workspaces: list[str | Path] | None = None,
+                 extra_workspaces: list[str | Path] | None = None) -> LocalAgentConfig:
     workspace = Path(workspace)
     box = Toolbox(workspace)  # creates workspace/memory/
     ident_file = workspace / "IDENTITY.md"
@@ -179,6 +203,36 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                 pass
             return types.HookResult(allow=True)
         hooks.append(pre_trace_tools)
+
+    audit = os.environ.get("AGYTEAM_AUDIT_LOG", "").strip()
+    if audit:
+        # Deliberately NOT the observer. The observer is a seam the team builds
+        # and maintains, and this exists to check the team -- including whether
+        # an agent granted a shell keeps to "check, do not author". An audit
+        # trail produced by the thing it audits is not an audit trail. It also
+        # has to read the PRE hook: types.ToolResult carries no args, so the
+        # post hook can record that a command ran but never which command.
+        audit_path = Path(audit).expanduser()
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_path.touch()          # fail here, loudly, not silently per-call
+
+        @pre_tool_call_decide
+        def audit_tool_call(tool_call):
+            try:
+                with audit_path.open("a") as f:
+                    f.write(json.dumps({
+                        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "agent": name,
+                        "tool": getattr(tool_call.name, "value", None)
+                                or str(tool_call.name),
+                        "args": {k: str(v)[:2000]
+                                 for k, v in (tool_call.args or {}).items()},
+                    }) + "\n")
+            except OSError:
+                pass            # a full disk must not stop the team
+            return types.HookResult(allow=True)
+
+        hooks.append(audit_tool_call)
 
     if flags is not None:
         @on_compaction
@@ -235,7 +289,7 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         # are meant to maintain. The retro could write no norms at all until
         # this was added, and every test passed regardless because none of them
         # wrote to a real team directory.
-        workspaces=_workspaces(workspace, extra=workspaces),
+        workspaces=_workspaces(workspace, extra=[*(workspaces or []), *(extra_workspaces or [])]),
         policies=[policy.allow_all()],
         hooks=hooks,
         model=_model_target(model, effort),

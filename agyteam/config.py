@@ -46,6 +46,26 @@ CYCLE_THRESHOLD_TOKENS = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", 100_000))
 ANOMALY_OUTPUT_TOKENS_THRESHOLD = int(
     os.environ.get("AGYTEAM_ANOMALY_OUTPUT_TOKENS", 150_000))
 
+# Output volume alone cannot tell a degenerating model from a busy one, and
+# retuning the number above does not fix that -- it only moves which healthy
+# turns get killed. Measured, same events.jsonl: the three largest turns on
+# record are 423,324 (a genuine degeneration), 362,127 (an agent thrashing
+# against a path it had no permission to reach) and 225,493 (syseng writing a
+# build chain with 229 shell invocations, entirely healthy). Token RATE does
+# not separate them either: every turn in the log sits between 160 and 260
+# tokens/sec.
+#
+# What does separate them is repetition, because that is what coming apart
+# actually looks like -- "hundreds of pages of internet chat". zlib ratio over
+# 188 real agent messages: min 1.46x, median 1.93x, max 3.25x. Degenerate
+# repetition compresses ~322x. 8.0 sits ~2.5x above the healthiest real output
+# and ~40x below spew, so there is no realistic tuning argument in between.
+#
+# Volume is a COST signal and is reported as one. Repetition is the health
+# signal and is the only thing that purges context.
+ANOMALY_REPETITION_RATIO = float(
+    os.environ.get("AGYTEAM_ANOMALY_REPETITION_RATIO", 8.0))
+
 MAX_TOOL_OUTPUT_CHARS = 20_000   # tool results truncated beyond this
 
 # Retrospective bounding and rate-control (Step 3 of TASK.md).
