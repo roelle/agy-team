@@ -14,8 +14,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "fixtures"))
+sys.path.insert(0, str(HERE / "fixtures2"))
 
-EXPECTED_CHECKS = 7
+EXPECTED_CHECKS = 14
 checks: list[tuple[str, bool, str]] = []
 
 
@@ -67,6 +68,51 @@ check("D4 present: transcribed tests pass while the real code is broken",
 p = subprocess.run([sys.executable, str(HERE / "fixtures/test_ringbuffer.py")],
                    capture_output=True, text=True)
 check("D4 present: direct run exits 0 having run nothing",
+      p.returncode == 0 and not p.stdout.strip(),
+      f"exit={p.returncode}, stdout={p.stdout.strip()!r}")
+
+
+# ---- audit_sessions: the sibling task, same four classes in different code ----
+from lru import LRUCache                                     # noqa: E402
+from quota import cumulative_cost, peak_usage, recommended_quota   # noqa: E402
+
+# D1 -- get() never refreshes recency, so eviction is FIFO not LRU
+c = LRUCache(2)
+c.put("a", 1)
+c.put("b", 2)
+c.get("a")                      # should make 'a' the most recently used
+c.put("c", 3)
+check("S-D1 present: get() does not refresh recency",
+      c.get("a") is None and c.get("b") == 2,
+      f"evicted 'a' after it was read; keys {c.keys()}")
+
+# C2 -- but the capacity bound itself holds
+check("S-C2 clean: capacity is respected", len(c) == 2, f"len {len(c)}")
+
+# D2 -- cumulative_cost drops the final entry
+got = cumulative_cost([1.0, 2.0, 3.0], 1.0)
+check("S-D2 present: cumulative_cost off by one",
+      got == 3.0 and cumulative_cost([5.0], 2.0) == 0.0,
+      f"got {got}, correct would be 6.0; single entry totals 0.0")
+
+# D3 -- quota ignores the history it claims to scale with
+check("S-D3 present: recommended_quota is a literal",
+      recommended_quota([9000.0]) == 1000 and recommended_quota([3.0]) == 1000,
+      "same quota for a tenant using 3000x more")
+
+# C1 -- peak_usage is genuinely correct
+check("S-C1 clean: peak_usage is correct", peak_usage([1.0, 7.0, 3.0]) == 7.0)
+
+# D4 -- transcribed tests pass; direct run does nothing
+p = subprocess.run([sys.executable, "-m", "pytest",
+                    str(HERE / "fixtures2/test_lru.py"), "-q"],
+                   capture_output=True, text=True)
+check("S-D4 present: transcribed tests pass while the real cache is broken",
+      p.returncode == 0, (p.stdout or p.stderr).strip().splitlines()[-1][:70])
+
+p = subprocess.run([sys.executable, str(HERE / "fixtures2/test_lru.py")],
+                   capture_output=True, text=True)
+check("S-D4 present: direct run exits 0 having run nothing",
       p.returncode == 0 and not p.stdout.strip(),
       f"exit={p.returncode}, stdout={p.stdout.strip()!r}")
 

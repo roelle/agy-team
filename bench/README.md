@@ -85,9 +85,25 @@ agent that finds the fixture in its own tree will find the key beside it.
 
 ## Current tasks
 
-| task | what it probes | cost |
+| task | fixtures | what it probes | cost |
+|---|---|---|---|
+| `audit_telemetry` | `fixtures/` | executing vs reading; a passing test suite that proves nothing | a few cents |
+| `audit_sessions` | `fixtures2/` | the same four defect classes in different code | a few cents |
+
+The two are siblings by design, and that is what makes a **convergence run**
+possible: give a team `audit_telemetry`, cycle its learnings into memory, then
+give it `audit_sessions`. Convergence is not "did it do well" — it is whether
+the second score beats the first on a team that started with nothing. Running
+the same task twice measures memorisation instead, which is why there are two.
+
+The four classes, in both tasks:
+
+| class | in `audit_telemetry` | in `audit_sessions` |
 |---|---|---|
-| `audit_telemetry` | executing vs reading; a passing test suite that proves nothing | a few cents |
+| state not updated on a path that should update it | `read_all` reads unwritten slots before the buffer wraps | `get` never refreshes recency, so LRU evicts FIFO |
+| off-by-one loop bound | eviction fires at `i > window` instead of `i >= window` | `range(len(units) - 1)` drops the last entry |
+| laundered constant behind a computing docstring | `compute_sla_threshold` returns `250.0` | `recommended_quota` returns `1000` |
+| test carries a corrected copy of the code under test | `test_ringbuffer.py` passes 4/4 | `test_lru.py` passes 4/4 |
 
 `audit_telemetry` has four planted defects and two controls. The one that
 matters most is the fourth: `fixtures/test_ringbuffer.py` passes 4/4 under

@@ -1,0 +1,52 @@
+{
+  "task": "audit_sessions",
+  "fixed_on": "2026-09-13",
+  "note": "Sibling of audit_telemetry: the same four defect classes in different code. Used as the second half of a convergence run, where the question is whether a team that has cycled its learnings from audit_telemetry into memory does better here. Every repro below is literal program output.",
+  "sibling_of": "audit_telemetry",
+  "defects": [
+    {
+      "id": "D1",
+      "class": "state not updated on a path that should update it",
+      "file": "lru.py",
+      "summary": "get() does not move the key to the end, so recency is never refreshed and the cache evicts FIFO rather than LRU despite its name and docstring.",
+      "repro": "LRUCache(2); put a, put b, get('a'), put c -> keys ['b','c']; get('a') is None. 'a' was the most recently used and should have survived; 'b' should have been evicted.",
+      "patterns": ["get\\(", "recen|refresh|reorder|move.to.end|LRU|FIFO", "evict"]
+    },
+    {
+      "id": "D2",
+      "class": "off-by-one loop bound",
+      "file": "quota.py",
+      "summary": "cumulative_cost iterates range(len(units) - 1), silently dropping the final entry. A single-entry history totals zero.",
+      "repro": "cumulative_cost([1,2,3], 1.0) -> 3.0, want 6.0. cumulative_cost([5], 2.0) -> 0.0, want 10.0",
+      "patterns": ["cumulative_cost", "range\\(len|len\\(units\\)\\s*-\\s*1|off.by.one|last|final", "drop|skip|miss|exclud"]
+    },
+    {
+      "id": "D3",
+      "class": "laundered constant behind a computing docstring",
+      "file": "quota.py",
+      "summary": "recommended_quota computes peak_usage, discards it, and returns the module constant 1000. The docstring promises the quota scales with observed usage.",
+      "repro": "recommended_quota([9000.0]) -> 1000 and recommended_quota([3.0]) -> 1000; a tenant using 3000x more gets the same recommendation",
+      "patterns": ["recommended_quota", "1000|_DEFAULT_QUOTA", "constant|discard|unused|ignor|literal|hardcod"]
+    },
+    {
+      "id": "D4",
+      "class": "test contains a corrected copy of the code under test",
+      "file": "test_lru.py",
+      "summary": "test_lru.py transcribes its own LRUCache whose get() DOES refresh recency, so test_least_recently_used_is_evicted passes against the copy while the shipped cache fails that exact scenario. No __main__ block either, so a direct run exits 0 having executed nothing.",
+      "repro": "pytest bench/fixtures2/test_lru.py -> 4 passed, while lru.LRUCache fails the very scenario test_least_recently_used_is_evicted describes. `python3 test_lru.py` prints nothing and exits 0.",
+      "patterns": ["transcrib|copy|duplicat|reproduc|not import|its own|shadow", "test_lru"]
+    }
+  ],
+  "controls": [
+    {
+      "id": "C1",
+      "summary": "peak_usage is correct: max of the history, raises on empty.",
+      "false_positive_patterns": ["peak_usage[^.\\n]{0,80}(wrong|broken|incorrect|bug|defect|off.by.one)"]
+    },
+    {
+      "id": "C2",
+      "summary": "The capacity bound itself is correct. LRUCache(2) never holds more than 2 entries; only the eviction ORDER is wrong.",
+      "false_positive_patterns": ["capacit\\w*[^.\\n]{0,60}(not respected|exceed|unbounded|ignored)"]
+    }
+  ]
+}
