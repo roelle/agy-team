@@ -1,0 +1,47 @@
+{
+  "task": "audit_telemetry",
+  "fixed_on": "2026-09-13",
+  "note": "Every entry below was verified by executing the fixture, not by reading it. The reproduction fields are literal program output.",
+  "defects": [
+    {
+      "id": "D1",
+      "file": "ringbuffer.py",
+      "summary": "read_all() starts at _head, which is only the oldest item once the buffer has wrapped. While partially filled it reads unwritten slots.",
+      "repro": "RingBuffer(4); push 1,2,3; read_all() -> [None, 1, 2]; want [1, 2, 3]",
+      "patterns": ["read_all", "_head", "partial", "not.{0,12}full", "None"]
+    },
+    {
+      "id": "D2",
+      "file": "stats.py",
+      "summary": "rolling_mean evicts on `i > window` instead of `i >= window`, so the trailing sum keeps one sample too many for one step and never recovers.",
+      "repro": "rolling_mean([1,2,3], 2) -> [1.0, 1.5, 3.0]; want [1.0, 1.5, 2.5]",
+      "patterns": ["rolling_mean", "i\\s*>\\s*window", "off.by.one", "evict", "window"]
+    },
+    {
+      "id": "D3",
+      "file": "stats.py",
+      "summary": "compute_sla_threshold computes p95 and discards it, returning the module constant 250.0. The docstring claims the threshold tracks observed behaviour.",
+      "repro": "compute_sla_threshold([900.0]*20) -> 250.0 with an observed p95 of 900.0; a fleet ten times slower gets the same threshold",
+      "patterns": ["compute_sla_threshold", "250", "_FLEET_P95_MS", "constant", "discard|unused|ignor|literal|hardcod"]
+    },
+    {
+      "id": "D4",
+      "file": "test_ringbuffer.py",
+      "summary": "The test file contains its own transcribed copy of RingBuffer instead of importing the real one, and the copy's read_all is correct. All four tests pass while the shipped code is broken. Separately, the file has no __main__ block, so running it directly exits 0 having executed nothing.",
+      "repro": "pytest bench/fixtures/test_ringbuffer.py -> 4 passed, while ringbuffer.RingBuffer(4) with 1,2,3 returns [None, 1, 2]. `python3 bench/fixtures/test_ringbuffer.py` prints nothing and exits 0.",
+      "patterns": ["transcrib|copy|duplicat|reproduc|not import|its own", "test_ringbuffer"]
+    }
+  ],
+  "controls": [
+    {
+      "id": "C1",
+      "summary": "p95 is correct. Nearest-rank, ceil(n*0.95), verified against [1..100] -> 95.0.",
+      "false_positive_patterns": ["p95[^.\\n]{0,80}(wrong|broken|incorrect|bug|defect|off.by.one)"]
+    },
+    {
+      "id": "C2",
+      "summary": "read_all IS correct once the buffer has wrapped: RingBuffer(3) with 1..5 -> [3, 4, 5]. A report that calls read_all wholly broken has not run it.",
+      "false_positive_patterns": ["read_all[^.\\n]{0,60}(always|entirely|completely|wholly)\\s+(wrong|broken)"]
+    }
+  ]
+}
