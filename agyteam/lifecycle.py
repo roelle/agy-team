@@ -180,13 +180,24 @@ def team_status(team_dir: str | Path | None = None) -> dict:
             stop_reason = ""
     roster_path = td / "roster.json"
     doc = roster_lib.load(roster_path)
-    return {
+    status = {
         "team_dir": str(td),
         "stopped": stopped,
         "stop_reason": stop_reason,
         "workspaces": doc.get("workspaces", []),
         "agents": doc.get("agents", []),
     }
+    try:
+        from .git_hygiene import check_git_hygiene
+        status["git_hygiene"] = check_git_hygiene()
+    except Exception as e:
+        status["git_hygiene"] = {
+            "is_git": False,
+            "clean": False,
+            "error": str(e),
+            "warnings": [f"Git hygiene check failed: {e}"],
+        }
+    return status
 
 
 def _validate_tar_member(member: tarfile.TarInfo, dest_dir: Path) -> None:
@@ -529,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
                 for a in res["agents"]:
                     aws = f" [workspaces: {', '.join(a.get('workspaces', []))}]" if a.get("workspaces") else ""
                     print(f"  - {a['name']}: {a.get('role', '')}{aws}")
+                gh = res.get("git_hygiene")
+                if gh and (gh.get("is_git") or gh.get("error")):
+                    from .git_hygiene import format_hygiene_report
+                    print()
+                    print(format_hygiene_report(gh))
         elif args.command == "export":
             res = export_team(
                 args.output,
