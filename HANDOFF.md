@@ -1,0 +1,135 @@
+# Handoff
+
+Assume the person who built this is gone and you have this repository, a
+machine behind a firewall, and an API key. This file is what they would have
+told you across a table. The README tells you how to run things; this tells
+you which decisions are load-bearing, so you know what you can change freely
+and what will quietly break the system's reason for existing if you "clean it
+up".
+
+## Read in this order
+
+1. `README.md` — Quick Start through "The four seams". Stop there on day one.
+2. This file.
+3. `agyteam/persona.py` — the briefs are the product as much as the code is.
+4. `bench/README.md` — then run the bench against your own freshly started
+   team before you trust it with anything.
+
+## The one idea everything else serves
+
+The dominant failure mode of agent teams — measured here over and over, in
+our agents and in the human operating them — is **substitution**: the thing
+under test gets replaced by a representation of it. A test that contains a
+copy of the code under test. A review that reads the diff and imagines
+running it. A benchmark that could only pass. A constant pasted where a
+computation belonged, with a docstring describing the computation.
+
+Substitution is not lying. Every instance we hit was produced in good faith
+by an agent (or a person) doing the task as they understood it. The reward an
+agent actually experiences is "produce output that would be accepted", and
+under that reward, a convincing representation and a verified fact score the
+same — unless something structural makes them score differently.
+
+Everything unusual about this codebase is one of those structural somethings.
+When you find a design choice that seems overbuilt, check it against this
+list before simplifying it. Each one is a scar, not an ornament.
+
+## Load-bearing decisions
+
+**Roles are enforced by capability, not instruction.** The tpm cannot run a
+shell command; qa cannot edit source; the schema for a disabled tool never
+reaches the model (`tools_off` in `roster.json`). Prose that says "please
+don't" decays under deadline pressure; a tool that does not exist in the
+schema cannot be reached for. If you add a role, decide what it must *not*
+be able to do and remove the capability — do not write the restriction into
+the persona and consider it done.
+
+**The manager is briefed as a principal, not a teammate.** `persona.py`
+carries two briefs. The gatekeeper who reads the same teammate brief as the
+people she gates gets socialised into the group she is meant to hold to
+account — we watched it happen. If you add a second gatekeeping role, set
+the flag (`--principal` / `--gatekeeper` on `agyteam.lifecycle add`); do not
+rely on the name-sniffing fallback, which exists only for old rosters.
+
+**Oversight runs on a different model family from implementation.** Not
+because one is better — because three reviewers with different blind spots
+caught defects none found alone. Diversity is the mechanism, not capability.
+Keep qa and the manager on a different family from coder even when a single
+family would be cheaper or simpler to configure.
+
+**Reviews must be able to fail, and "my check did not run" must not count as
+a verdict.** The proof gate runs the reviewer's proof file and rejects both
+the file that collects no tests and the file that errors on import
+(`evals/test_qa_proof_gate_evasion.py` attacks it from six directions). The
+general rule: any check that can pass vacuously eventually will, and a check
+that passes vacuously is worse than no check because you believe you have
+one. `bench/verify_fixtures.py` counts its own assertions for the same
+reason.
+
+**What the team ran is recorded where the team cannot reach it.** The
+pre-tool-call hook appends every command to an audit log outside all agent
+workspaces (`AGYTEAM_AUDIT_LOG`). Grading, succession scoring, and any
+"did they actually check?" question reads that log against the bus. Never
+grade a team on its own account of what it did.
+
+**Agents never see answer keys, and workspace grants are the leak vector.**
+`bench/keys/` must never be in a team's workspace — and note that a team
+whose workspace includes this repo root can read the keys, so the shipped
+bench tasks are burned for that team (see `bench/README.md`). We learned
+this by granting a team a directory that contained the paper it was being
+asked to derive. Grant the narrowest directory that works, per agent, and
+audit grants when a task involves anything the team is being measured on.
+
+**Memory is files, and the write path is the read path.** Both prior
+attempts at a learning agent failed on the same broken link: learnings were
+written somewhere that was never read back. Here, `save_memory` updates the
+index *and returns the refreshed index in the tool result*, and distillation
+on quit/cycle pushes unsaved learnings into the same files that boot loads.
+If you swap the memory store (the seam exists), preserve that property; the
+contract suite checks it.
+
+**A lesson only counts when it names an action a gate could check.** "Grep
+the tests for mocks and fail if found" changed an agent's behaviour the next
+day. "Inspect ground truth before writing" did not, ever. When a retro
+produces a learning, convert it into either a removed capability or a check
+that can fail, and treat the prose version as not yet done. Behaviour is
+measurable; learning is academic.
+
+**Talk to the team; don't forensically read its files.** The manager exists
+to answer "what is the team doing?" truthfully from the record. Asking her
+exercises the muscle the whole succession plan depends on; grepping the bus
+yourself atrophies it. Grep is for auditing after the fact, not for
+operating.
+
+## Known sharp edges
+
+- **`python -m` puts the current directory ahead of `PYTHONPATH`.** Launched
+  from the wrong directory, you will import a different checkout's `agyteam`
+  than you think, and your fix will silently not be running. Always launch
+  from the repo you mean.
+- The cost display is an estimate from a pricing table in
+  `agyteam/config.py`; it has never matched the real balance. Reconcile
+  against your billing page, not the display.
+- Headless agy auto-denies tools that would prompt, then exits 0 with empty
+  stdout. Set `toolPermission: "always-proceed"` before any unattended run,
+  or every agent will silently do nothing (README, "Headless permissions").
+- The anomaly guard's repetition threshold was calibrated once against real
+  degeneration and missed it (7.0x observed vs 8.0x threshold). Volume
+  caught it. Treat both signals as necessary; if you retune, tune against a
+  captured real spew, not synthetic text.
+
+## What is deliberately not finished
+
+- Cold-start convergence — the claim that a team with wiped memories
+  converges back to good practice — is the load-bearing claim of the whole
+  project and must be *measured*, not asserted, after any significant
+  change. `bench/` exists to make that measurement cheap: two sibling tasks,
+  keys fixed in advance, grade run A cold, cycle, grade run B.
+- The bench has one task pair. It measures execute-vs-read. It does not yet
+  measure delegation quality, lateral consultation (historically near zero),
+  or cost discipline.
+
+## If you keep one sentence
+
+Reference the artifact; never restate it. Every expensive day this project
+had traces back to a copy standing in for the thing itself.
