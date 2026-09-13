@@ -42,6 +42,15 @@ def test_mcp_review_tools() -> tuple[int, int]:
     fail_file = td / "test_fail.py"
     fail_file.write_text("def test_ng():\n    assert False\n", encoding="utf-8")
 
+    empty_file = td / "test_empty.py"
+    empty_file.write_text("# no tests\n", encoding="utf-8")
+
+    syntax_err_file = td / "test_syntax.py"
+    syntax_err_file.write_text("syntax error !!!\n", encoding="utf-8")
+
+    import_err_file = td / "test_import.py"
+    import_err_file.write_text("import nonexistent_module_xyz\n", encoding="utf-8")
+
     def call(agent, calls):
         return rpc("agyteam.mcp_bus", [], calls,
                    env={"AGYTEAM_AGENT": agent, "AGYTEAM_TEAM_DIR": str(td)})
@@ -50,7 +59,7 @@ def test_mcp_review_tools() -> tuple[int, int]:
     r_empty = call("syseng", [("list_reviews", {})])[2:]
     out_empty = text_of(r_empty[0])
 
-    # 2. Validation failures: proof_file missing, empty, not found, invalid verdict, empty what, verification mismatches
+    # 2. Validation failures: proof_file missing, empty, not found, invalid verdict, empty what, verification mismatches, evasion vectors
     r_val = call("syseng", [
         ("record_review", {"what": "feature X", "verdict": "approved"}),
         ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": ""}),
@@ -59,6 +68,10 @@ def test_mcp_review_tools() -> tuple[int, int]:
         ("record_review", {"what": "", "verdict": "approved", "proof_file": str(pass_file)}),
         ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
         ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
+        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(syntax_err_file)}),
+        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(import_err_file)}),
+        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(empty_file)}),
+        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": str(empty_file)}),
     ])[2:]
     out_no_proof = text_of(r_val[0])
     out_empty_proof = text_of(r_val[1])
@@ -67,6 +80,10 @@ def test_mcp_review_tools() -> tuple[int, int]:
     out_no_what = text_of(r_val[4])
     out_approved_failing = text_of(r_val[5])
     out_changes_passing = text_of(r_val[6])
+    out_changes_syntax = text_of(r_val[7])
+    out_changes_import = text_of(r_val[8])
+    out_changes_empty = text_of(r_val[9])
+    out_approved_empty = text_of(r_val[10])
 
     # 3. Successful recording: approved and changes_requested
     r_rec = call("syseng", [
@@ -129,6 +146,18 @@ def test_mcp_review_tools() -> tuple[int, int]:
         check("changes_requested with passing proof rejected loudly",
               out_changes_passing.startswith("[error: proof_file passed cleanly"),
               out_changes_passing),
+        check("changes_requested with syntax error rejected loudly",
+              out_changes_syntax.startswith("[error: proof_file crashed or failed collection") and "SyntaxError" in out_changes_syntax,
+              out_changes_syntax),
+        check("changes_requested with import error rejected loudly",
+              out_changes_import.startswith("[error: proof_file crashed or failed collection") and "ModuleNotFoundError" in out_changes_import,
+              out_changes_import),
+        check("changes_requested with empty test file rejected loudly",
+              out_changes_empty == "[error: proof_file crashed or failed collection (no tests collected); changes_requested requires an executed failing assertion]",
+              out_changes_empty),
+        check("approved with empty test file rejected loudly",
+              out_approved_empty == "[error: verification failed: proof_file contained no tests]",
+              out_approved_empty),
         check("approved review recorded successfully",
               "review recorded: approved" in out_approved and "review_memory tool" in out_approved and str(pass_file) in out_approved,
               out_approved),
@@ -144,7 +173,7 @@ def test_mcp_review_tools() -> tuple[int, int]:
               out_list),
         check("team directory isolation: reviews do not leak to another team",
               out_iso == "[no reviews recorded]", out_iso),
-    ]), 14
+    ]), 18
 
 
 def test_supervisor_review_gate() -> tuple[int, int]:

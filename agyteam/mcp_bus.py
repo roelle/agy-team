@@ -125,6 +125,39 @@ def _reviews_path(t: Transport) -> Path:
     return _team_dir(t) / "reviews.jsonl"
 
 
+def _extract_crash_detail(proc: subprocess.CompletedProcess) -> str:
+    combined = f"{proc.stdout}\n{proc.stderr}".strip()
+    if proc.returncode == 5 or "no tests ran" in combined:
+        return "no tests collected"
+
+    e_lines = [
+        line.strip()[4:].strip()
+        for line in combined.splitlines()
+        if line.strip().startswith("E   ")
+    ]
+    if e_lines:
+        first_line = e_lines[-1].splitlines()[0].strip()
+        if first_line:
+            return first_line[:120]
+
+    for line in combined.splitlines():
+        line_s = line.strip()
+        for err_prefix in ("SyntaxError:", "ModuleNotFoundError:", "ImportError:", "NameError:", "TypeError:", "ValueError:"):
+            if err_prefix in line_s:
+                idx = line_s.index(err_prefix)
+                return line_s[idx:].strip()[:120]
+
+    for line in combined.splitlines():
+        line_s = line.strip()
+        if "ERROR collecting" in line_s:
+            return line_s.strip("_ ")
+
+    if "error during collection" in combined or "errors during collection" in combined:
+        return "collection error"
+
+    return f"exit code {proc.returncode}"
+
+
 def _record_review(t: Transport, a: dict) -> str:
     what = a.get("what", "")
     if not isinstance(what, str) or not what.strip():
@@ -157,7 +190,9 @@ def _record_review(t: Transport, a: dict) -> str:
         else:
             return f"[error: proof_file not found or not a file: '{proof_file}']"
 
-    python_bin = "/mnt/data/claw-agy/.venv/bin/python"
+    python_bin = "/mnt/data/agy-exp/.venv/bin/python"
+    if not Path(python_bin).exists():
+        python_bin = "/mnt/data/claw-agy/.venv/bin/python"
     if not Path(python_bin).exists():
         python_bin = sys.executable
 
@@ -175,7 +210,9 @@ def _record_review(t: Transport, a: dict) -> str:
         return f"[error: verification failed: could not execute proof_file: {e}]"
 
     if verdict == "approved":
-        if proc.returncode != 0:
+        if proc.returncode == 5 or "no tests ran" in proc.stdout:
+            return "[error: verification failed: proof_file contained no tests]"
+        if proc.returncode != 0 or "passed" not in proc.stdout:
             details = f"{proc.stdout}\n{proc.stderr}".strip()
             if details:
                 return f"[error: verification failed: proof_file did not pass (exit code {proc.returncode})]\n{details}"
@@ -183,6 +220,22 @@ def _record_review(t: Transport, a: dict) -> str:
     elif verdict == "changes_requested":
         if proc.returncode == 0:
             return "[error: proof_file passed cleanly; changes_requested requires a failing reproduction case]"
+        if proc.returncode == 5 or "no tests ran" in proc.stdout:
+            return "[error: proof_file crashed or failed collection (no tests collected); changes_requested requires an executed failing assertion]"
+
+        has_collection_err = (
+            "ERROR collecting" in proc.stdout
+            or "error during collection" in proc.stdout
+            or "errors during collection" in proc.stdout
+            or "ERROR collecting" in proc.stderr
+            or "error during collection" in proc.stderr
+            or "errors during collection" in proc.stderr
+        )
+        has_failed = "FAILED" in proc.stdout or "failed" in proc.stdout
+
+        if proc.returncode != 1 or has_collection_err or not has_failed:
+            err_detail = _extract_crash_detail(proc)
+            return f"[error: proof_file crashed or failed collection ({err_detail}); changes_requested requires an executed failing assertion]"
 
     cases_summary = proc.stdout.strip() or proc.stderr.strip()
     findings = a.get("findings", "")
