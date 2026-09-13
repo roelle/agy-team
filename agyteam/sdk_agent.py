@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -193,6 +194,48 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
         return types.HookResult(allow=True)
 
     hooks.append(block_dangerous)
+
+    # AGYTEAM_EXTRA_WORKSPACES is an OBSERVATION grant -- transcripts, a
+    # toolchain, a reference tree -- and observation must not come with a
+    # pen. The one time it did, the risk was an agent "correcting" the
+    # record it was asked to read. Roster per-agent `workspaces` stay
+    # writable (teams author proof files there); only the env grant is
+    # read-only. Enforced for the file tools; run_command can still write
+    # anywhere the OS allows, which is the same knowing trade as the
+    # manager's shell -- the audit log is the check on that path.
+    ro_paths = [Path(p).expanduser().resolve()
+                for p in os.environ.get("AGYTEAM_EXTRA_WORKSPACES", "")
+                .split(os.pathsep) if p.strip()]
+    if ro_paths:
+        _WRITE_TOOLS = re.compile(r"create|edit|write|delete|remove|move|"
+                                  r"rename|replace|append", re.I)
+
+        @pre_tool_call_decide
+        def readonly_extra_workspaces(tool_call):
+            tname = getattr(tool_call.name, "value", None) or str(tool_call.name)
+            if not _WRITE_TOOLS.search(tname):
+                return types.HookResult(allow=True)
+            cwd = str((tool_call.args or {}).get("Cwd", "") or "")
+            for v in (tool_call.args or {}).values():
+                if not isinstance(v, str) or not v:
+                    continue
+                p = Path(v).expanduser()
+                if not p.is_absolute():
+                    if not cwd:
+                        continue
+                    p = Path(cwd) / p
+                try:
+                    p = p.resolve()
+                except OSError:
+                    continue
+                if any(p == ro or ro in p.parents for ro in ro_paths):
+                    return types.HookResult(
+                        allow=False,
+                        message=f"Blocked: {p} is in a read-only observation "
+                                "grant. You may read it, never change it.")
+            return types.HookResult(allow=True)
+
+        hooks.append(readonly_extra_workspaces)
 
     if pre_trace is not None:
         @pre_tool_call_decide

@@ -61,17 +61,17 @@ def test_mcp_review_tools() -> tuple[int, int]:
 
     # 2. Validation failures: proof_file missing, empty, not found, invalid verdict, empty what, verification mismatches, evasion vectors
     r_val = call("syseng", [
-        ("record_review", {"what": "feature X", "verdict": "approved"}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": ""}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": "nonexistent_test.py"}),
-        ("record_review", {"what": "feature X", "verdict": "rejected", "proof_file": str(pass_file)}),
-        ("record_review", {"what": "", "verdict": "approved", "proof_file": str(pass_file)}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
-        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
-        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(syntax_err_file)}),
-        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(import_err_file)}),
-        ("record_review", {"what": "feature X", "verdict": "changes_requested", "proof_file": str(empty_file)}),
-        ("record_review", {"what": "feature X", "verdict": "approved", "proof_file": str(empty_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved"}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": ""}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": "nonexistent_test.py"}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "rejected", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "someone-else", "what": "", "verdict": "approved", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(syntax_err_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(import_err_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(empty_file)}),
+        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": str(empty_file)}),
     ])[2:]
     out_no_proof = text_of(r_val[0])
     out_empty_proof = text_of(r_val[1])
@@ -88,12 +88,14 @@ def test_mcp_review_tools() -> tuple[int, int]:
     # 3. Successful recording: approved and changes_requested
     r_rec = call("syseng", [
         ("record_review", {
+            "author": "coder",
             "what": "review_memory tool",
             "verdict": "approved",
             "proof_file": str(pass_file),
             "findings": "all test suites pass, clean keyword detection"
         }),
         ("record_review", {
+            "author": "coder",
             "what": "flaky retry loop",
             "verdict": "changes_requested",
             "proof_file": str(fail_file),
@@ -122,7 +124,34 @@ def test_mcp_review_tools() -> tuple[int, int]:
                 env={"AGYTEAM_AGENT": "syseng", "AGYTEAM_TEAM_DIR": str(td2)})[2:]
     out_iso = text_of(r_iso[0])
 
+    # 6. Self-review is refused: the reviewer's identity comes from the
+    # session, so naming yourself as author must fail, and a review with no
+    # author at all must fail. Observed for real before this field existed:
+    # a manager approved her own audit and the record could not show it.
+    r_self = call("syseng", [
+        ("record_review", {"author": "syseng", "what": "own work",
+                           "verdict": "approved", "proof_file": str(pass_file)}),
+        ("record_review", {"what": "authorless", "verdict": "approved",
+                           "proof_file": str(pass_file)}),
+    ])[2:]
+    out_self = text_of(r_self[0])
+    out_authorless = text_of(r_self[1])
+    lines_after = [json.loads(line) for line in
+                   reviews_file.read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+
     return sum([
+        check("self-review (author == reviewer) rejected loudly",
+              out_self.startswith("[error:")
+              and "cannot review your own work" in out_self, out_self),
+        check("authorless review rejected loudly",
+              out_authorless.startswith("[error:")
+              and "author is required" in out_authorless, out_authorless),
+        check("rejected self/authorless reviews were not recorded",
+              len(lines_after) == len(lines), f"{len(lines_after)} records"),
+        check("recorded reviews carry the author",
+              all(e.get("author") == "coder" for e in lines),
+              str([e.get("author") for e in lines])),
         check("missing reviews.jsonl returns [no reviews recorded]",
               out_empty == "[no reviews recorded]", out_empty),
         check("missing proof_file rejected loudly",
@@ -173,7 +202,7 @@ def test_mcp_review_tools() -> tuple[int, int]:
               out_list),
         check("team directory isolation: reviews do not leak to another team",
               out_iso == "[no reviews recorded]", out_iso),
-    ]), 18
+    ]), 22
 
 
 def test_supervisor_review_gate() -> tuple[int, int]:

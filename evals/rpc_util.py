@@ -2,10 +2,16 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Prefer the repo venv, but fall back to whatever interpreter is running these
+# tests: the offline contract suites are stdlib-only by design, so system
+# python or a foreign virtualenv must not turn into a FileNotFoundError.
 PY = ROOT / ".venv" / "bin" / "python"
+if not PY.exists():
+    PY = Path(sys.executable)
 
 
 def rpc(module: str, args: list[str], calls: list[tuple[str, dict]],

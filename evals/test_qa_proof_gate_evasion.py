@@ -56,24 +56,24 @@ def test_qa_review_gate_evasion() -> tuple[int, int]:
         checks = []
 
         # 2. Rejects evasions for changes_requested
-        r_syntax = _record_review(t, {"what": "syntax", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(syntax.relative_to(ROOT))})
+        r_syntax = _record_review(t, {"author": "someone-else", "what": "syntax", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(syntax.relative_to(ROOT))})
         checks.append(check("Syntax error rejected", "[error:" in r_syntax and "SyntaxError" in r_syntax, r_syntax))
         
-        r_col = _record_review(t, {"what": "col", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(collection.relative_to(ROOT))})
+        r_col = _record_review(t, {"author": "someone-else", "what": "col", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(collection.relative_to(ROOT))})
         checks.append(check("Collection error rejected", "[error:" in r_col and "ModuleNotFoundError: No module named 'non_existent_module'" in r_col, r_col))
         
-        r_empty = _record_review(t, {"what": "empty", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(empty.relative_to(ROOT))})
+        r_empty = _record_review(t, {"author": "someone-else", "what": "empty", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(empty.relative_to(ROOT))})
         checks.append(check("Empty (exit code 5) rejected", "[error:" in r_empty and "no tests collected" in r_empty, r_empty))
         
         # 3. Valid assertion failure
-        r_ast = _record_review(t, {"what": "assert", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(assertion.relative_to(ROOT))})
+        r_ast = _record_review(t, {"author": "someone-else", "what": "assert", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(assertion.relative_to(ROOT))})
         checks.append(check("Assertion failure accepted", "[review recorded:" in r_ast, r_ast))
 
         # 4. Valid passing test
-        r_pass_appr = _record_review(t, {"what": "pass", "verdict": "approved", "cases_tried": "1", "findings": "1", "proof_file": str(passing.relative_to(ROOT))})
+        r_pass_appr = _record_review(t, {"author": "someone-else", "what": "pass", "verdict": "approved", "cases_tried": "1", "findings": "1", "proof_file": str(passing.relative_to(ROOT))})
         checks.append(check("Passing test accepted for approved", "[review recorded:" in r_pass_appr, r_pass_appr))
         
-        r_pass_req = _record_review(t, {"what": "pass", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(passing.relative_to(ROOT))})
+        r_pass_req = _record_review(t, {"author": "someone-else", "what": "pass", "verdict": "changes_requested", "cases_tried": "1", "findings": "1", "proof_file": str(passing.relative_to(ROOT))})
         checks.append(check("Passing test rejected for changes_requested", "[error:" in r_pass_req and "passed cleanly" in r_pass_req, r_pass_req))
 
         got = sum(s for s, _ in checks)

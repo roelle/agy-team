@@ -29,6 +29,10 @@ from pathlib import Path
 from .mcp_base import serve, string, tool
 from .transport import Transport, load
 
+# The repo this module lives in, for resolving relative proof paths and the
+# project venv without baking any one machine's layout into the file.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 TOOLS = [
     tool("send_to_teammate",
          "Send a message to a persistent teammate (a peer agent with its own "
@@ -53,13 +57,16 @@ TOOLS = [
          "listed here.", {}),
     tool("record_review",
          "Record a verification review of a feature, change, or task. "
-         "Must specify what was reviewed, verdict ('approved' or 'changes_requested'), "
-         "proof_file (path to test file containing executable assertions), and findings.",
+         "Must specify what was reviewed, who authored the work, verdict "
+         "('approved' or 'changes_requested'), proof_file (path to test file "
+         "containing executable assertions), and findings. You cannot review "
+         "your own work.",
          {"what": string("What was reviewed (feature, branch, PR, or task)"),
+          "author": string("Agent whose work this review verifies (not you)"),
           "verdict": string("Verdict: 'approved' or 'changes_requested'"),
           "proof_file": string("Path to a test file containing executable assertions"),
           "findings": string("Observations, defect analysis, or behavior notes")},
-         ["what", "verdict", "proof_file"]),
+         ["what", "author", "verdict", "proof_file"]),
     tool("list_reviews",
          "List durable verification reviews recorded for this team.",
          {}),
@@ -164,6 +171,22 @@ def _record_review(t: Transport, a: dict) -> str:
         return "[error: what is required and cannot be empty]"
     what = what.strip()
 
+    # A review of your own work is not a review. The first cold-start
+    # convergence run satisfied the gate exactly that way -- the manager
+    # approved her own audit -- and nothing structural could see it, because
+    # the record had a reviewer and no author. The reviewer's identity comes
+    # from the session, not from this argument, so the check cannot be
+    # satisfied by misstating who you are; misstating who did the work is
+    # visible to everyone on the bus.
+    author = a.get("author", "")
+    if not isinstance(author, str) or not author.strip():
+        return ("[error: author is required — name the agent whose work this "
+                "review verifies]")
+    author = author.strip()
+    if author == t.me:
+        return ("[error: you cannot review your own work — route it to a "
+                "teammate for independent review]")
+
     verdict = a.get("verdict", "")
     if verdict not in ("approved", "changes_requested"):
         return f"[error: verdict must be 'approved' or 'changes_requested', got {verdict!r}]"
@@ -185,14 +208,15 @@ def _record_review(t: Transport, a: dict) -> str:
             proof_path = (Path.cwd() / proof_path).resolve()
         elif (team_dir / proof_path).is_file():
             proof_path = (team_dir / proof_path).resolve()
-        elif (Path("/mnt/data/agy-exp") / proof_path).is_file():
-            proof_path = (Path("/mnt/data/agy-exp") / proof_path).resolve()
+        elif (_REPO_ROOT / proof_path).is_file():
+            proof_path = (_REPO_ROOT / proof_path).resolve()
         else:
             return f"[error: proof_file not found or not a file: '{proof_file}']"
 
-    python_bin = "/mnt/data/agy-exp/.venv/bin/python"
-    if not Path(python_bin).exists():
-        python_bin = "/mnt/data/claw-agy/.venv/bin/python"
+    # Run proofs with the repo's own venv when it exists (it has pytest and
+    # the project installed); otherwise whatever interpreter serves this
+    # module. Never a machine-specific absolute path -- this file travels.
+    python_bin = str(_REPO_ROOT / ".venv" / "bin" / "python")
     if not Path(python_bin).exists():
         python_bin = sys.executable
 
@@ -246,6 +270,7 @@ def _record_review(t: Transport, a: dict) -> str:
     entry = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "reviewer": t.me,
+        "author": author,
         "what": what,
         "verdict": verdict,
         "proof_file": proof_file,

@@ -11,7 +11,6 @@ requires-python = ">=3.10"
 dependencies = [
     "google-antigravity>=0.1.16",
     "google-genai>=1.0.0",
-    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

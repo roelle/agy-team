@@ -134,14 +134,17 @@ def process_metrics(team_dir: Path, since: str) -> dict:
                if frm(e) not in ("manager", "tpm", "user", "supervisor")
                and e.get("to") not in ("manager", "tpm", "user")]
     approved = [e for e in reviews if e.get("verdict") == "approved"]
-    # Note what CANNOT be measured here: whether the reviewer is the
-    # author. The review record carries "reviewer" but no "author", so a
-    # manager approving her own work is indistinguishable from a real
-    # review - observed on the first cold run. Fixing the record schema is
-    # the fix; grading around it would hide the gap.
+    # Self-review was invisible until the record gained an "author" field
+    # (the first cold run's manager approved her own audit and nothing
+    # structural could see it). record_review now refuses reviewer==author
+    # outright; this metric exists to catch records from older code and any
+    # future regression of that refusal.
     reviewed_first = bool(approved and to_user and
                           approved[0]["ts"] <= to_user[0]["ts"])
+    self_approved = [e for e in approved
+                     if e.get("author") in (None, e.get("reviewer"))]
     return {
+        "self_or_authorless_approvals": len(self_approved),
         "messages": len(bus),
         "manager_delegated_to": delegated,
         "lateral_messages": len(lateral),
