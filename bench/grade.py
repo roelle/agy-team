@@ -47,11 +47,18 @@ def main() -> int:
     ap.add_argument("--since", required=True, help='"YYYY-MM-DD HH:MM"')
     ap.add_argument("--team-dir", default=str(Path.home() / "agy-teams/build/team"))
     ap.add_argument("--audit", default=str(Path.home() / "agy-lab-notes/audit.jsonl"))
+    ap.add_argument("--team", help="only count audit rows tagged with this team "
+                    "(rows written before the tag existed are kept)")
     a = ap.parse_args()
 
     key = json.loads((HERE / "keys" / f"{a.task}.json").read_text())
     bus = rows(Path(a.team_dir) / "bus.jsonl", a.since)
     audit = rows(Path(a.audit), a.since)
+    if a.team:
+        # Two teams can share the audit file and their agent names can
+        # collide; without this filter one team's shell activity is graded
+        # as the other's diligence.
+        audit = [e for e in audit if e.get("team", a.team) == a.team]
 
     said = "\n".join((e.get("content") or "") for e in bus)
     cmds = [e.get("args", {}).get("CommandLine", "") for e in audit

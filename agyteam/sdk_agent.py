@@ -222,6 +222,10 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
                 with audit_path.open("a") as f:
                     f.write(json.dumps({
                         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                        # Two teams can share one audit file, and their agent
+                        # names can collide; without the team, an auditor
+                        # grading one team counts the other's commands.
+                        "team": os.environ.get("AGYTEAM_TEAM", ""),
                         "agent": name,
                         "tool": getattr(tool_call.name, "value", None)
                                 or str(tool_call.name),
