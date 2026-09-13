@@ -1,14 +1,18 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from evals.fixture_transport import SqliteTransport
 from agyteam.mcp_bus import _record_review
 from agyteam.transport import load as load_transport
 
-ROOT = Path(__file__).resolve().parent.parent
 
 def check(name, cond, msg=""):
     print(f"  {'PASS' if cond else 'FAIL'} {name}")

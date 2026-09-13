@@ -1,0 +1,203 @@
+{
+  "_meta": {
+    "description": "Raw contract and schema capture for google.antigravity ToolCall and ToolResult types",
+    "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "sdk_package": "google.antigravity",
+    "probe_target": "PreToolCallDecideHook (call: ToolCall) and PostToolCallHook (res: ToolResult)"
+  },
+  "schemas": {
+    "ToolCall": {
+      "class": "google.antigravity.types.ToolCall",
+      "base": "pydantic.BaseModel",
+      "fields": {
+        "name": {
+          "type": "BuiltinTools | str",
+          "required": true,
+          "description": "BuiltinTools enum for builtin tools or str for MCP tools"
+        },
+        "args": {
+          "type": "dict[str, Any]",
+          "required": true,
+          "description": "Parsed dictionary of arguments passed to the tool"
+        },
+        "id": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Harness call ID"
+        },
+        "step_id": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Harness step ID in format {trajectory_id}:{step_index}"
+        },
+        "canonical_path": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Canonical path if tool operates on a path"
+        },
+        "server_name": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "MCP server name (e.g. agyteam_bus) or None for builtin tools"
+        }
+      }
+    },
+    "ToolResult": {
+      "class": "google.antigravity.types.ToolResult",
+      "base": "pydantic.BaseModel",
+      "fields": {
+        "name": {
+          "type": "BuiltinTools | str",
+          "required": true,
+          "description": "BuiltinTools enum for builtin tools or str for MCP tools"
+        },
+        "id": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Harness call ID correlating with ToolCall.id"
+        },
+        "step_id": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Harness step ID correlating with ToolCall.step_id"
+        },
+        "result": {
+          "type": "Any",
+          "required": false,
+          "default": null,
+          "description": "ToolOutput Pydantic model (with __str__()), raw str for MCP, or None on error"
+        },
+        "error": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "Error message if tool failed, or None on success"
+        },
+        "exception": {
+          "type": "Exception | None",
+          "required": false,
+          "default": null,
+          "description": "Exception instance if raised, or None"
+        },
+        "server_name": {
+          "type": "str | None",
+          "required": false,
+          "default": null,
+          "description": "MCP server name or None"
+        }
+      }
+    }
+  },
+  "absent_fields_warning": {
+    "ToolResult.args": "DOES NOT EXIST on ToolResult. getattr(res, \"args\", None) always returned None. Args must be captured during pre_trace from call.args.",
+    "ToolResult.duration_s": "DOES NOT EXIST on ToolResult. Duration must be calculated via max(0.0, time.monotonic() - captured_t0) from pre_trace timestamp.",
+    "ToolResult.duration": "DOES NOT EXIST on ToolResult."
+  },
+  "access_contract": {
+    "tool_name": "res.name.value if isinstance(res.name, enum.Enum) else str(res.name)",
+    "tool_args": "call.args directly in pre_trace (guaranteed dict[str, Any]); retrieve in trace via captured correlation map",
+    "tool_result": "str(res.result) if res.result is not None else None",
+    "tool_error": "str(res.error) if res.error is not None else (str(res.exception) if res.exception is not None else None)",
+    "duration_s": "max(0.0, time.monotonic() - captured_t0) if captured_t0 is not None else None"
+  },
+  "samples": [
+    {
+      "description": "Builtin run_command success",
+      "tool_call": {
+        "name": "run_command",
+        "args": {
+          "command": "echo hello",
+          "cwd": "/mnt/data/agy-exp"
+        },
+        "id": "call_builtin_001",
+        "step_id": "traj_001:1",
+        "canonical_path": null,
+        "server_name": null
+      },
+      "tool_result": {
+        "name": "run_command",
+        "id": "call_builtin_001",
+        "step_id": "traj_001:1",
+        "result": "hello\n",
+        "error": null,
+        "exception": null,
+        "server_name": null
+      }
+    },
+    {
+      "description": "Builtin edit_file success",
+      "tool_call": {
+        "name": "edit_file",
+        "args": {
+          "file_path": "test.txt",
+          "target": "foo",
+          "replacement": "bar"
+        },
+        "id": "call_builtin_002",
+        "step_id": "traj_001:2",
+        "canonical_path": "test.txt",
+        "server_name": null
+      },
+      "tool_result": {
+        "name": "edit_file",
+        "id": "call_builtin_002",
+        "step_id": "traj_001:2",
+        "result": "Successfully replaced 1 occurrence in test.txt.",
+        "error": null,
+        "exception": null,
+        "server_name": null
+      }
+    },
+    {
+      "description": "MCP agyteam_bus call success",
+      "tool_call": {
+        "name": "send_to_teammate",
+        "args": {
+          "teammate": "coder",
+          "message": "Probe complete"
+        },
+        "id": "call_mcp_003",
+        "step_id": "traj_001:3",
+        "canonical_path": null,
+        "server_name": "agyteam_bus"
+      },
+      "tool_result": {
+        "name": "send_to_teammate",
+        "id": "call_mcp_003",
+        "step_id": "traj_001:3",
+        "result": "{\"status\": \"sent\", \"recipient\": \"coder\"}",
+        "error": null,
+        "exception": null,
+        "server_name": "agyteam_bus"
+      }
+    },
+    {
+      "description": "Tool failure error",
+      "tool_call": {
+        "name": "run_command",
+        "args": {
+          "command": "cat nonexistent.txt"
+        },
+        "id": "call_builtin_004",
+        "step_id": "traj_001:4",
+        "canonical_path": null,
+        "server_name": null
+      },
+      "tool_result": {
+        "name": "run_command",
+        "id": "call_builtin_004",
+        "step_id": "traj_001:4",
+        "result": null,
+        "error": "Command exited with status 1: cat: nonexistent.txt: No such file or directory",
+        "exception": null,
+        "server_name": null
+      }
+    }
+  ]
+}

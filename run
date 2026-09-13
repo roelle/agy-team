@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# AgyTeam: Self-contained POSIX launcher and lifecycle controller
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+
+# Ensure python3 is available and >= 3.10
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: 'python3' was not found in your PATH." >&2
+    echo "Please install Python 3.10 or newer (https://www.python.org/downloads/)." >&2
+    exit 1
+fi
+
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "unknown")"
+    echo "Error: Python 3.10+ is required, but found Python $PY_VER." >&2
+    exit 1
+fi
+
+VENV_DIR="$REPO_DIR/.venv"
+
+# Handle broken/dangling .venv symlink
+if [ -L "$VENV_DIR" ] && [ ! -e "$VENV_DIR" ]; then
+    echo "Notice: Detected broken .venv symlink. Removing it..."
+    rm -f "$VENV_DIR"
+fi
+
+# Create virtual environment if missing
+if [ ! -f "$VENV_DIR/bin/python" ]; then
+    echo "Creating virtual environment at .venv..."
+    python3 -m venv "$VENV_DIR"
+    echo "Upgrading pip and installing agyteam..."
+    "$VENV_DIR/bin/python" -m pip install --upgrade pip --quiet 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install -e ".[dev]" --quiet
+elif ! "$VENV_DIR/bin/python" -c "import agyteam" 2>/dev/null; then
+    echo "Installing agyteam in editable mode..."
+    "$VENV_DIR/bin/pip" install -e ".[dev]" --quiet
+fi
+
+PYTHON_BIN="$VENV_DIR/bin/python"
+
+ensure_api_key() {
+    if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$REPO_DIR/.env" ]; then
+        local env_val
+        env_val="$(grep -E '^[[:space:]]*GEMINI_API_KEY=' "$REPO_DIR/.env" 2>/dev/null | cut -d '=' -f2- | tr -d ' "\r\n' || true)"
+        if [ -n "$env_val" ]; then
+            export GEMINI_API_KEY="$env_val"
+        fi
+    fi
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        cmd_setup
+    fi
+}
+
+cmd_setup() {
+    local force="${1:-}"
+    echo "=== AgyTeam Gemini API Setup ==="
+    echo "A Google Gemini API key is required to power the agents."
+    echo ""
+    echo "1. Get a Gemini API key at Google AI Studio:"
+    echo "   👉 https://aistudio.google.com/app/apikey"
+    echo ""
+
+    if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$REPO_DIR/.env" ]; then
+        local env_val
+        env_val="$(grep -E '^[[:space:]]*GEMINI_API_KEY=' "$REPO_DIR/.env" 2>/dev/null | cut -d '=' -f2- | tr -d ' "\r\n' || true)"
+        if [ -n "$env_val" ]; then
+            export GEMINI_API_KEY="$env_val"
+        fi
+    fi
+
+    if [ -n "${GEMINI_API_KEY:-}" ] && [ "$force" != "--force" ]; then
+        echo "Checking existing GEMINI_API_KEY with a zero-token probe..."
+        if "$PYTHON_BIN" -c "
+import os, sys
+from google import genai
+key = os.environ.get('GEMINI_API_KEY', '')
+if not key:
+    sys.exit(1)
+try:
+    client = genai.Client(api_key=key)
+    models = list(client.models.list(config={'page_size': 1}))
+    name = models[0].name if models else 'ok'
+    print(f'API key verified successfully! Connected to Google GenAI ({name}).')
+except Exception as e:
+    print(f'Verification failed: {e}', file=sys.stderr)
+    sys.exit(1)
+"; then
+            echo "Setup complete! You're ready to run AgyTeam."
+            return 0
+        else
+            echo "Existing key failed probe. Let's configure a new key."
+        fi
+    fi
+
+    if [ ! -t 0 ]; then
+        echo "Error: Non-interactive terminal. Please set GEMINI_API_KEY in your environment or in $REPO_DIR/.env." >&2
+        exit 1
+    fi
+
+    read -r -p "Enter your GEMINI_API_KEY: " user_key
+    user_key="$(echo "$user_key" | tr -d '[:space:]')"
+    if [ -z "$user_key" ]; then
+        echo "Error: API key cannot be empty." >&2
+        exit 1
+    fi
+    export GEMINI_API_KEY="$user_key"
+    printf "GEMINI_API_KEY=%s\n" "$user_key" > "$REPO_DIR/.env"
+    chmod 600 "$REPO_DIR/.env"
+    echo "Saved GEMINI_API_KEY to $REPO_DIR/.env"
+
+    echo "Verifying API key with a zero-token probe..."
+    if "$PYTHON_BIN" -c "
+import os, sys
+from google import genai
+key = os.environ.get('GEMINI_API_KEY', '')
+if not key:
+    sys.exit(1)
+try:
+    client = genai.Client(api_key=key)
+    models = list(client.models.list(config={'page_size': 1}))
+    name = models[0].name if models else 'ok'
+    print(f'API key verified successfully! Connected to Google GenAI ({name}).')
+except Exception as e:
+    print(f'Verification error: {e}', file=sys.stderr)
+    sys.exit(1)
+"; then
+        echo "Setup complete! You're ready to run AgyTeam."
+    else
+        echo "" >&2
+        echo "Verification failed. Please check that:" >&2
+        echo "  - The key is correctly copied from https://aistudio.google.com/app/apikey" >&2
+        echo "  - Your Google Cloud project or AI Studio account has quota/billing enabled" >&2
+        echo "  - Your network connection can reach generativelanguage.googleapis.com" >&2
+        exit 1
+    fi
+}
+
+cmd_chat() {
+    ensure_api_key
+    exec "$PYTHON_BIN" -m agyteam.supervisor --chat "$@"
+}
+
+cmd_ask() {
+    ensure_api_key
+    if [ $# -eq 0 ]; then
+        echo "Error: No prompt provided." >&2
+        echo "Usage: ./run ask \"<your task or question>\"" >&2
+        exit 1
+    fi
+    exec "$PYTHON_BIN" -m agyteam.supervisor --say "$*"
+}
+
+cmd_status() {
+    exec "$PYTHON_BIN" -m agyteam.lifecycle status "$@"
+}
+
+cmd_stop() {
+    exec "$PYTHON_BIN" -m agyteam.lifecycle stop "$@"
+}
+
+cmd_start() {
+    exec "$PYTHON_BIN" -m agyteam.lifecycle start "$@"
+}
+
+cmd_export() {
+    exec "$PYTHON_BIN" -m agyteam.lifecycle export "$@"
+}
+
+cmd_import() {
+    exec "$PYTHON_BIN" -m agyteam.lifecycle import "$@"
+}
+
+cmd_test() {
+    if [ "${1:-}" = "--live" ] || [ "${1:-}" = "evals/run_evals.py" ]; then
+        shift || true
+        ensure_api_key
+        exec "$PYTHON_BIN" evals/run_evals.py "$@"
+    elif [ $# -gt 0 ]; then
+        exec "$PYTHON_BIN" -m pytest "$@"
+    else
+        echo "Running offline evaluation test suite (pytest evals/)..."
+        exec "$PYTHON_BIN" -m pytest evals/
+    fi
+}
+
+cmd_help() {
+    cat << 'EOF'
+AgyTeam - Persistent, learning multi-agent team platform
+
+Usage:
+  ./run [command] [options]
+
+Commands:
+  chat             Start an interactive chat session with the team (default)
+  ask "<prompt>"   Send a one-shot task to the team and wait for the reply
+  status           Show current team roster, workspaces, and running status
+  stop             Stop the team by writing the lifecycle stop sentinel
+  start            Resume/unpause team execution
+  export <bundle>  Export team configuration, state, and memory to archive (.tar.gz)
+  import <bundle>  Import team configuration, state, and memory from archive (.tar.gz)
+  setup            Configure and verify your GEMINI_API_KEY with zero token burn
+  test [args...]   Run test suite (offline pytest by default, --live for run_evals.py)
+  help, --help     Show this help message
+
+Quick Start:
+  ./run ask "Design an offline-first task tracker in Python"
+  ./run status
+  ./run stop
+  ./run start
+
+EOF
+}
+
+SUBCMD="${1:-chat}"
+
+case "$SUBCMD" in
+    chat)
+        shift || true
+        cmd_chat "$@"
+        ;;
+    ask)
+        shift || true
+        cmd_ask "$@"
+        ;;
+    status)
+        shift || true
+        cmd_status "$@"
+        ;;
+    stop)
+        shift || true
+        cmd_stop "$@"
+        ;;
+    start)
+        shift || true
+        cmd_start "$@"
+        ;;
+    export)
+        shift || true
+        cmd_export "$@"
+        ;;
+    import)
+        shift || true
+        cmd_import "$@"
+        ;;
+    setup)
+        shift || true
+        cmd_setup "$@"
+        ;;
+    test)
+        shift || true
+        cmd_test "$@"
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
+    *)
+        echo "Unknown command: '$SUBCMD'" >&2
+        echo "" >&2
+        cmd_help >&2
+        exit 1
+        ;;
+esac

@@ -1,8 +1,14 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from google.antigravity.types import BuiltinTools, ToolCall, ToolResult
 
@@ -24,8 +30,16 @@ def test_correlation_map_memory_leak():
         runner = SdkRunner(observer=obs)
         agent = runner._submit(runner._ensure("coder"))
 
-        pre_hook = next(h for h in agent._config.hooks if getattr(h, "__name__", None) == "pre_trace_tools")
-        post_hook = next(h for h in agent._config.hooks if getattr(h, "__name__", None) == "trace_tools")
+        pre_hook = next(
+            h for h in agent._config.hooks
+            if getattr(h, "__name__", None) == "pre_trace_tools"
+            or getattr(getattr(h, "f", None), "__name__", None) == "pre_trace_tools"
+        )
+        post_hook = next(
+            h for h in agent._config.hooks
+            if getattr(h, "__name__", None) == "trace_tools"
+            or getattr(getattr(h, "f", None), "__name__", None) == "trace_tools"
+        )
         
         # Fire 5 calls with an ID and Step ID
         for i in range(5):

@@ -455,3 +455,36 @@ def test_import_agent_memory_silent_overwrite_vulnerability(tmp_path):
     
     # This assertion points out the flaw:
     assert agents_dir.joinpath("victim.txt").read_text() == "critical user data", "Silent data overwrite occurred on memory outside team_dir"
+
+
+def test_import_agent_memory_overwrite_allowed(tmp_path):
+    """Verify that when overwrite=True, agent memories can be updated and new files are copied."""
+    import tarfile, json
+    import agyteam.lifecycle as lifecycle
+
+    base = tmp_path / "workspace"
+    base.mkdir()
+
+    agents_dir = base / "agents"
+    agents_dir.mkdir()
+    agents_dir.joinpath("victim.txt").write_text("critical user data")
+
+    bundle = tmp_path / "bundle.tar.gz"
+    with tarfile.open(bundle, "w:gz") as tar:
+        manifest = {"format_version": "1.0"}
+        m_file = tmp_path / "manifest.json"
+        m_file.write_text(json.dumps(manifest))
+        tar.add(m_file, arcname="manifest.json")
+
+        fake_agents = tmp_path / "fake"
+        fake_agents.mkdir()
+        fake_agents.joinpath("victim.txt").write_text("overwritten")
+        fake_agents.joinpath("new_agent.txt").write_text("brand new")
+        tar.add(fake_agents, arcname="agents")
+
+    team_dir = base / "team"
+    lifecycle.import_team(str(bundle), team_dir=str(team_dir), overwrite=True)
+
+    assert agents_dir.joinpath("victim.txt").read_text() == "overwritten"
+    assert agents_dir.joinpath("new_agent.txt").read_text() == "brand new"
+

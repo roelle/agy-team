@@ -97,105 +97,58 @@ class SdkRunner(Runner):
                                   self.scopes.shared_dir()))
 
         def _pre_trace(call):
-            try:
-                tool_name = getattr(call, "name", None)
-                if hasattr(tool_name, "value"):
-                    tool_name = tool_name.value
-                elif tool_name is not None:
-                    tool_name = str(tool_name)
-                else:
-                    tool_name = "unknown"
-
-                args = getattr(call, "args", None)
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        pass
-                if args is not None and not isinstance(args, dict):
-                    args = {"raw": str(args)}
-
-                cid = getattr(call, "id", None)
-                sid = getattr(call, "step_id", None)
-                entry = (time.monotonic(), args)
-                if cid:
-                    self._tool_call_starts[(agent, str(cid))] = entry
-                if sid:
-                    self._tool_call_starts[(agent, str(sid))] = entry
-                self._tool_call_starts_by_name[(agent, tool_name)].append(entry)
-            except Exception as e:
-                print(f"[warning: pre_trace failed for {agent}: {e}]", file=sys.stderr)
+            tool_name = call.name.value if hasattr(call.name, "value") else str(call.name)
+            args = call.args  # Guaranteed dict[str, Any]
+            cid = call.id
+            sid = call.step_id
+            entry = (time.monotonic(), args, cid, sid)
+            if cid:
+                self._tool_call_starts[(agent, str(cid))] = entry
+            if sid:
+                self._tool_call_starts[(agent, str(sid))] = entry
+            self._tool_call_starts_by_name[(agent, tool_name)].append(entry)
 
         def _trace_tool_call(res):
-            try:
-                tool_name = getattr(res, "name", None)
-                if hasattr(tool_name, "value"):
-                    tool_name = tool_name.value
-                elif tool_name is not None:
-                    tool_name = str(tool_name)
-                else:
-                    tool_name = "unknown"
+            tool_name = res.name.value if hasattr(res.name, "value") else str(res.name)
+            cid = res.id
+            sid = res.step_id
+            captured_entry = None
+            if cid and (agent, str(cid)) in self._tool_call_starts:
+                captured_entry = self._tool_call_starts.pop((agent, str(cid)))
+            elif sid and (agent, str(sid)) in self._tool_call_starts:
+                captured_entry = self._tool_call_starts.pop((agent, str(sid)))
+            elif self._tool_call_starts_by_name.get((agent, tool_name)):
+                captured_entry = self._tool_call_starts_by_name[(agent, tool_name)].popleft()
 
-                cid = getattr(res, "id", None)
-                sid = getattr(res, "step_id", None)
-                captured_entry = None
-                if cid and (agent, str(cid)) in self._tool_call_starts:
-                    captured_entry = self._tool_call_starts.pop((agent, str(cid)))
-                    if sid and (agent, str(sid)) in self._tool_call_starts:
-                        self._tool_call_starts.pop((agent, str(sid)), None)
-                elif sid and (agent, str(sid)) in self._tool_call_starts:
-                    captured_entry = self._tool_call_starts.pop((agent, str(sid)))
-                elif self._tool_call_starts_by_name.get((agent, tool_name)):
-                    captured_entry = self._tool_call_starts_by_name[(agent, tool_name)].popleft()
+            if captured_entry is not None:
+                captured_t0, args, e_cid, e_sid = captured_entry
+                if e_cid and (agent, str(e_cid)) in self._tool_call_starts:
+                    self._tool_call_starts.pop((agent, str(e_cid)), None)
+                if e_sid and (agent, str(e_sid)) in self._tool_call_starts:
+                    self._tool_call_starts.pop((agent, str(e_sid)), None)
+                q = self._tool_call_starts_by_name.get((agent, tool_name))
+                if q:
+                    if captured_entry in q:
+                        q.remove(captured_entry)
+                    if not q:
+                        self._tool_call_starts_by_name.pop((agent, tool_name), None)
+            else:
+                captured_t0, args = None, None
 
-                captured_t0 = captured_entry[0] if captured_entry else None
-                captured_args = captured_entry[1] if captured_entry else None
+            result_str = str(res.result) if res.result is not None else None
+            error_val = str(res.error) if res.error is not None else (str(res.exception) if res.exception is not None else None)
+            duration_s = max(0.0, time.monotonic() - captured_t0) if captured_t0 is not None else None
 
-                args = getattr(res, "args", None)
-                if args is None:
-                    args = captured_args
-                elif isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        pass
-                if args is not None and not isinstance(args, dict):
-                    args = {"raw": str(args)}
-
-                raw_result = getattr(res, "result", None)
-                if raw_result is not None:
-                    if isinstance(raw_result, str):
-                        result_str = raw_result
-                    else:
-                        try:
-                            result_str = json.dumps(raw_result, default=str)
-                        except Exception:
-                            result_str = str(raw_result)
-                else:
-                    result_str = None
-
-                error = getattr(res, "error", None)
-                if error is None and getattr(res, "exception", None) is not None:
-                    error = str(res.exception)
-
-                duration_s = getattr(res, "duration_s", None)
-                if duration_s is None:
-                    duration_s = getattr(res, "duration", None)
-                if duration_s is None and captured_t0 is not None:
-                    duration_s = max(0.0, time.monotonic() - captured_t0)
-
-                conv_id = self.conversation_id(agent) or ""
-                self.observer.record_tool_call(
-                    agent=agent,
-                    conversation=conv_id,
-                    tool=tool_name,
-                    args=args if isinstance(args, dict) else None,
-                    result=result_str,
-                    error=str(error) if error is not None else None,
-                    duration_s=float(duration_s) if duration_s is not None else None,
-                )
-            except Exception as e:
-                print(f"[warning: trace_tool_call failed for {agent}: {e}]", file=sys.stderr)
+            conv_id = self.conversation_id(agent) or ""
+            self.observer.record_tool_call(
+                agent=agent,
+                conversation=conv_id,
+                tool=tool_name,
+                args=args,
+                result=result_str,
+                error=error_val,
+                duration_s=duration_s,
+            )
 
         conf = build_config(
             self.scopes.agent_workspace(agent), model=spec.get("model", self.model),

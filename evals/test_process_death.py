@@ -314,6 +314,166 @@ def check_process_death_sqlite_transport() -> tuple[int, int]:
     return 10, 10
 
 
+CHILD_SQLITE_LOCK_SCRIPT = """
+import sys
+import time
+import sqlite3
+
+db_path = sys.argv[1]
+worker_id = sys.argv[2]
+conn = sqlite3.connect(db_path, timeout=10)
+try:
+    conn.execute("BEGIN EXCLUSIVE")
+    conn.execute(
+        "INSERT INTO msg (ts, sender, recipient, content, consumed) VALUES ('2026-09-12 18:00:00', ?, 'coder', 'uncommitted_dirty_row', 0)",
+        (f"child_{worker_id}",),
+    )
+    sys.stdout.write(f"LOCKED_{worker_id}\\n")
+    sys.stdout.flush()
+    time.sleep(30)
+except Exception as e:
+    sys.stderr.write(f"Lock error: {e}\\n")
+    sys.stderr.flush()
+"""
+
+CHILD_SQLITE_RESTART_SCRIPT = """
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "evals"))
+
+from fixture_transport import SqliteTransport
+
+db_path = sys.argv[2]
+worker_id = sys.argv[3]
+cfg = {"db": db_path, "roster": [{"name": "coder", "role": "dev"}]}
+
+t = SqliteTransport(f"worker_{worker_id}", cfg)
+for i in range(5):
+    t.send("coder", f"restart_msg_{worker_id}_{i}")
+    msgs = t.fetch()
+    if msgs:
+        t.acknowledge(msgs[:1])
+t.close()
+sys.stdout.write(f"DONE_{worker_id}\\n")
+sys.stdout.flush()
+"""
+
+
+def check_concurrent_process_kill_and_immediate_restart_sqlite() -> tuple[int, int]:
+    """Test edge case: concurrent process kill and immediate restart does not cause database is locked."""
+    print("\n== edge case: concurrent SIGKILL & immediate restart (SQLite) ==")
+    sqlite_db = Path(tempfile.mkdtemp(prefix="agyteam-sigkill-concurrent-")) / "bus.db"
+    sql_cfg = json.dumps({"db": str(sqlite_db), "roster": [{"name": "coder", "role": "implements"}]})
+
+    saved_env = {
+        "AGYTEAM_TEAM_DIR": os.environ.get("AGYTEAM_TEAM_DIR"),
+        "AGYTEAM_BUS_TRANSPORT": os.environ.get("AGYTEAM_BUS_TRANSPORT"),
+        "AGYTEAM_BUS_CONFIG": os.environ.get("AGYTEAM_BUS_CONFIG"),
+    }
+    os.environ["AGYTEAM_BUS_TRANSPORT"] = "fixture_transport:SqliteTransport"
+    os.environ["AGYTEAM_BUS_CONFIG"] = sql_cfg
+    os.environ.pop("AGYTEAM_TEAM_DIR", None)
+
+    try:
+        # 1. Seed messages
+        u_trans = load_transport("user")
+        u_trans.send("coder", "seed msg 1")
+        u_trans.send("coder", "seed msg 2")
+
+        # 2. Spawn 3 concurrent processes attempting exclusive uncommitted transactions
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{ROOT}:{ROOT / 'evals'}"
+        lock_procs = []
+        for i in range(3):
+            p = subprocess.Popen(
+                [sys.executable, "-c", CHILD_SQLITE_LOCK_SCRIPT, str(sqlite_db), str(i)],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            lock_procs.append(p)
+
+        # Wait briefly for at least one lock to be acquired
+        time.sleep(0.3)
+
+        # 3. Kill all locking child processes concurrently with SIGKILL
+        for p in lock_procs:
+            try:
+                os.kill(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.wait()
+
+        all_killed_by_sigkill = all(p.returncode == -signal.SIGKILL for p in lock_procs)
+        assert_check(
+            "all locking child processes killed via SIGKILL",
+            all_killed_by_sigkill,
+            f"returncodes: {[p.returncode for p in lock_procs]}",
+        )
+
+        # 4. Immediately launch 4 concurrent restart processes accessing SQLite transport
+        restart_procs = []
+        for i in range(4):
+            p = subprocess.Popen(
+                [sys.executable, "-c", CHILD_SQLITE_RESTART_SCRIPT, str(ROOT), str(sqlite_db), str(i)],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            restart_procs.append(p)
+
+        restart_errs = []
+        for i, p in enumerate(restart_procs):
+            stdout, stderr = p.communicate(timeout=10.0)
+            if p.returncode != 0 or "database is locked" in stderr:
+                restart_errs.append((i, p.returncode, stderr))
+
+        assert_check(
+            "no sqlite3.OperationalError: database is locked during immediate concurrent restart",
+            len(restart_errs) == 0,
+            f"restart_errs: {restart_errs}",
+        )
+
+        # 5. Recovery turn with Supervisor immediately executes without locking error
+        rec_runner = RecoveryRunner()
+        sup = Supervisor(["coder"], rec_runner, max_hops=1, quiet=True)
+        turns = sup.step()
+        sup.close()
+
+        assert_check("recovery turn completed cleanly after concurrent restart", turns == 1, f"turns={turns}")
+
+        # 6. Verify SQLite DB integrity and rollback of uncommitted dirty writes
+        con = sqlite3.connect(str(sqlite_db), timeout=10)
+        cur = con.cursor()
+        cur.execute("PRAGMA integrity_check")
+        integrity = cur.fetchall()
+        assert_check(
+            "sqlite integrity_check returns ok after concurrent SIGKILL and recovery",
+            integrity == [("ok",)],
+            f"integrity: {integrity}",
+        )
+
+        cur.execute("SELECT count(*) FROM msg WHERE content = 'uncommitted_dirty_row'")
+        dirty_cnt = cur.fetchone()[0]
+        assert_check("uncommitted dirty rows completely rolled back", dirty_cnt == 0, f"dirty_cnt={dirty_cnt}")
+
+        con.close()
+    finally:
+        for k, v in saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
+        shutil.rmtree(sqlite_db.parent, ignore_errors=True)
+
+    return 5, 5
+
+
 def test_process_death_file_transport() -> None:
     check_process_death_file_transport()
 
@@ -322,11 +482,17 @@ def test_process_death_sqlite_transport() -> None:
     check_process_death_sqlite_transport()
 
 
+def test_concurrent_process_kill_and_immediate_restart_sqlite() -> None:
+    check_concurrent_process_kill_and_immediate_restart_sqlite()
+
+
 if __name__ == "__main__":
     totals = [
         check_process_death_file_transport(),
         check_process_death_sqlite_transport(),
+        check_concurrent_process_kill_and_immediate_restart_sqlite(),
     ]
     got, want = sum(s for s, _ in totals), sum(t for _, t in totals)
     print(f"\n== process death durability: {got}/{want} ==")
     sys.exit(0 if got == want else 1)
+

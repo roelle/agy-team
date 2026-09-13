@@ -561,12 +561,23 @@ class Supervisor:
         return self._approved_reviews_count() > self._approved_reviews_at_start
 
     def _find_manager(self) -> str | None:
-        """Find the manager agent: explicit manager, or by role/name in roster."""
+        """Find the manager agent: explicit manager, or by declared capability / role in roster."""
         if self.manager and self.manager in self.transports:
             return self.manager
         try:
             roster = roster_lib.load(self.team_dir / "roster.json")
-            for entry in roster.get("agents", []):
+            entries = roster.get("agents", [])
+            for entry in entries:
+                name = entry.get("name", "")
+                if name in self.transports:
+                    if entry.get("is_principal") or entry.get("principal"):
+                        return name
+            for entry in entries:
+                name = entry.get("name", "")
+                if name in self.transports:
+                    if entry.get("is_gatekeeper") or entry.get("gatekeeper"):
+                        return name
+            for entry in entries:
                 name = entry.get("name", "")
                 role = entry.get("role", "").lower()
                 if ("manager" in role or name.lower() == "manager") and name in self.transports:
@@ -986,6 +997,10 @@ class Supervisor:
             roster = roster_lib.load(self.team_dir / "roster.json")
             for entry in roster.get("agents", []):
                 if entry.get("name", "").lower() == leader_lower:
+                    if (entry.get("is_retro_leader") or entry.get("retro_leader") or
+                        entry.get("is_principal") or entry.get("principal") or
+                        entry.get("is_gatekeeper") or entry.get("gatekeeper")):
+                        return True
                     role = entry.get("role", "").lower()
                     if any(k in role for k in ("coordinate", "accountab", "ship", "manage", "lead")):
                         return True
@@ -1785,6 +1800,90 @@ def format_report(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _find_principal(team_dir: Path | str | None, agents: list[str]) -> str:
+    """Find the principal agent to address user queries to.
+
+    Checks declared capabilities (is_principal/principal, then is_gatekeeper/gatekeeper)
+    in roster.json, then falls back to 'manager', 'tpm', or agents[0].
+    """
+    if not agents:
+        return ""
+    td = Path(team_dir) if team_dir else None
+    if td:
+        try:
+            roster_path = td / "roster.json"
+            if roster_path.exists():
+                roster = roster_lib.load(roster_path)
+                entries = roster.get("agents", [])
+                for entry in entries:
+                    name = entry.get("name")
+                    if name in agents:
+                        if entry.get("is_principal") or entry.get("principal"):
+                            return name
+                for entry in entries:
+                    name = entry.get("name")
+                    if name in agents:
+                        if entry.get("is_gatekeeper") or entry.get("gatekeeper"):
+                            return name
+                for entry in entries:
+                    name = entry.get("name")
+                    if name in agents:
+                        role = entry.get("role", "").lower()
+                        if "manager" in role or "faces outward" in role:
+                            return name
+        except Exception:
+            pass
+    if "manager" in agents:
+        return "manager"
+    if "tpm" in agents:
+        return "tpm"
+    return agents[0]
+
+
+def _run_chat_loop(sup: "Supervisor", agents: list[str]) -> None:
+    default_to = _find_principal(sup.team_dir, agents)
+    print("=== AgyTeam Interactive Chat ===")
+    print(f"Messages default to '{default_to}'. To address a specific agent, prefix with 'agent:' (e.g. 'coder: ...').")
+    print("Type '/quit' or 'exit' or press Ctrl+C to leave.\n")
+    user_t = load_transport("user")
+    while True:
+        try:
+            line = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting chat.")
+            break
+        if not line:
+            continue
+        if line.lower() in ("/quit", "/exit", "exit", "quit"):
+            print("Exiting chat.")
+            break
+
+        if ":" in line:
+            target, _, text = line.partition(":")
+            target, text = target.strip(), text.strip()
+            if target in agents:
+                to, content = target, text
+            else:
+                to, content = default_to, line
+        else:
+            to, content = default_to, line
+
+        if not content:
+            continue
+
+        user_t.send(to, content)
+        sup.run_until_idle()
+        user_msgs = user_t.fetch()
+        for m in user_msgs:
+            print(f"\n[{m.sender} → you] {m.content}")
+        if hasattr(user_t, "acknowledge") and callable(user_t.acknowledge):
+            try:
+                user_t.acknowledge(user_msgs)
+            except TypeError:
+                user_t.acknowledge()
+        print()
+
+
 def _agents_from_roster(team_dir: Path) -> list[str]:
     return [a["name"] for a in roster_lib.load(team_dir / "roster.json")["agents"]]
 
@@ -1803,6 +1902,8 @@ def main(argv=None, runner=None):
                     help="Distill and reset conversations for all agents on the roster, then exit")
     ap.add_argument("--say", metavar="'agent: message'",
                     help="Send this, then run until the team goes idle")
+    ap.add_argument("--chat", action="store_true",
+                    help="Interactive chat session with the team")
     ap.add_argument("--daemon", action="store_true",
                     help="Stay up and react to mail as it arrives")
     ap.add_argument("--status", action="store_true",
@@ -1884,10 +1985,21 @@ def main(argv=None, runner=None):
                      manager=args.manager)
     try:
         if args.retro:
-            if args.retro_leader not in agents:
+            retro_leader = args.retro_leader
+            if retro_leader not in agents:
+                try:
+                    roster = roster_lib.load(sup.team_dir / "roster.json")
+                    for entry in roster.get("agents", []):
+                        name = entry.get("name")
+                        if name in agents and (entry.get("is_retro_leader") or entry.get("retro_leader")):
+                            retro_leader = name
+                            break
+                except Exception:
+                    pass
+            if retro_leader not in agents:
                 sys.exit(f"unknown retro leader {args.retro_leader!r}; roster has: {', '.join(agents)}")
             res = sup.retro(
-                leader=args.retro_leader,
+                leader=retro_leader,
                 max_participants=args.retro_max_participants,
                 max_transcript_chars=args.retro_max_transcript,
                 force=args.retro_force,
@@ -1910,9 +2022,21 @@ def main(argv=None, runner=None):
         elif args.cycle_all:
             for a in agents:
                 sup.cycle(a)
+        elif args.chat:
+            _run_chat_loop(sup, agents)
         elif args.say:
-            to, _, content = args.say.partition(":")
-            to, content = to.strip(), content.strip()
+            if ":" in args.say:
+                cand_to, _, cand_content = args.say.partition(":")
+                cand_to, cand_content = cand_to.strip(), cand_content.strip()
+                if cand_to in agents:
+                    to, content = cand_to, cand_content
+                else:
+                    to = _find_principal(sup.team_dir, agents)
+                    content = args.say.strip()
+            else:
+                to = _find_principal(sup.team_dir, agents)
+                content = args.say.strip()
+
             if to not in agents:
                 sys.exit(f"unknown agent {to!r}; roster has: {', '.join(agents)}")
             load_transport("user").send(to, content)

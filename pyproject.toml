@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agyteam"
+version = "0.1.0"
+description = "Persistent, learning agents and team platform for Google Antigravity"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-antigravity>=0.1.16",
+    "google-genai>=1.0.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+agyteam = "agyteam.supervisor:main"
+agyteam-lifecycle = "agyteam.lifecycle:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agyteam*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

@@ -165,14 +165,81 @@ observation nobody else in the loop is positioned to make.
 ROLES = {"tpm": TPM_PATTERNS, "manager": MANAGER_PATTERNS}
 
 
-def seed(agent: str, patterns) -> None:
+from pathlib import Path
+
+
+def seed(agent: str, patterns, workspace: str | Path | None = None) -> None:
     os.environ["AGYTEAM_AGENT"] = agent
     from . import memory as memory_lib
-    store = memory_lib.load(agent)
+    config = {"workspace": str(workspace)} if workspace else None
+    store = memory_lib.load(agent, config=config)
     for name, description, why, content in patterns:
         created = store.save(name, description, content, why=why)
         print(f"  {'saved  ' if created else 'updated'} {agent}/{name}")
     print(f"  {agent} now knows {len(store.index())} memories.\n")
+
+
+def seed_from_roster(team_dir: str | Path | None = None) -> dict[str, list[str]]:
+    """Seed craft memories for agents in roster according to declared capabilities and roles."""
+    from .lifecycle import resolve_team_dir
+    from . import roster as roster_lib
+    td = resolve_team_dir(team_dir)
+    roster_path = td / "roster.json"
+    if not roster_path.exists():
+        return {}
+    try:
+        data = roster_lib.load(roster_path)
+    except Exception:
+        return {}
+    agents = data.get("agents", [])
+    seeded: dict[str, list[str]] = {}
+
+    for entry in agents:
+        name = entry.get("name")
+        if not name:
+            continue
+        role = entry.get("role", "").lower()
+        patterns_to_seed = []
+
+        # Principal / manager
+        if (entry.get("is_principal") or entry.get("principal") or
+            "manager" in name.lower() or "faces outward" in role or "manager" in role):
+            patterns_to_seed.extend(MANAGER_PATTERNS)
+
+        # Retro leader / TPM
+        if (entry.get("is_retro_leader") or entry.get("retro_leader") or
+            "tpm" in name.lower() or "decomposes" in role or "faces inward" in role or "tpm" in role):
+            patterns_to_seed.extend(TPM_PATTERNS)
+
+        if not patterns_to_seed:
+            continue
+
+        seen_pat_names = set()
+        unique_patterns = []
+        for pat in patterns_to_seed:
+            p_name = pat[0]
+            if p_name not in seen_pat_names:
+                seen_pat_names.add(p_name)
+                unique_patterns.append(pat)
+
+        # Resolve agent workspace
+        ws = None
+        entry_workspaces = entry.get("workspaces", [])
+        if entry_workspaces:
+            ws = Path(entry_workspaces[0])
+        elif (td / "agents" / name).is_dir():
+            ws = td / "agents" / name
+        elif (td.parent / "agents" / name).is_dir():
+            ws = td.parent / "agents" / name
+        elif td.name == "team":
+            ws = td.parent / "agents" / name
+        else:
+            ws = td / "agents" / name
+
+        seed(name, unique_patterns, workspace=ws)
+        seeded[name] = [p[0] for p in unique_patterns]
+
+    return seeded
 
 
 def main(argv=None) -> int:
@@ -182,7 +249,15 @@ def main(argv=None) -> int:
                     help="Seed one role only (default: both)")
     ap.add_argument("--agent", default=None,
                     help="Agent name to seed (default: same as the role)")
+    ap.add_argument("--from-roster", action="store_true",
+                    help="Seed craft memories for all agents declared in team roster")
+    ap.add_argument("--team-dir", default=None,
+                    help="Team directory (used with --from-roster)")
     args = ap.parse_args(argv)
+
+    if args.from_roster:
+        seed_from_roster(team_dir=args.team_dir)
+        return 0
 
     roles = [args.role] if args.role else sorted(ROLES)
     if args.agent and len(roles) > 1:

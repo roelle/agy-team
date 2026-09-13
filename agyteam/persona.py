@@ -238,9 +238,20 @@ def brief(
     # A principal gets PRINCIPAL where a teammate gets TEAMWORK: they are
     # different jobs and briefing them identically is what made the gate share
     # the team's instincts.
-    role_text = next((a.get("role", "") for a in agents if a["name"] == agent), "")
-    is_principal = principal if principal is not None else (
-        "manager" in agent.lower() or "faces outward" in role_text.lower())
+    spec = next((a for a in agents if a["name"] == agent), {})
+    role_text = spec.get("role", "")
+    if principal is not None:
+        is_principal = principal
+    elif spec.get("is_principal") is not None:
+        is_principal = bool(spec.get("is_principal"))
+    elif spec.get("principal") is not None:
+        is_principal = bool(spec.get("principal"))
+    elif spec.get("is_gatekeeper") is not None:
+        is_principal = bool(spec.get("is_gatekeeper"))
+    elif spec.get("gatekeeper") is not None:
+        is_principal = bool(spec.get("gatekeeper"))
+    else:
+        is_principal = ("manager" in agent.lower() or "faces outward" in role_text.lower())
     parts = [identity(agent, agents),
              PRINCIPAL if is_principal else TEAMWORK,
              CONTRACT, CONTINUITY, CONSISTENCY,

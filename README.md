@@ -4,22 +4,50 @@ Persistent, learning agents — and a team platform of them — for Google
 Antigravity 2.0: as an installable **agy CLI plugin**, or driven directly
 through the **google-antigravity SDK**.
 
-## Setup
-
-The plugin path needs **nothing installed** — its MCP servers are pure standard
-library and run under system `python3` (see [Dependencies](#dependencies)):
+## Quick Start (Zero-Friction Launcher)
 
 ```bash
-bash plugin/install.sh
+git clone https://github.com/roelle/agy-exp.git
+cd agy-exp
+./run
 ```
 
-The SDK and eval paths need a virtualenv:
+The `./run` launcher automates the entire environment lifecycle:
+- Verifies Python >= 3.10 and creates/repairs an isolated local virtual environment (`.venv`).
+- Installs `agyteam` and required dependencies in editable mode (`pip install -e ".[dev]"`).
+- Guides you through configuring your `GEMINI_API_KEY` (saved locally in `.env`) and validates it via a zero-token API probe before any model calls.
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install google-antigravity
-cp .env.example .env   # or create .env with GEMINI_API_KEY=...
-```
+### Primary Commands
+
+| Command | Description |
+|---|---|
+| `./run` or `./run chat` | Launch an interactive multi-turn chat session with the team |
+| `./run ask "<prompt>"` | Submit a one-shot task to the team and stream the verified result |
+| `./run status` | Non-destructive view of mailbox and pending agent tasks |
+| `./run stop` | Safely halt all running background agents and daemon processes |
+| `./run start` | Resume background team agents |
+| `./run export <bundle>` | Export entire team state, memories, and config to a portable bundle (.tar.gz) |
+| `./run import <bundle>` | Restore a team bundle into a local environment with overwrite safety |
+| `./run setup` | Check or reconfigure your Gemini API key and virtual environment |
+| `./run test` | Run the complete offline test suite (100% free, 0 API tokens) |
+
+### Upfront Cost Transparency
+
+- **Offline Testing is 100% Free**: Running `./run test` (105+ contract and behavioral tests) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
+- **Key Validation is Zero Tokens**: The setup probe validates your API key via `models.list` metadata — zero model inference tokens.
+- **Estimated Live Team Cost**: A full reactive multi-agent work session typically costs **~$11/day** of continuous operation (or ~10¢–30¢ per deep delegated task), depending on token usage and model selection (default: `gemini-3.8-flash`).
+
+### Stopping & Resuming Safely
+
+- To pause or cancel an active interactive turn: press **Ctrl+C**.
+- To cleanly stop background daemons and agent lifecycles: run **`./run stop`**.
+- To resume the team anytime: run **`./run start`** or **`./run chat`**. All agent memory and durable workspace artifacts are automatically preserved on disk.
+
+### Troubleshooting for Non-Coders
+
+- **Missing or Invalid API Key**: If `./run` reports `GEMINI_API_KEY is unset or invalid`, grab a key from [Google AI Studio](https://aistudio.google.com/) and paste it when prompted, or save `GEMINI_API_KEY=your_key_here` in `.env` in the repository root.
+- **Billing / Quota Limits**: If you see quota or 429 rate limit errors, verify your Google AI Studio project has billing enabled and tier quotas configured for Gemini API access.
+- **Python Version**: `agy-exp` requires Python 3.10 or newer. If `./run` reports an older version, install Python 3.10+ using your system package manager (e.g. `sudo apt install python3 python3-venv` on Ubuntu/Debian, or `brew install python` on macOS).
 
 ## Provenance of claims about Antigravity
 
@@ -541,3 +569,79 @@ Expect to adjust:
   limit; the compaction threshold (80k, `agyteam/config.py`) respects it.
 - Pricing table in `agyteam/config.py` is an estimate for the cost display —
   update from ai.google.dev/pricing if you need it exact.
+
+## Advanced Customization & Developer Guide
+
+For developers, contributors, and power users who prefer direct command-line control or need custom runtime environments:
+
+### 1. Manual Virtual Environment & Packaging
+
+Rather than using `./run`, you can manage your environment manually using standard Python tooling:
+
+```bash
+# Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install agyteam in editable mode with development dependencies
+pip install -e ".[dev]"
+
+# Set up environment variables
+cp .env.example .env   # edit .env to add your GEMINI_API_KEY
+```
+
+Installing via `pyproject.toml` registers console scripts directly into your virtualenv:
+- `agyteam`: CLI entry point to the supervisor (`agyteam --chat`, `agyteam --say "tpm: <task>"`, `agyteam --status`, etc.)
+- `agyteam-lifecycle`: daemon lifecycle management (`agyteam-lifecycle status`, `agyteam-lifecycle stop`, `agyteam-lifecycle start`)
+
+### 2. Direct Module Invocations
+
+You can invoke `agyteam` modules directly with Python:
+
+```bash
+# Supervisor & interactive chat
+python -m agyteam.supervisor --chat
+python -m agyteam.supervisor --say "tpm: build feature X"
+python -m agyteam.supervisor --status
+python -m agyteam.supervisor --daemon
+
+# Standalone single agent REPL / one-shot
+python -m agyteam.sdk_cli -w workspace/
+python -m agyteam.sdk_cli -p "analyze this log file"
+
+# Background lifecycle manager
+python -m agyteam.lifecycle status
+python -m agyteam.lifecycle stop
+python -m agyteam.lifecycle start
+```
+
+### 3. Environment Variables & Swappable Backends
+
+All subsystems support configuration through environment variables:
+
+| Environment Variable | Description | Default |
+|---|---|---|
+| `GEMINI_API_KEY` | Google Gemini API key for model inference | None (prompted by `./run`) |
+| `AGYTEAM_RUNNER` | Agent execution runner (`agyteam.runner_sdk:SdkRunner`, `agyteam.runner_agy:AgyRunner`, `agyteam.runner_mixed:MixedRunner`) | `agyteam.runner_sdk:SdkRunner` |
+| `AGYTEAM_RUNNER_CONFIG` | JSON configuration passed to runner constructor | `{}` |
+| `AGYTEAM_BUS_TRANSPORT` | Pluggable A2A messaging transport class | `agyteam.transport_file:FileTransport` |
+| `AGYTEAM_MEMORY_STORE` | Pluggable persistent memory store class | `agyteam.memory_file:FileMemoryStore` |
+| `AGYTEAM_DURABLE_DIR` | Absolute path overriding durable storage for agent memory and identities | `~/agy-teams/<team>` |
+| `AGYTEAM_TEAMS_ROOT` | Base directory for multi-team namespaces | `~/agy-teams` |
+
+### 4. Direct Testing & Verification
+
+Run tests directly with `pytest` without needing manual `PYTHONPATH` exports:
+
+```bash
+# Run the entire offline test suite
+pytest evals/
+
+# Run specific subsystem contract suites
+pytest evals/test_mcp.py
+pytest evals/test_transport.py
+pytest evals/test_memory.py
+pytest evals/test_supervisor.py
+pytest evals/test_review.py
+```
+
