@@ -46,7 +46,7 @@
     {
       "id": "C2",
       "summary": "The capacity bound itself is correct. LRUCache(2) never holds more than 2 entries; only the eviction ORDER is wrong.",
-      "false_positive_patterns": ["capacit\\w*[^.\\n]{0,60}(not respected|exceed|unbounded|ignored)"]
+      "false_positive_patterns": ["capacit\\w*[^.\\n]{0,60}(not respected|unbounded|never enforced|is broken|is ignored)"]
     }
   ]
 }
