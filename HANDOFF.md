@@ -118,16 +118,33 @@ operating.
   caught it. Treat both signals as necessary; if you retune, tune against a
   captured real spew, not synthetic text.
 
-## What is deliberately not finished
+## What is measured, and what is not yet
 
-- Cold-start convergence — the claim that a team with wiped memories
-  converges back to good practice — is the load-bearing claim of the whole
-  project and must be *measured*, not asserted, after any significant
-  change. `bench/` exists to make that measurement cheap: two sibling tasks,
-  keys fixed in advance, grade run A cold, cycle, grade run B.
-- The bench has one task pair. It measures execute-vs-read. It does not yet
-  measure delegation quality, lateral consultation (historically near zero),
-  or cost discipline.
+- **Cold-start convergence: measured once, and it held.** 2026-09-13, a
+  team with nothing but a roster scored perfectly on content but worked
+  process-broken — solo, unreviewed, then self-approved under supervisor
+  pressure. After one retro + cycle-all, the sibling task ran through the
+  full delegate-implement-review pipeline, with the independent review
+  recorded *before* the user was answered, at lower cost. No human steered
+  between the runs. That is one data point from a strong cold start:
+  replicate it on your infrastructure with `bench/convergence.py` (fresh
+  team name; it refuses to reuse one), and re-measure after any
+  significant change to briefs, norms, or the review gate. The claim is
+  load-bearing; never let it drift back to asserted.
+- **The measurement exposed the next gap: review records carry no author
+  field**, so the gate cannot see that an approval came from the person
+  whose work it approves — self-review passed it. The structural fix is a
+  schema change (open task); the behavioural mitigation ships in the
+  manager's brief — every answer ends with a "how we worked" note naming
+  who did and who reviewed. If the notes stop arriving or stop naming
+  names, that mitigation has decayed and you are back to blind.
+- The bench has one sibling pair and measures execute-vs-read plus basic
+  process (delegation, review-before-answer). It does not yet measure
+  lateral consultation (historically near zero) or cost discipline.
+- The grader misread correct answers three times in one day — brittle
+  regexes reading form instead of substance, each fixed in a commit that
+  says so. When the instrument and unambiguous substance disagree, fix the
+  instrument, in the open.
 
 ## If you keep one sentence
 
