@@ -37,6 +37,11 @@ WORKER = types.SubagentConfig(
 
 class SdkRunner(Runner):
     label = "sdk"
+    # Both are real here: the audit hook is installed per session in
+    # sdk_agent.build_config, and workspaces are enforced by the SDK at the
+    # capability level rather than by instruction.
+    supports_audit = True
+    supports_containment = True
 
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)

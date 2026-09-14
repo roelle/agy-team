@@ -81,10 +81,52 @@ DEFAULT_RUNNER = "agyteam.runner_agy:AgyRunner"
 
 
 class Runner(ABC):
-    """Starts or resumes one agent turn with a message it must act on."""
+    """Starts or resumes one agent turn with a message it must act on.
+
+    ## The completion contract
+
+    A runner must be able to detect that a turn **ended**. It need not be able
+    to read what the agent said. That is a far weaker requirement than it
+    looks, and stating it is deliberate: a host that exposes only
+    fire-and-forget verbs and returns no transcript can still satisfy it with
+    a lifecycle hook, a status file, a queue message, or a line appended to a
+    log. Agents publish to teammates and to the user over the bus, not through
+    this return value, so a runner that can only report "done" loses nothing
+    the rest of the system depends on. See `wake` for what to return when no
+    reply text exists.
+
+    ## Capability flags
+
+    Two properties this project documents as invariants are provided by the
+    *runner*, not by the core. A runner that cannot provide one must say so
+    rather than let an operator assume otherwise. Both default to False,
+    because the honest default for "can you do this?" is no.
+
+    The point is not to rank runners. It is that a check which could not run
+    must never be reported as a check that found nothing -- the same rule this
+    project already applies to test files that collect no tests and to a bench
+    that cannot be verified. A silent zero and a real zero must not look alike.
+    """
 
     #: shown in supervisor output so you can tell which runner is live
     label = "runner"
+
+    #: True if this runner records every tool call to AGYTEAM_AUDIT_LOG, in a
+    #: location agents cannot reach. Grading, succession scoring and every
+    #: "did they actually check?" question read that log against the bus.
+    #: When False, those tools must report that evidence was not OBSERVABLE --
+    #: never that the team produced none.
+    supports_audit = False
+
+    #: True if this runner confines agents to granted workspace directories.
+    #: When False, containment is whatever the underlying host enforces, which
+    #: agyteam neither sets nor can observe: roster `workspaces` and
+    #: AGYTEAM_EXTRA_WORKSPACES have no effect. Anything that depends on an
+    #: agent being UNABLE to read a path -- answer keys, another team's
+    #: memories -- needs a different mechanism on such a runner. Containment
+    #: belongs to whoever owns the process; agyteam should say so plainly
+    #: rather than imply a guarantee it is not making.
+    supports_containment = False
 
     def __init__(self, config: dict | None = None, observer=None):
         self.config = config or {}
@@ -165,9 +207,17 @@ class Runner(ABC):
     def wake(self, agent: str, message: str) -> str:
         """Run `agent` against `message` and return whatever it said.
 
-        Blocks until the turn finishes. The reply text is for logging only —
-        anything the agent wants a teammate or the user to see, it sends over
-        the bus itself, which is what lets one wake cascade into the next.
+        Blocks until the turn finishes. **Detecting completion is the
+        requirement; reading the reply is not.** The returned text is for
+        logging only — anything the agent wants a teammate or the user to see,
+        it sends over the bus itself, which is what lets one wake cascade into
+        the next.
+
+        A runner on a host that returns no transcript should return an empty
+        string once the turn has genuinely ended. Do not invent a reply, and
+        do not return "[error: ...]" for a turn that merely produced no
+        readable text: that string means failure, the supervisor records it as
+        one, and `with_retry` may re-run a turn that already succeeded.
 
         Errors should be returned as text starting with "[error:", not raised;
         a supervisor must survive one agent failing.

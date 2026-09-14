@@ -38,10 +38,24 @@ python3 bench/grade.py audit_telemetry --since "2026-09-13 11:00"
 | source | what it holds |
 |---|---|
 | `bus.jsonl` | what the team **said** |
-| `audit.jsonl` | what the team **ran**, logged by the pre-tool-call hook outside every agent workspace |
+| `audit.jsonl` | what the team **ran**, logged by the pre-tool-call hook outside every agent workspace — **on a runner that supports it** |
 
 A team that names every defect while its audit log shows nothing but `cat` and
 `grep` did not audit anything; it pattern-matched. The grader says so.
+
+**But only when it can see.** The audit hook is installed by the SDK session
+builder, so on a runner that drives an external host there is no tool-call
+record at all (`Runner.supports_audit`, printed by `agyteam.lifecycle
+status`). When the log is missing, unset, or the runner declares it cannot
+audit, `grade.py` marks the audit-dependent checks `N/A`, drops them from the
+denominator, and says which runner could not report — rather than scoring them
+zero and printing *"every defect named and nothing executed; check whether the
+key leaked."* That warning is right in general and was exactly wrong in the one
+case it fired: the team had run 33 commands including a correct mechanical
+reproduction of every planted defect, and the grader simply could not see them.
+
+Do not compare a score with `N/A` evidence against an audited one. They are
+different measurements.
 
 Scoring has three parts, and the last two are the ones that separate teams:
 

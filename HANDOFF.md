@@ -66,19 +66,47 @@ that passes vacuously is worse than no check because you believe you have
 one. `bench/verify_fixtures.py` counts its own assertions for the same
 reason.
 
-**What the team ran is recorded where the team cannot reach it.** The
-pre-tool-call hook appends every command to an audit log outside all agent
-workspaces (`AGYTEAM_AUDIT_LOG`). Grading, succession scoring, and any
-"did they actually check?" question reads that log against the bus. Never
-grade a team on its own account of what it did.
+**What the team ran is recorded where the team cannot reach it —
+on a runner that supports it.** The pre-tool-call hook appends every command
+to an audit log outside all agent workspaces (`AGYTEAM_AUDIT_LOG`). Grading,
+succession scoring, and any "did they actually check?" question reads that log
+against the bus. Never grade a team on its own account of what it did.
 
-**Agents never see answer keys, and workspace grants are the leak vector.**
-`bench/keys/` must never be in a team's workspace — and note that a team
-whose workspace includes this repo root can read the keys, so the shipped
-bench tasks are burned for that team (see `bench/README.md`). We learned
-this by granting a team a directory that contained the paper it was being
-asked to derive. Grant the narrowest directory that works, per agent, and
-audit grants when a task involves anything the team is being measured on.
+The hook is installed by the SDK session builder, so this holds on
+`SdkRunner` and **not** on runners that drive an external host. Check before
+relying on it — `Runner.supports_audit`, surfaced by
+`agyteam.lifecycle status`. When it is False, a tool that cannot see evidence
+must report that it could not look, never that the team produced nothing: a
+silent zero and a real zero must not look alike. `bench/grade.py` refuses to
+score its evidence section rather than scoring it zero, for exactly this
+reason.
+
+**Agents never see answer keys, and workspace grants are the leak vector —
+where grants exist at all.** `bench/keys/` must never be in a team's
+workspace, and note that a team whose workspace includes this repo root can
+read the keys, so the shipped bench tasks are burned for that team (see
+`bench/README.md`). We learned this by granting a team a directory that
+contained the paper it was being asked to derive. Grant the narrowest
+directory that works, per agent, and audit grants when a task involves
+anything the team is being measured on.
+
+**Read this part before you trust a grant.** Workspace confinement is
+enforced by `SdkRunner`. Runners that drive an external host have no
+workspace mechanism at all — no grants, no confinement — and agents are
+bounded only by whatever permission model that host applies, which agyteam
+neither configures nor can observe. `Runner.supports_containment` declares
+this and `agyteam.lifecycle status` prints it beside the grant list,
+because a list of granted directories otherwise reads as a boundary that is
+not there.
+
+Containment belongs to whoever owns the process, and agyteam should say so
+rather than imply a guarantee it is not making. A denylist of dangerous
+commands is not containment either: structured write tools can be gated
+because their target is an explicit argument, but a shell cannot, since
+deciding what an arbitrary command writes requires running it. If you need
+an agent to be *unable* to read something on such a runner, enforce it where
+the process actually lives — filesystem permissions, a container, a separate
+account — and treat anything agyteam says about grants as advisory.
 
 **Memory is files, and the write path is the read path.** Both prior
 attempts at a learning agent failed on the same broken link: learnings were

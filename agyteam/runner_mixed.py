@@ -48,6 +48,30 @@ class MixedRunner(Runner):
     def runner_spec(self, agent: str) -> str:
         return self._specs.get(agent, {}).get("runner") or self.default_spec
 
+    @property
+    def supports_audit(self) -> bool:
+        """True only if EVERY sub-runner audits.
+
+        A mixed team is as observable as its least observable member: one
+        un-audited agent makes the log an incomplete account of what the team
+        did, and an incomplete account presented as a complete one is worse
+        than no account at all.
+        """
+        return all(self._sub(a).supports_audit for a in self._specs)
+
+    @property
+    def supports_containment(self) -> bool:
+        """True only if EVERY sub-runner confines agents — one uncontained
+        agent can read whatever the others are denied."""
+        return all(self._sub(a).supports_containment for a in self._specs)
+
+    def capability_report(self) -> dict:
+        """Per-agent flags, so a mixed team can say exactly who is covered."""
+        return {a: {"runner": self.runner_spec(a),
+                    "supports_audit": self._sub(a).supports_audit,
+                    "supports_containment": self._sub(a).supports_containment}
+                for a in self._specs}
+
     def _sub(self, agent: str) -> Runner:
         spec = self.runner_spec(agent)
         if spec not in self._subs:

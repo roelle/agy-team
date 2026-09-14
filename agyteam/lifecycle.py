@@ -167,6 +167,45 @@ def start_team(team_dir: str | Path | None = None) -> dict:
     }
 
 
+def runner_capabilities() -> dict:
+    """Which documented guarantees the configured runner actually provides.
+
+    Both are runner-provided, not core. An operator who reads "workspace
+    grants are the leak vector" or "tool calls are recorded where agents
+    cannot reach them" needs to know whether either mechanism exists on the
+    runtime they are about to use -- and listing granted `workspaces` without
+    this reads as "contained" to anyone skimming, on a runner where nothing
+    enforces it.
+    """
+    from .runner import DEFAULT_RUNNER
+    spec = os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
+    out = {"spec": spec, "supports_audit": None, "supports_containment": None,
+           "audit_log": os.environ.get("AGYTEAM_AUDIT_LOG") or None}
+    try:
+        from .runner import load as load_runner
+        r = load_runner(spec)
+        out["supports_audit"] = bool(r.supports_audit)
+        out["supports_containment"] = bool(r.supports_containment)
+        if hasattr(r, "capability_report"):
+            out["per_agent"] = r.capability_report()
+    except Exception as e:
+        # Unknown is not the same as False, and neither is the same as True.
+        out["error"] = f"could not load runner {spec!r}: {e}"
+    notes = []
+    if out["supports_containment"] is False:
+        notes.append("workspace grants have NO effect on this runner; "
+                     "containment is whatever the host enforces")
+    if out["supports_audit"] is False:
+        notes.append("tool calls are not recorded; graders cannot show "
+                     "evidence and must not report its absence as a finding")
+    elif out["supports_audit"] and not out["audit_log"]:
+        notes.append("this runner can audit but AGYTEAM_AUDIT_LOG is unset, "
+                     "so no record is being written")
+    if notes:
+        out["warnings"] = notes
+    return out
+
+
 def team_status(team_dir: str | Path | None = None) -> dict:
     """Get current team configuration, agents, workspaces, and stop state."""
     td = resolve_team_dir(team_dir)
@@ -186,6 +225,7 @@ def team_status(team_dir: str | Path | None = None) -> dict:
         "stop_reason": stop_reason,
         "workspaces": doc.get("workspaces", []),
         "agents": doc.get("agents", []),
+        "runner": runner_capabilities(),
     }
     try:
         from .git_hygiene import check_git_hygiene
@@ -535,7 +575,21 @@ def main(argv: list[str] | None = None) -> int:
                 st = "STOPPED" if res["stopped"] else "RUNNING"
                 reason_extra = f" ({res['stop_reason']})" if res["stop_reason"] else ""
                 print(f"Team: {res['team_dir']} [{st}{reason_extra}]")
-                print(f"Workspaces: {', '.join(res['workspaces']) or 'none'}")
+                rc = res.get("runner", {})
+                enforced = rc.get("supports_containment")
+                # Never print a grant list without saying whether anything
+                # enforces it. On a runner that cannot contain, this line
+                # otherwise reads as a security boundary that does not exist.
+                mark = {True: "enforced by runner",
+                        False: "NOT ENFORCED on this runner",
+                        None: "enforcement unknown"}[enforced]
+                print(f"Workspaces: {', '.join(res['workspaces']) or 'none'} "
+                      f"({mark})")
+                print(f"Runner: {rc.get('spec', '?')} "
+                      f"[audit={rc.get('supports_audit')}, "
+                      f"containment={rc.get('supports_containment')}]")
+                for w in rc.get("warnings", []):
+                    print(f"  ! {w}")
                 print("Agents:")
                 for a in res["agents"]:
                     aws = f" [workspaces: {', '.join(a.get('workspaces', []))}]" if a.get("workspaces") else ""

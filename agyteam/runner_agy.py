@@ -47,6 +47,15 @@ PERMISSION_HINT = (
 
 class AgyRunner(Runner):
     label = "agy-cli"
+    # Neither guarantee holds here, and saying so is the point. The audit hook
+    # lives in the SDK session builder, so there is no tool-call record on this
+    # path -- a grader must report "this runner cannot show evidence", not
+    # "this team checked nothing". And this runner has no workspace mechanism
+    # at all: no grants, no confinement, nothing. Agents are bounded by
+    # whatever permission model the CLI itself applies, which agyteam neither
+    # configures nor observes, so roster `workspaces` do nothing here.
+    supports_audit = False
+    supports_containment = False
 
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)

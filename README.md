@@ -146,12 +146,28 @@ Each is one env var plus a config blob, each has a template to copy and a
 contract suite that any implementation must pass. They exist so this can be
 dropped into an environment whose messaging, storage, or accounting is not ours.
 
-| seam | what it swaps | env |
-|---|---|---|
-| transport | how agents talk | `AGYTEAM_BUS_TRANSPORT` |
-| memory | where memories live | `AGYTEAM_MEMORY_STORE` |
-| runner | how an agent is woken | `AGYTEAM_RUNNER` |
-| observer | turns, cost, tool calls | `AGYTEAM_OBSERVER` |
+| seam | what it swaps | env | template |
+|---|---|---|---|
+| transport | how agents talk | `AGYTEAM_BUS_TRANSPORT` | `agyteam/transport_template.py` |
+| memory | where memories live | `AGYTEAM_MEMORY_STORE` | `agyteam/memory_template.py` |
+| runner | how an agent is woken | `AGYTEAM_RUNNER` | `agyteam/runner_template.py` |
+| observer | turns, cost, tool calls | `AGYTEAM_OBSERVER` | `agyteam/observer_template.py` |
+
+**Adapting to a new platform? Start with the runner, not the transport.**
+Replacing the transport is the tempting move — you probably already have
+messaging — but it takes the supervisor out of the scheduling loop, and its
+four guarantees (hop budget, stop-on-answer, failure isolation, requeue) then
+have to be rebuilt by hand in your adapter. Swapping the runner and keeping
+the file bus costs nothing and keeps all four. The runner's real requirement
+is weaker than it looks: **detect that a turn ended**; reading the reply is
+optional, because agents publish over the bus.
+
+Two guarantees documented elsewhere in this README are provided by the
+*runner*, not the core, so a runner declares whether it has them
+(`supports_audit`, `supports_containment`; `agyteam.lifecycle status` prints
+both). On a runner without them, workspace grants do nothing and no tool-call
+record exists — and tools that read those things must report that they could
+not look, never that there was nothing to find.
 
 ## What is in flight
 
