@@ -49,6 +49,22 @@ fails under yours is a dependency on something no runner promised**, and so
 far every one of those has been a defect in agyteam rather than a shortcoming
 of the host. Report it rather than working around it.
 
+## Register before you deliver
+
+`remember_conversation(agent, conv_id)` goes between creating the session and
+sending the first message, never after the turn. Everything keyed on "which
+agent is this conversation" — an audit hook, a permission policy, a workspace
+grant — can only bind once that mapping exists, so registering afterwards
+leaves a hole exactly one turn wide, and the first turn is the longest one an
+agent ever takes. Measured on a host that binds policy this way: the same read
+was allowed while the conversation was unregistered and denied once it was
+registered, and none of those calls reached the audit log.
+
+If your host assigns the id only when the turn returns, you cannot do this, and
+the honest response is to bind identity somewhere else — one server mount per
+agent, or an environment variable on the process — and to leave the capability
+flags False so nothing downstream assumes a boundary that is not there.
+
 ## Two details that will bite you
 
 **Build argv lists, never shell strings.** An agent message contains newlines,
@@ -102,8 +118,12 @@ class MyRunner(Runner):
         conv = self.conversation_id(agent)        # None on the first wake
         try:
             if conv is None:
-                conv = self._start(agent, message)
+                # Create, register, *then* deliver. Registering after the work
+                # would leave the first turn unattributable -- see "Register
+                # before you deliver" above.
+                conv = self._create_session(agent)
                 self.remember_conversation(agent, conv)
+                self._deliver(conv, f"{self._brief(agent)}\n\n---\n\n{message}")
             else:
                 self._deliver(conv, message)
             self._await_turn_end(conv)
@@ -115,16 +135,25 @@ class MyRunner(Runner):
 
     # --- host-specific; everything below is yours to write -----------------
 
-    def _start(self, agent: str, message: str) -> str:
-        """Create a session for `agent`, seeded with its brief. Return its id.
+    def _create_session(self, agent: str) -> str:
+        """Create an empty session for `agent` and return its id.
 
-        Send the opening brief here: persona.brief(agent, roster["agents"]).
-        Build an argv LIST for any subprocess — never an interpolated string.
+        No work goes in here. Splitting creation from delivery is what makes
+        it possible to register the conversation before the agent can act on
+        anything; if your host only offers create-and-send as one call, see
+        "Register before you deliver" above and bind identity another way.
         """
         raise NotImplementedError
 
+    def _brief(self, agent: str) -> str:
+        """The opening brief: persona.brief(agent, roster["agents"])."""
+        raise NotImplementedError
+
     def _deliver(self, conv: str, message: str) -> None:
-        """Send a message into an existing session. Fire-and-forget is fine."""
+        """Send a message into an existing session. Fire-and-forget is fine.
+
+        Build an argv LIST for any subprocess — never an interpolated string.
+        """
         raise NotImplementedError
 
     def _await_turn_end(self, conv: str) -> None:

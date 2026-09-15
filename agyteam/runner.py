@@ -303,6 +303,22 @@ class Runner(ABC):
         readable text: that string means failure, the supervisor records it as
         one, and `with_retry` may re-run a turn that already succeeded.
 
+        **Bind the agent's identity before the work is delivered, not after.**
+        Where a session is created here, call `remember_conversation` between
+        creating it and sending the message. Anything keyed on "which agent is
+        this conversation" — an audit hook, a permission policy, a workspace
+        grant — can only bind once that mapping exists, so registering after
+        the turn leaves a hole exactly one turn wide, and the first turn is the
+        longest one an agent ever takes: it carries the brief and does the most
+        exploring. Measured on a host that binds policy this way: the same read
+        was allowed while the conversation was unregistered and denied once it
+        was registered, and none of those calls reached the audit log.
+
+        Some hosts assign the conversation id only when the turn returns, and
+        then this is not available. Bind identity another way — one server
+        mount per agent, or an environment variable on the process — and say so
+        with the capability flags rather than leaving the caller to assume.
+
         Errors should be returned as text starting with "[error:", not raised;
         a supervisor must survive one agent failing.
         """
