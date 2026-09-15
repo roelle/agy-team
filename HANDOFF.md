@@ -11,8 +11,10 @@ up".
 
 1. `README.md` — Quick Start through "The four seams". Stop there on day one.
 2. This file.
-3. `agyteam/persona.py` — the briefs are the product as much as the code is.
-4. `bench/README.md` — then run the bench against your own freshly started
+3. `python -m agyteam.doctor` — before the first run on any host that is not
+   the SDK. It is offline and takes seconds.
+4. `agyteam/persona.py` — the briefs are the product as much as the code is.
+5. `bench/README.md` — then run the bench against your own freshly started
    team before you trust it with anything.
 
 ## The one idea everything else serves
@@ -57,6 +59,21 @@ caught defects none found alone. Diversity is the mechanism, not capability.
 Keep qa and the manager on a different family from coder even when a single
 family would be cheaper or simpler to configure.
 
+**Every test double must be as limited as the weakest runner you allow.**
+The suite had fourteen runner doubles and every one returned prose from
+`wake()`, while the Runner contract says a runner need only report that a
+turn ended. So no test could detect a dependency on the optional half of the
+contract, and one grew: the retrospective parsed reply text, produced
+"(missing or invalid)" on a conforming runner, and never wrote NORMS.md —
+team-level learning silently did not happen while agent-level learning
+worked. The doubles were more capable than the thing they stood in for,
+which is the substitution pattern aimed at our own tests.
+`evals/test_runner_columns.py` runs the core flows over two columns, rich and
+minimal. **A test that passes in `rich` and fails in `minimal` is an
+undeclared capability requirement.** Keep the columns genuinely different; the
+moment someone gives the minimal runner a reply string to make a test pass,
+the matrix stops being one.
+
 **Reviews must be able to fail, and "my check did not run" must not count as
 a verdict.** The proof gate runs the reviewer's proof file and rejects both
 the file that collects no tests and the file that errors on import
@@ -99,6 +116,20 @@ this and `agyteam.lifecycle status` prints it beside the grant list,
 because a list of granted directories otherwise reads as a boundary that is
 not there.
 
+**And the same is true of `tools_off`.** Roster capability scoping is the
+mechanism behind "roles are enforced by capability, not instruction", and it
+is implemented in one place: the SDK runner passes it to the session builder
+so the schema for a withheld tool never reaches the model. Everywhere else
+the roster entry is a description. We found this the way you would expect —
+a manager whose roster said `tools_off: [create_file, edit_file]` and *"Does
+not write the work"* ran `sed -i` on the fixture it was auditing.
+`Runner.supports_capability_scoping` declares it, and on a runner that does
+not enforce it the introspection server now tells the agent the restriction
+is its team's expectation rather than a boundary, and asks it to hold to the
+expectation anyway. That is the best available answer, not a good one: if a
+role must be *unable* to do something, remove the capability where the
+process lives.
+
 Containment belongs to whoever owns the process, and agyteam should say so
 rather than imply a guarantee it is not making. A denylist of dangerous
 commands is not containment either: structured write tools can be gated
@@ -128,6 +159,43 @@ to answer "what is the team doing?" truthfully from the record. Asking her
 exercises the muscle the whole succession plan depends on; grepping the bus
 yourself atrophies it. Grep is for auditing after the fact, not for
 operating.
+
+## Before a run, on a host that is not the SDK
+
+Run `python -m agyteam.doctor`. It exercises the join between agyteam and
+whatever is driving the agents — the seam this repo's tests cannot reach —
+and prints what is actually wired: the resolved runner and its three
+capability flags, every bus tool called end to end with real arguments, a
+probe message written through the bus and then looked for in the directory
+the supervisor is about to read, and the first lines of a generated brief.
+
+Two host behaviours it exists to catch, both of which cost a day:
+
+- **The agent's own memory system competes with `agents/<name>/memory/`.**
+  A host with ambient rules about where notes go will send the agent there,
+  and the brief does not say otherwise. Ours was stopped only by an external
+  clamp, after which the agent recovered on its own. State the agent's memory
+  root in its brief and expect to enforce it outside agyteam.
+
+- **A live MCP bus server never rebinds, and the failure is silent.** Where
+  the bus is mounted as an MCP server, the team directory reaches it as an
+  environment variable, and that environment is read once — when the host
+  spawns the process. Rewriting the mount config to point at a different team
+  does not rebind a server that is already running, and nothing anywhere
+  reports the mismatch. We watched five servers from a previous team stay
+  alive while agents delegated normally and every tool call returned success;
+  the mail went into the old team's bus, the new supervisor saw an empty bus,
+  declared the team idle after one turn and exited 0. Eight runs finished in
+  sixteen minutes and produced a full set of meaningless scores. It reads as
+  an agent failure — `[done after 1 turns — team went idle]`, reason
+  `NO_TOOL_CALL` — which is what makes it expensive.
+
+  **The rule: after changing which team the mounts point at, kill the bus
+  server processes.** Verified — killing all five brought each back bound to
+  the new team; no host restart needed. `agyteam.doctor` reads
+  `/proc/<pid>/environ` for every running bus server and fails if any is bound
+  elsewhere, and `bench/convergence.py` now refuses to grade an episode with
+  one turn and an empty bus.
 
 ## Known sharp edges
 
@@ -159,13 +227,20 @@ operating.
   team name; it refuses to reuse one), and re-measure after any
   significant change to briefs, norms, or the review gate. The claim is
   load-bearing; never let it drift back to asserted.
-- **The measurement exposed the next gap: review records carry no author
-  field**, so the gate cannot see that an approval came from the person
-  whose work it approves — self-review passed it. The structural fix is a
-  schema change (open task); the behavioural mitigation ships in the
-  manager's brief — every answer ends with a "how we worked" note naming
-  who did and who reviewed. If the notes stop arriving or stop naming
-  names, that mitigation has decayed and you are back to blind.
+- **The review gate now checks who did the work, and this took two goes.**
+  The first fix added an `author` field and refused `author == reviewer`.
+  That was defeated by typing a different name: a manager recorded
+  `author="coder"` for an episode in which coder was never woken and made
+  zero tool calls, and the literal string `"unknown"` passed too. The code
+  comment beside the check was exactly right about the problem and one step
+  short of the remedy — *"misstating who did the work is visible to everyone
+  on the bus"*. Visible is not checked. The author must now be a teammate,
+  not you, and demonstrably active since the last episode boundary, against
+  the bus, the event log and the audit log. Where no channel is readable the
+  record says `author_verified: false` rather than counting clean. The
+  behavioural mitigation stays: every answer ends with a "how we worked" note
+  naming who did and who reviewed. If the notes stop naming names, that
+  mitigation has decayed — but the gate no longer depends on it.
 - The bench has one sibling pair and measures execute-vs-read plus basic
   process (delegation, review-before-answer). It does not yet measure
   lateral consultation (historically near zero) or cost discipline.

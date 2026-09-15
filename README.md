@@ -23,11 +23,21 @@ the loop runs: **tell the manager what you liked and didn't, in plain chat**
 become team norms and durable memories, and behaviour measurably changes on
 the next task.
 
+Check `<team_dir>/NORMS.md` after your first retro. If it was not written, the
+loop did not close and the next task will look like the last one — the retro
+report says which half was empty.
+
 You never need to read logs to see how the work happened: **every answer ends
 with a brief "how we worked" note** — who did the work, who reviewed it and
 their verdict, anything skipped. If the same name wrote and approved something,
 or nobody was delegated to, that note is where you'll see it. Say so to the
 manager; that sentence is the training.
+
+The note is a convenience, not the safeguard. Underneath it, a review must
+name an agent who is on the roster, is not the reviewer, and has actually
+worked this episode — checked against the bus, the event log and the audit
+log, none of which an agent can edit. We added the author field first and
+watched a manager defeat it by typing a different name.
 
 Measured, not promised: a team started from zero went from solo, self-approved
 work to a full delegate-implement-review pipeline — at lower cost — after one
@@ -161,6 +171,26 @@ have to be rebuilt by hand in your adapter. Swapping the runner and keeping
 the file bus costs nothing and keeps all four. The runner's real requirement
 is weaker than it looks: **detect that a turn ended**; reading the reply is
 optional, because agents publish over the bus.
+
+Then run the preflight, which is offline and takes seconds:
+
+```bash
+python -m agyteam.doctor
+```
+
+It calls every bus tool end to end with real arguments, writes a probe message
+through the bus and checks it lands in the directory the supervisor is about
+to read, prints the resolved runner and its three capability flags, and echoes
+the opening brief. Each of those exists because skipping it cost someone a
+day. A runner also declares what it *cannot* do — audit tool calls, contain
+agents to workspaces, enforce roster `tools_off` — and tools that read those
+declarations report "could not look" rather than "found nothing". Say False
+where you mean False; it is the input other tools need, not a failing grade.
+
+`evals/test_runner_columns.py` runs the core flows over two runner columns,
+one returning prose and one returning nothing. **A test that passes in `rich`
+and fails in `minimal` is a dependency on something no runner promised.** Run
+it against your own runner before you trust a green suite.
 
 Two guarantees documented elsewhere in this README are provided by the
 *runner*, not the core, so a runner declares whether it has them
