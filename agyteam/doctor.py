@@ -150,7 +150,8 @@ def check_tools(r: Report, team_dir: Path, agent: str) -> None:
         out = retro_store.record(team_dir, agent,
                                  "doctor probe: the bus round-tripped",
                                  "doctor probe: nothing yet, this is preflight",
-                                 "doctor probe: no change, this is a probe")
+                                 "doctor probe: no change, this is a probe",
+                                 probe=True)
         r.line(OK if not out.startswith("[error:") else BAD,
                f"record_retro -> {out.splitlines()[0][:80]}")
     except Exception as e:
@@ -244,6 +245,114 @@ def check_stale_bus_servers(r: Report, team_dir: Path) -> None:
                      f"is incomplete, not clean")
 
 
+def check_workspace_grants(r: Report, team_dir: Path, caps: dict) -> None:
+    """No grant may reach the team directory, because that is the record.
+
+    bus.jsonl, reviews.jsonl, retro_inbox.jsonl, NORMS.md, roster.json and
+    conversations.json are all written by agyteam processes and read back as
+    the account of what the team did. Agents reach them through the bus tools,
+    which run in a separate process and need no grant of their own -- so a
+    grant that covers the team directory buys nothing and costs every gate
+    built on those files at once: reviews can be appended without passing the
+    review gate, a retrospective answer can be written in a teammate's name,
+    and roster.json can grant the rest.
+    """
+    from .lifecycle import covers_team_dir
+
+    try:
+        doc = roster_lib.load(team_dir / "roster.json")
+    except Exception as e:
+        r.line(WARN, f"could not read the roster to check grants: {e}")
+        return
+
+    grants = [("team", w) for w in doc.get("workspaces", [])]
+    for a in doc.get("agents", []):
+        grants += [(a.get("name", "?"), w) for w in a.get("workspaces", [])]
+
+    bad = [(who, w) for who, w in grants if covers_team_dir(w, team_dir)]
+    if not bad:
+        r.line(OK, f"no workspace grant reaches the team directory "
+                   f"({len(grants)} grant(s))")
+    else:
+        r.line(BAD, f"{len(bad)} workspace grant(s) contain the team directory")
+        for who, w in bad:
+            r.detail(f"{who}: {w}")
+        r.detail(f"team directory: {team_dir}\n"
+                 f"An agent with write access there can append to "
+                 f"reviews.jsonl and retro_inbox.jsonl directly, which is "
+                 f"every review gate at once. Revoke it and grant the working "
+                 f"tree, or move the team directory out of it.")
+
+    if caps.get("supports_containment") is False and grants:
+        r.line(WARN, "this runner enforces no workspace boundary, so the team "
+                     "directory is reachable regardless of the grant list")
+        r.detail("Keep it outside every working tree and rely on the host: "
+                 "filesystem permissions, a container, or a separate account.")
+
+
+def check_plugin_install(r: Report, spec: str) -> None:
+    """Is the code the agents run the code you are reading?
+
+    Where agents run inside the CLI, the MCP tools are served by the *installed*
+    copy of this package, not by this repo. Nothing in the repo's test suite can
+    see that copy, the install self-test only imports the servers, and an
+    install that is months behind fails nothing and reports nothing. Measured
+    here: an install pinned to a commit from before the review gate checked
+    authorship at all, quietly accepting reviews an agent wrote of its own work,
+    while every test in the repo asserted the gate held.
+
+    Three things, then, and in this order: does it exist, is it complete on its
+    own terms, and is it this code.
+    """
+    from . import install_check
+
+    dst = install_check.default_install_dir()
+    pkg = dst / "agyteam"
+    if not pkg.is_dir():
+        r.line(OK, f"no installed plugin at {dst} (nothing to check)")
+        r.detail("Agents driven through the CLI get their tools from an "
+                 "installed copy; if you use one, install it with "
+                 "plugin/install.sh so this check has something to compare.")
+        return
+
+    # A check that compares a thing with itself always passes, which is the
+    # one result it must never be allowed to report.
+    if install_check.SRC == pkg.resolve():
+        r.line(WARN, f"running from the installed copy at {pkg}; drift from "
+                     f"the repo cannot be judged from here")
+        return
+
+    gaps = install_check.missing(dst)
+    if gaps:
+        r.line(BAD, f"the install is incomplete: {', '.join(gaps)}")
+        r.detail("These are either imported by the installed sources or are "
+                 "entrypoints an install is expected to carry. A module "
+                 "imported inside a function raises ImportError on the first "
+                 "call that reaches it, mid-run, while importing the server "
+                 "looks fine. Reinstall: bash plugin/install.sh")
+    else:
+        r.line(OK, "the install has every module its own sources import")
+
+    changed = install_check.drift(dst)
+    if not changed:
+        r.line(OK, f"the installed plugin matches this repo ({pkg})")
+        return
+    # Only the CLI path serves tools from the install; on the SDK path a stale
+    # copy is untidy rather than load-bearing, and saying FAIL where it is not
+    # load-bearing is how a preflight gets ignored.
+    serves_tools = "sdk" not in spec.lower()
+    r.line(BAD if serves_tools else WARN,
+           f"the installed plugin is NOT this code: {len(changed)} file(s) differ")
+    r.detail(", ".join(changed[:8]) + (" ..." if len(changed) > 8 else ""))
+    r.detail(f"installed: {pkg}\nthis repo: {install_check.SRC}\n"
+             + ("Agents on this runner call tools served by that copy, so a run "
+                "started now measures that code and not this one. "
+                if serves_tools else
+                "This runner serves its own tools, so the stale copy is not in "
+                "the path of a run -- but anything you start in the CLI is. ")
+             + "Reinstall: bash plugin/install.sh")
+
+
 def check_brief(r: Report, team_dir: Path, agent: str, lines: int) -> None:
     try:
         agents = roster_lib.load(team_dir / "roster.json")["agents"]
@@ -297,11 +406,15 @@ def main(argv=None) -> int:
     print(f"agent:  {agent}\n")
 
     r = Report()
-    check_runner(r)
+    caps = check_runner(r)
     print()
     check_reply_text(r, agent)
     print()
     check_tools(r, team_dir, agent)
+    print()
+    check_workspace_grants(r, team_dir, caps)
+    print()
+    check_plugin_install(r, caps.get("spec") or "")
     print()
     check_stale_bus_servers(r, team_dir)
     print()

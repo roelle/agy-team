@@ -92,8 +92,16 @@ def validate(went_well: str, did_not: str, should_change: str) -> str | None:
 
 
 def record(team_dir: Path | str, agent: str, went_well: str, did_not: str,
-           should_change: str, role: str = "participant") -> str:
-    """Append one agent's answers. Returns the tool-result string."""
+           should_change: str, role: str = "participant",
+           probe: bool = False) -> str:
+    """Append one agent's answers. Returns the tool-result string.
+
+    `probe` is for a preflight exercising this path for real. It must write to
+    the same file through the same code -- a probe against a copy proves
+    nothing about the original -- but it must not be read back as though an
+    agent had reflected, or the next retro treats "doctor probe: the bus
+    round-tripped" as that agent's view of the week.
+    """
     err = validate(went_well, did_not, should_change)
     if err:
         return err
@@ -101,6 +109,7 @@ def record(team_dir: Path | str, agent: str, went_well: str, did_not: str,
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "agent": agent,
         "role": role,
+        "kind": "probe" if probe else "retro",
         "went_well": went_well.strip(),
         "did_not": did_not.strip(),
         "should_change": should_change.strip(),
@@ -135,11 +144,15 @@ def read(team_dir: Path | str, since: str = "") -> list[dict]:
 
 
 def latest_by_agent(team_dir: Path | str, since: str = "") -> dict[str, dict]:
-    """Most recent entry per agent, so a retry supersedes a first attempt."""
+    """Most recent real entry per agent, so a retry supersedes a first attempt.
+
+    Preflight probes are skipped: they went through this file deliberately, and
+    reading one back as a reflection would put a test string in a retro report.
+    """
     out: dict[str, dict] = {}
     for rec in read(team_dir, since):
         agent = rec.get("agent")
-        if agent:
+        if agent and rec.get("kind", "retro") != "probe":
             out[agent] = rec
     return out
 

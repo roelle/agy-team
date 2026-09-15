@@ -36,7 +36,12 @@ def make_team(tmp_path, name="team"):
 def run(team_dir, tmp_path, *args, env_extra=None):
     env = dict(os.environ,
                AGYTEAM_TEAM_DIR=str(team_dir),
-               AGYTEAM_DURABLE_DIR=str(tmp_path / "durable"))
+               AGYTEAM_DURABLE_DIR=str(tmp_path / "durable"),
+               # Point the install check at a directory with no install in it.
+               # Otherwise these tests pass or fail on whether the machine
+               # running them happens to have a current plugin installed, which
+               # is a property of the machine and not of the preflight.
+               AGYTEAM_PLUGIN_DIR=str(tmp_path / "no-plugin-here"))
     env.pop("AGYTEAM_AUDIT_LOG", None)
     env.update(env_extra or {})
     return subprocess.run(
@@ -111,6 +116,79 @@ def test_no_roster_exits_without_pretending(tmp_path):
     p = run(td, tmp_path)
     assert p.returncode == 2
     assert "no roster" in p.stderr
+
+
+# --- the installed plugin, which no test in this repo can otherwise see ------
+
+def fake_install(tmp_path, *, complete=True, identical=True):
+    """A plugin install, optionally missing a module or holding older code."""
+    from agyteam import install_check
+    pkg = tmp_path / "plugin" / "agyteam"
+    pkg.mkdir(parents=True)
+    names = install_check.module_list()
+    if not complete:
+        names = [n for n in names if n != "retro_store.py"]
+    for n in names:
+        src = (install_check.SRC / n).read_bytes()
+        if not identical and n == "mcp_bus.py":
+            src = b"# an older copy\n" + src
+        (pkg / n).write_bytes(src)
+    return tmp_path / "plugin"
+
+
+def test_a_missing_module_fails_even_though_the_server_imports(tmp_path):
+    """The install self-test imports the servers and passes; the tool that
+    lazily imports the missing module raises on first call, mid-run."""
+    td = make_team(tmp_path)
+    inst = fake_install(tmp_path, complete=False)
+    p = run(td, tmp_path, env_extra={"AGYTEAM_PLUGIN_DIR": str(inst)})
+    assert p.returncode == 1, p.stdout
+    assert "the install is incomplete" in p.stdout
+    assert "retro_store.py" in p.stdout
+
+
+def test_a_stale_install_is_a_failure_on_the_runner_that_serves_its_tools(tmp_path):
+    """Measured: an install pinned to a commit from before the review gate
+    checked authorship, recording self-reviews clean for days, while the repo's
+    tests all asserted the gate held."""
+    td = make_team(tmp_path)
+    inst = fake_install(tmp_path, identical=False)
+    p = run(td, tmp_path, env_extra={"AGYTEAM_PLUGIN_DIR": str(inst),
+                                     "AGYTEAM_RUNNER": "agyteam.runner_agy:AgyRunner"})
+    assert p.returncode == 1, p.stdout
+    assert "is NOT this code" in p.stdout
+    assert "mcp_bus.py" in p.stdout
+
+
+def test_a_current_install_passes(tmp_path):
+    td = make_team(tmp_path)
+    inst = fake_install(tmp_path)
+    p = run(td, tmp_path, env_extra={"AGYTEAM_PLUGIN_DIR": str(inst)})
+    assert p.returncode == 0, p.stdout
+    assert "matches this repo" in p.stdout
+
+
+def test_no_install_is_reported_as_nothing_to_check(tmp_path):
+    td = make_team(tmp_path)
+    p = run(td, tmp_path)
+    assert "nothing to check" in p.stdout
+    assert p.returncode == 0
+
+
+def test_it_refuses_to_compare_the_install_with_itself(tmp_path, monkeypatch):
+    """Run from inside the installed copy, every file matches by construction.
+
+    A check that can only pass is not a check, and this one would have passed
+    on precisely the machine where the answer mattered.
+    """
+    from agyteam import doctor as doc, install_check
+    inst = fake_install(tmp_path)
+    monkeypatch.setenv("AGYTEAM_PLUGIN_DIR", str(inst))
+    monkeypatch.setattr(install_check, "SRC", (inst / "agyteam").resolve())
+    r = FakeReport()
+    doc.check_plugin_install(r, "agyteam.runner_agy:AgyRunner")
+    assert not r.failed
+    assert any("cannot be judged from here" in text for _, text in r.lines)
 
 
 # --- the stale bus server, which is the whole reason this file exists --------
