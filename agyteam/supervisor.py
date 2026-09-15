@@ -476,6 +476,52 @@ def record_review(team_dir: Path | str, reviewer: str, what: str, verdict: str,
     return entry
 
 
+def resolve_retro_leader(explicit: str | None, agents: list, team_dir: Path,
+                         manager: str | None = None) -> str:
+    """Who leads the retro: what was asked for, then the roster, then the role
+    that is accountable for the outcome.
+
+    The default used to be the literal string "tpm", so a roster that marked
+    somebody else `is_retro_leader` was ignored whenever a tpm existed -- the
+    flag only took effect if the default named nobody on the roster, which is
+    the one case it was not needed for. Two separate teams proposed, unasked,
+    that the accountable role should lead instead: the norms a retro produces
+    bind the team, and a level-1 manager facilitating a retro on work she
+    delegated is grading her own instructions.
+
+    That has a cost, and the report names it rather than hiding it (see
+    TENSION_ACCOUNTABLE): a retro led by the person accountable for the outcome
+    is a weaker retro. Naming a tension beats picking the facilitator who does
+    not have to own the result.
+    """
+    if explicit:
+        return explicit
+    try:
+        roster = roster_lib.load(Path(team_dir) / "roster.json")
+        entries = roster.get("agents", [])
+    except Exception:
+        entries = []
+
+    for entry in entries:
+        name = entry.get("name")
+        if name in agents and (entry.get("is_retro_leader")
+                               or entry.get("retro_leader")):
+            return name
+    for entry in entries:
+        name = entry.get("name")
+        if name in agents and (entry.get("is_principal")
+                               or entry.get("principal")
+                               or entry.get("is_gatekeeper")
+                               or entry.get("gatekeeper")):
+            return name
+    if manager and manager in agents:
+        return manager
+    for fallback in ("manager", "tpm"):
+        if fallback in agents:
+            return fallback
+    return agents[0] if agents else ""
+
+
 def format_retro_report(leader: str, participants: list[str], is_accountable: bool,
                         q1: str, q2: str, q3: str, outcome: str,
                         norm_change: str | None = None,
@@ -2030,8 +2076,9 @@ def main(argv=None, runner=None):
                     help="Show team usage and cost summary, then exit")
     ap.add_argument("--retro", action="store_true",
                     help="Run structured retrospective over recent work, then exit")
-    ap.add_argument("--retro-leader", metavar="AGENT", default="tpm",
-                    help="Agent leading the retrospective (default: tpm)")
+    ap.add_argument("--retro-leader", metavar="AGENT", default=None,
+                    help="Agent leading the retrospective (default: the "
+                         "roster's is_retro_leader, else the accountable role)")
     ap.add_argument("--retro-max-participants", type=int, default=None,
                     help="Maximum participants in retro (default: config.RETRO_MAX_PARTICIPANTS)")
     ap.add_argument("--retro-max-transcript", type=int, default=None,
@@ -2107,19 +2154,12 @@ def main(argv=None, runner=None):
                      manager=args.manager)
     try:
         if args.retro:
-            retro_leader = args.retro_leader
+            retro_leader = resolve_retro_leader(args.retro_leader, agents,
+                                                sup.team_dir, sup._find_manager())
             if retro_leader not in agents:
-                try:
-                    roster = roster_lib.load(sup.team_dir / "roster.json")
-                    for entry in roster.get("agents", []):
-                        name = entry.get("name")
-                        if name in agents and (entry.get("is_retro_leader") or entry.get("retro_leader")):
-                            retro_leader = name
-                            break
-                except Exception:
-                    pass
-            if retro_leader not in agents:
-                sys.exit(f"unknown retro leader {args.retro_leader!r}; roster has: {', '.join(agents)}")
+                sys.exit(f"unknown retro leader "
+                         f"{args.retro_leader or retro_leader!r}; roster has: "
+                         f"{', '.join(agents)}")
             res = sup.retro(
                 leader=retro_leader,
                 max_participants=args.retro_max_participants,
