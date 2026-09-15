@@ -132,6 +132,83 @@ def _reviews_path(t: Transport) -> Path:
     return _team_dir(t) / "reviews.jsonl"
 
 
+def _jsonl(path: Path) -> list[dict]:
+    """Read a JSONL file, skipping anything unparseable. Missing file is []."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _episode_start(team_dir: Path) -> str:
+    """Timestamp of the last completed episode, or "" for the whole history.
+
+    Reviews are scoped to the episode in progress. Without a boundary the
+    only available question is "has this agent ever done anything", which a
+    long-lived team answers yes to forever.
+    """
+    eps = [e.get("ts") or "" for e in _jsonl(team_dir / "events.jsonl")
+           if e.get("event") == "episode"]
+    return max(eps) if eps else ""
+
+
+def _author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, list[str]]:
+    """Did `author` actually do anything since `since`?
+
+    Returns (verifiable, evidence). `verifiable` is False only when no channel
+    could be read at all -- which is not the same as the author having been
+    idle, and must not be reported as though it were.
+
+    Three independent channels, because each can be absent for its own
+    reason: the bus is always present but an agent can work without
+    publishing; turn events exist whenever the supervisor drove the turn; the
+    audit log exists only on a runner that records tool calls.
+    """
+    evidence, channels = [], 0
+
+    bus = _jsonl(team_dir / "bus.jsonl")
+    if bus:
+        channels += 1
+        sent = [e for e in bus
+                if (e.get("from") or e.get("frm") or e.get("sender")) == author
+                and (e.get("ts") or "") >= since]
+        if sent:
+            evidence.append(f"{len(sent)} bus message(s)")
+
+    events = _jsonl(team_dir / "events.jsonl")
+    if events:
+        channels += 1
+        turns = [e for e in events
+                 if e.get("event") in ("turn", "failure")
+                 and e.get("agent") == author and (e.get("ts") or "") >= since]
+        if turns:
+            evidence.append(f"{len(turns)} recorded turn(s)")
+
+    audit_env = os.environ.get("AGYTEAM_AUDIT_LOG")
+    if audit_env:
+        audit = _jsonl(Path(audit_env))
+        if audit:
+            channels += 1
+            calls = [e for e in audit if e.get("agent") == author
+                     and (e.get("ts") or "").replace("T", " ") >= since]
+            if calls:
+                evidence.append(f"{len(calls)} tool call(s)")
+
+    return bool(channels), evidence
+
+
 def _extract_crash_detail(proc: subprocess.CompletedProcess) -> str:
     combined = f"{proc.stdout}\n{proc.stderr}".strip()
     if proc.returncode == 5 or "no tests ran" in combined:
@@ -176,8 +253,14 @@ def _record_review(t: Transport, a: dict) -> str:
     # approved her own audit -- and nothing structural could see it, because
     # the record had a reviewer and no author. The reviewer's identity comes
     # from the session, not from this argument, so the check cannot be
-    # satisfied by misstating who you are; misstating who did the work is
-    # visible to everyone on the bus.
+    # satisfied by misstating who you are.
+    #
+    # Misstating who DID the work was the remaining hole, and it was not
+    # theoretical: a manager recorded author="coder" for an episode in which
+    # coder was never woken and made zero tool calls, and the literal string
+    # "unknown" passed too. "Visible on the bus" is not the same as checked,
+    # and nothing was reading the bus to check it. These three tests are that
+    # reading -- on the roster, not yourself, and demonstrably active.
     author = a.get("author", "")
     if not isinstance(author, str) or not author.strip():
         return ("[error: author is required — name the agent whose work this "
@@ -186,6 +269,30 @@ def _record_review(t: Transport, a: dict) -> str:
     if author == t.me:
         return ("[error: you cannot review your own work — route it to a "
                 "teammate for independent review]")
+
+    # Teammates, not the whole roster: the author is by definition someone
+    # other than you. An unreadable or single-agent roster names nobody this
+    # could discriminate between, so the check is skipped rather than guessed.
+    try:
+        teammate_names = {a_["name"] for a_ in t.teammates()}
+    except Exception:
+        teammate_names = set()
+    if teammate_names and author not in teammate_names:
+        known = ", ".join(sorted(teammate_names))
+        return (f"[error: '{author}' is not a teammate on this roster. Name "
+                f"the agent whose work you are reviewing: {known}]")
+
+    team_dir = _team_dir(t)
+    since = _episode_start(team_dir)
+    verifiable, evidence = _author_activity(team_dir, author, since)
+    if verifiable and not evidence:
+        window = f" since {since}" if since else ""
+        return (f"[error: '{author}' has no recorded activity{window} — no bus "
+                f"messages, no turns, no tool calls. A review names the agent "
+                f"whose work it verifies; if you did this work yourself it "
+                f"cannot be reviewed by you, and if a teammate did it, they "
+                f"have not run yet]")
+    author_verified = bool(evidence)
 
     verdict = a.get("verdict", "")
     if verdict not in ("approved", "changes_requested"):
@@ -269,8 +376,12 @@ def _record_review(t: Transport, a: dict) -> str:
     rev_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": "work",
         "reviewer": t.me,
         "author": author,
+        # False means nothing could be read, not that the author was idle --
+        # an idle author is refused above and never reaches this line.
+        "author_verified": author_verified,
         "what": what,
         "verdict": verdict,
         "proof_file": proof_file,
@@ -280,7 +391,11 @@ def _record_review(t: Transport, a: dict) -> str:
     with rev_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
-    return f"[review recorded: {verdict} for '{what}' with proof {proof_file}]"
+    caveat = "" if author_verified else (
+        f" [{author}'s activity could not be verified: no bus, event or audit "
+        f"record was readable]")
+    return (f"[review recorded: {verdict} for '{what}' with proof "
+            f"{proof_file}]{caveat}")
 
 
 def _list_reviews(t: Transport) -> str:
@@ -395,10 +510,38 @@ def _handle_team_status(t: Transport, a: dict) -> str:
         return f"[error: {e}]"
 
 
+class _BadArgs(Exception):
+    """A tool call the model can fix, phrased so it can fix it."""
+
+
+def _args(tool_name: str, a: dict, *names: str):
+    """Pull required arguments, or raise _BadArgs naming the call that works.
+
+    A bare `a["to"]` raises KeyError('to'), which the stdio loop renders as
+    "[error: 'to']" -- a string that names no tool, no argument and no
+    remedy. A manager on a host that does not inject tool schemas burned an
+    entire run on nine consecutive delegation attempts against exactly that
+    message, cycling argument shapes it had to guess. The most-used tool in
+    the system had the least useful error.
+    """
+    missing = [n for n in names
+               if not isinstance(a.get(n), str) or not a.get(n, "").strip()]
+    if missing:
+        sig = ", ".join(f"{n}=..." for n in names)
+        raise _BadArgs(
+            f"[error: {tool_name} is missing required argument(s): "
+            f"{', '.join(missing)}. Call it as {tool_name}({sig}); every "
+            f"argument is a string and none may be empty. "
+            f"Got: {sorted(a) or 'no arguments'}]")
+    return tuple(a[n].strip() if n != "content" else a[n] for n in names)
+
+
 def main(transport: Transport, admin: bool = False):
     handlers = {
-        "send_to_teammate": lambda a: transport.send(a["to"], a["content"]),
-        "broadcast": lambda a: transport.broadcast(a["content"]),
+        "send_to_teammate": lambda a: transport.send(
+            *_args("send_to_teammate", a, "to", "content")),
+        "broadcast": lambda a: transport.broadcast(
+            *_args("broadcast", a, "content")),
         "check_inbox": lambda a: _check_inbox(transport),
         "list_teammates": lambda a: _list_teammates(transport),
         "record_review": lambda a: _record_review(transport, a),
@@ -407,8 +550,10 @@ def main(transport: Transport, admin: bool = False):
     tools = list(TOOLS)
     if admin and transport.supports_roster_admin:
         tools += ADMIN_TOOLS
-        handlers["roster_add"] = lambda a: transport.roster_add(a["name"], a["role"])
-        handlers["roster_remove"] = lambda a: transport.roster_remove(a["name"])
+        handlers["roster_add"] = lambda a: transport.roster_add(
+            *_args("roster_add", a, "name", "role"))
+        handlers["roster_remove"] = lambda a: transport.roster_remove(
+            *_args("roster_remove", a, "name"))
         handlers["grant_workspace"] = lambda a: _handle_grant_workspace(transport, a)
         handlers["revoke_workspace"] = lambda a: _handle_revoke_workspace(transport, a)
         handlers["stop_team"] = lambda a: _handle_stop_team(transport, a)
@@ -417,7 +562,13 @@ def main(transport: Transport, admin: bool = False):
 
     def dispatch(name, args):
         fn = handlers.get(name)
-        return fn(args) if fn else f"[error: unknown tool '{name}']"
+        if not fn:
+            return (f"[error: unknown tool '{name}'. This server provides: "
+                    f"{', '.join(sorted(handlers))}]")
+        try:
+            return fn(args)
+        except _BadArgs as e:
+            return str(e)
 
     try:
         serve(f"agy-team-bus:{transport.me}", tools, dispatch)

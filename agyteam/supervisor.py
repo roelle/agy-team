@@ -427,8 +427,19 @@ def format_retro_record(rep: dict, max_chars: int | None = None) -> str:
 
 
 def record_review(team_dir: Path | str, reviewer: str, what: str, verdict: str,
-                  cases_tried: list[str] | str, findings: str = "") -> dict:
-    """Record a review entry in reviews.jsonl matching mcp_bus._record_review schema."""
+                  cases_tried: list[str] | str, findings: str = "",
+                  kind: str = "norm", author: str | None = None) -> dict:
+    """Record a review entry in reviews.jsonl matching mcp_bus._record_review schema.
+
+    `kind` separates governance records from work reviews. This function's
+    only caller adopts a norm out of a retrospective: a decision the team
+    makes about itself, with no author whose work is being verified. Written
+    without a kind it produced `author: null` rows that the self-review
+    metric counted as authorless approvals and the review gate accepted as
+    evidence that work had been checked -- one code path laundering consensus
+    into verification. Anything scoring work reviews must filter on
+    kind == "work"; nothing else may be written with it.
+    """
     team_dir = Path(team_dir)
     reviews_file = team_dir / "reviews.jsonl"
     reviews_file.parent.mkdir(parents=True, exist_ok=True)
@@ -440,7 +451,9 @@ def record_review(team_dir: Path | str, reviewer: str, what: str, verdict: str,
         cases = [str(cases_tried)]
     entry = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": kind,
         "reviewer": reviewer,
+        "author": author,
         "what": what.strip(),
         "verdict": verdict,
         "cases_tried": cases,
@@ -550,7 +563,13 @@ class Supervisor:
         return now > self._user_mail_at_start
 
     def _approved_reviews_count(self) -> int:
-        """Count approved reviews recorded in reviews.jsonl."""
+        """Count approved work reviews recorded in reviews.jsonl.
+
+        Governance records (kind == "norm", written when a retro adopts a
+        norm) live in the same file and must not satisfy a gate that asks
+        whether work was verified. Rows predating the field carry no kind and
+        are counted as work, which is what they were.
+        """
         if not self.reviews_path.exists():
             return 0
         count = 0
@@ -561,7 +580,8 @@ class Supervisor:
                     continue
                 try:
                     data = json.loads(line)
-                    if data.get("verdict") == "approved":
+                    if (data.get("verdict") == "approved"
+                            and data.get("kind", "work") == "work"):
                         count += 1
                 except json.JSONDecodeError:
                     continue

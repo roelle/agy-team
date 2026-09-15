@@ -253,6 +253,40 @@ def roster_lines(agent: str, agents: list[dict]) -> str:
     return "\n".join(peers)
 
 
+def tool_index(admin: bool = False) -> str:
+    """Call signatures for the bus tools, generated from their declarations.
+
+    An agent reliably calls only a tool whose signature it knows. A host that
+    injects MCP schemas into the system prompt gives that away free; a host
+    that loads schemas lazily does not, and there the agent hand-constructs
+    the argument object from memory of the brief. That is how a manager spent
+    an entire run on failed delegations, cycling {message}, {content},
+    {content, to} against a tool that wanted (to, content).
+
+    Redundant on a schema-injecting host and load-bearing everywhere else, so
+    it always ships. Generated from mcp_bus.TOOLS rather than written out, so
+    a tool whose arguments change cannot leave a stale signature here.
+    """
+    from .mcp_bus import ADMIN_TOOLS, TOOLS
+
+    lines = [
+        "## Your teammate tools",
+        "",
+        "Signatures for the messaging tools, in case your host does not show "
+        "them to you. Arguments outside square brackets are required; a call "
+        "missing one does nothing.",
+        "",
+    ]
+    for t in list(TOOLS) + (list(ADMIN_TOOLS) if admin else []):
+        schema = t.get("inputSchema", {})
+        props = list(schema.get("properties", {}))
+        required = schema.get("required", [])
+        sig = ", ".join(p if p in required else f"[{p}]" for p in props)
+        summary = t.get("description", "").split(". ")[0].rstrip(".")
+        lines.append(f"- {t['name']}({sig}) — {summary}.")
+    return "\n".join(lines)
+
+
 def identity(agent: str, agents: list[dict]) -> str:
     """Who this agent is and who it works with."""
     spec = next((a for a in agents if a["name"] == agent), {})
@@ -291,6 +325,7 @@ def brief(
     else:
         is_principal = ("manager" in agent.lower() or "faces outward" in role_text.lower())
     parts = [identity(agent, agents),
+             tool_index(),
              PRINCIPAL if is_principal else TEAMWORK,
              CONTRACT, CONTINUITY, CONSISTENCY,
              VERIFICATION, ACCOUNTABILITY]
