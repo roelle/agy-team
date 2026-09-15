@@ -53,6 +53,20 @@ account — we watched it happen. If you add a second gatekeeping role, set
 the flag (`--principal` / `--gatekeeper` on `agyteam.lifecycle add`); do not
 rely on the name-sniffing fallback, which exists only for old rosters.
 
+**The accountable role leads the retrospective, and the report says why that
+is a compromise.** The default was the literal string `"tpm"`, and the
+roster's `is_retro_leader` flag was consulted only when that default named
+nobody — the one case it was not needed for. So the coordinator led every
+retro on every team that had one, including the seeded one. Two separate
+teams proposed the change unasked, with the reasoning the code already
+carried: the norms a retro produces bind the team, and a level-1 manager
+facilitating a retro on work she delegated is grading her own instructions.
+The cost is real and stays visible — `TENSION_ACCOUNTABLE` puts "a retro led
+by the person accountable for the outcome is a weaker retro" in the report
+itself. Naming a tension beats choosing the facilitator who does not have to
+own the result. `resolve_retro_leader` takes the explicit flag, then the
+roster, then the accountable role.
+
 **Oversight runs on a different model family from implementation.** Not
 because one is better — because three reviewers with different blind spots
 caught defects none found alone. Diversity is the mechanism, not capability.
@@ -83,6 +97,17 @@ that passes vacuously is worse than no check because you believe you have
 one. `bench/verify_fixtures.py` counts its own assertions for the same
 reason.
 
+The rule has a second edge that cost us more: **a check that could not run
+must never be reported as a check that found something.** The proof gate
+shells out to pytest, the plugin install is deliberately dependency-free, and
+where those met the gate returned `proof_file did not pass (exit code 1)` for
+a proof file containing one passing test — the real reason, "No module named
+pytest", went to a stderr nobody reads. An agent seeing that rewrites a proof
+that was already correct, and a team that can never record a review looks
+exactly like a team that never reviews. It now resolves an interpreter that
+can actually import pytest, and says plainly that the gate did not run when
+none can be found, recording nothing. `AGYTEAM_PROOF_PYTHON` is the override.
+
 **What the team ran is recorded where the team cannot reach it —
 on a runner that supports it.** The pre-tool-call hook appends every command
 to an audit log outside all agent workspaces (`AGYTEAM_AUDIT_LOG`). Grading,
@@ -106,6 +131,23 @@ read the keys, so the shipped bench tasks are burned for that team (see
 contained the paper it was being asked to derive. Grant the narrowest
 directory that works, per agent, and audit grants when a task involves
 anything the team is being measured on.
+
+**The team directory is the record, and no agent is ever granted write
+access to it.** `bus.jsonl`, `reviews.jsonl`, `retro_inbox.jsonl`, `NORMS.md`,
+`roster.json` and `conversations.json` are written by agyteam processes and
+read back as the account of what the team did. Agents reach them through the
+MCP servers, which are *separate processes* with their own filesystem access —
+so no agent needs a grant there to do anything it is supposed to do, and a
+grant that reaches it costs every gate built on those files at once. An agent
+that can append a line to `reviews.jsonl` has skipped the proof gate and the
+self-review check together; one that can append to `retro_inbox.jsonl` can put
+words in a teammate's retrospective; one that can edit `roster.json` can grant
+itself the rest. This closes retro-inbox forgery by construction rather than by
+validation, which is the cheaper kind of closed. `lifecycle.grant_workspace`
+refuses a path containing the team directory, and `agyteam.doctor` fails on one
+already in the roster. Keep the team directory out of every working tree — if
+they are co-located, move it with `AGYTEAM_DURABLE_DIR`, because a record
+inside the workspace is a record its subject can edit.
 
 **Read this part before you trust a grant.** Workspace confinement is
 enforced by `SdkRunner`. Runners that drive an external host have no
@@ -167,7 +209,9 @@ whatever is driving the agents — the seam this repo's tests cannot reach —
 and prints what is actually wired: the resolved runner and its three
 capability flags, every bus tool called end to end with real arguments, a
 probe message written through the bus and then looked for in the directory
-the supervisor is about to read, and the first lines of a generated brief.
+the supervisor is about to read, whether any workspace grant reaches the team
+directory, whether the installed plugin is this code, and the first lines of a
+generated brief.
 
 Two host behaviours it exists to catch, both of which cost a day:
 
@@ -197,12 +241,33 @@ Two host behaviours it exists to catch, both of which cost a day:
   elsewhere, and `bench/convergence.py` now refuses to grade an episode with
   one turn and an empty bus.
 
+**The installed plugin is a second copy of this code, and it is the one the
+agents run.** Where agents run inside the CLI, the MCP tools are served by
+`~/.gemini/antigravity-cli/plugins/agy-team/agyteam/`, not by this repo.
+Nothing in this suite can see that copy. We found one pinned to a commit from
+before the review gate checked authorship at all — it recorded a self-review,
+with no `author` field, as approved — while every test here asserted the gate
+held. Its proof gate also pointed at an absolute venv path from a machine it
+had been built on, so it rejected every proof it was given. `agyteam.doctor`
+now compares the install byte for byte with the repo and fails on drift, and
+`plugin/install.sh` derives its file list from the source instead of a
+hand-written one: the list had already gone stale, missing two modules that
+`mcp_bus` imports *inside a function*, so those tools raised ImportError on the
+installed copy alone. **After changing anything in `agyteam/`, reinstall before
+you measure anything.**
+
 ## Known sharp edges
 
 - **`python -m` puts the current directory ahead of `PYTHONPATH`.** Launched
   from the wrong directory, you will import a different checkout's `agyteam`
   than you think, and your fix will silently not be running. Always launch
   from the repo you mean.
+- **An editable install beats both.** `pip install -e` works through a
+  `sys.meta_path` finder, and meta_path is consulted before `sys.path` — so
+  inside a second checkout, `import agyteam.x` can resolve to the *first*
+  one even with the second at the front of the path. It bites exactly when you
+  are being careful: checking that a new test fails against an unpatched tree.
+  Confirm with `print(module.__file__)` rather than by reasoning about paths.
 - The cost display is an estimate from a pricing table in
   `agyteam/config.py`; it has never matched the real balance. Reconcile
   against your billing page, not the display.

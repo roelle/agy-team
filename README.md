@@ -180,9 +180,18 @@ python -m agyteam.doctor
 
 It calls every bus tool end to end with real arguments, writes a probe message
 through the bus and checks it lands in the directory the supervisor is about
-to read, prints the resolved runner and its three capability flags, and echoes
-the opening brief. Each of those exists because skipping it cost someone a
-day. A runner also declares what it *cannot* do — audit tool calls, contain
+to read, prints the resolved runner and its three capability flags, checks that
+no workspace grant reaches the team directory, compares the installed plugin
+with this repo file by file, and echoes the opening brief. Each of those exists
+because skipping it cost someone a day.
+
+The install comparison is the one to run after every change under `agyteam/`.
+Inside the CLI the MCP tools are served by the *installed* copy, not by this
+repo, and an install that is behind fails nothing and reports nothing — it just
+runs the code you stopped believing in. Reinstall with `bash plugin/install.sh`
+before you measure anything.
+
+A runner also declares what it *cannot* do — audit tool calls, contain
 agents to workspaces, enforce roster `tools_off` — and tools that read those
 declarations report "could not look" rather than "found nothing". Say False
 where you mean False; it is the input other tools need, not a failing grade.
