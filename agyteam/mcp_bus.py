@@ -255,6 +255,61 @@ def _extract_crash_detail(proc: subprocess.CompletedProcess) -> str:
     return f"exit code {proc.returncode}"
 
 
+_PROOF_PY: tuple = ()          # resolved once; probing costs a subprocess
+
+
+def _proof_interpreter() -> tuple:
+    """An interpreter that can actually run pytest, and what was tried.
+
+    The proof gate is the one thing in this server that needs a third-party
+    package, and the plugin install is deliberately dependency-free -- pure
+    stdlib under a bare system python3. Where those two meet, pytest is absent,
+    and the gate used to report that as `proof_file did not pass (exit code
+    1)`. Measured on an installed plugin: a proof file containing one passing
+    test came back rejected, with the real reason -- "No module named pytest"
+    -- on a stderr nobody reads.
+
+    That is the failure this whole project is about, sitting inside its most
+    load-bearing check: a check that could not run, reported as a check that
+    found something. An agent reading that error does the rational thing and
+    rewrites a proof that was fine.
+
+    So: find an interpreter that can import pytest, or say plainly that the
+    gate did not run. Never both silently.
+    """
+    global _PROOF_PY
+    if _PROOF_PY:
+        return _PROOF_PY
+
+    candidates, tried = [], []
+    env_py = os.environ.get("AGYTEAM_PROOF_PYTHON")
+    if env_py:
+        candidates.append(env_py)
+    # The repo this module lives in, then the working tree the agent is in.
+    # Never a machine-specific absolute path: this file travels, and one that
+    # was baked in shipped to a machine where the path did not exist.
+    candidates.append(str(_REPO_ROOT / ".venv" / "bin" / "python"))
+    candidates.append(str(Path.cwd() / ".venv" / "bin" / "python"))
+    candidates.append(sys.executable)
+
+    for c in candidates:
+        if c in tried:
+            continue
+        tried.append(c)
+        if c != sys.executable and not Path(c).exists():
+            continue
+        try:
+            probe = subprocess.run([c, "-c", "import pytest"],
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            _PROOF_PY = (c, tried)
+            return _PROOF_PY
+    return (None, tried)
+
+
 def _record_review(t: Transport, a: dict) -> str:
     what = a.get("what", "")
     if not isinstance(what, str) or not what.strip():
@@ -333,12 +388,14 @@ def _record_review(t: Transport, a: dict) -> str:
         else:
             return f"[error: proof_file not found or not a file: '{proof_file}']"
 
-    # Run proofs with the repo's own venv when it exists (it has pytest and
-    # the project installed); otherwise whatever interpreter serves this
-    # module. Never a machine-specific absolute path -- this file travels.
-    python_bin = str(_REPO_ROOT / ".venv" / "bin" / "python")
-    if not Path(python_bin).exists():
-        python_bin = sys.executable
+    python_bin, tried = _proof_interpreter()
+    if python_bin is None:
+        return ("[error: the review gate could not run: no interpreter with "
+                "pytest was found, so this proof was never executed and the "
+                "review has NOT been recorded. This is an environment failure, "
+                "not a verdict on the work. Tried: " + ", ".join(tried) +
+                ". Set AGYTEAM_PROOF_PYTHON to a python that can "
+                "`import pytest`.]")
 
     try:
         proc = subprocess.run(
