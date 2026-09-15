@@ -27,6 +27,28 @@ def resolve_team_dir(team_dir: str | Path | None = None) -> Path:
     return scope.load().team_dir()
 
 
+def covers_team_dir(workspace: str | Path, team_dir: str | Path) -> bool:
+    """Would a grant of `workspace` put the team directory in reach?
+
+    Every file in the team directory -- bus.jsonl, reviews.jsonl,
+    retro_inbox.jsonl, NORMS.md, roster.json, conversations.json -- is written
+    by an agyteam process and read back as the record of what happened. None of
+    it is ever written by an agent's file tools: the MCP servers are separate
+    processes with their own filesystem access, so an agent needs no write
+    permission there to do anything it is supposed to do.
+
+    Which means a grant that reaches it buys nothing and costs the gate. An
+    agent that can append to reviews.jsonl does not need to pass the review
+    gate, one that can append to retro_inbox.jsonl can put words in a
+    teammate's retrospective, and one that can edit roster.json can grant
+    itself the rest. The record has to be somewhere the subject of the record
+    cannot reach.
+    """
+    ws = Path(workspace).expanduser().resolve()
+    td = Path(team_dir).expanduser().resolve()
+    return ws == td or ws in td.parents
+
+
 def grant_workspace(workspace: str | Path, agent: str | None = None,
                     team_dir: str | Path | None = None) -> dict:
     """Grant a workspace directory path to the team or a specific agent."""
@@ -35,6 +57,15 @@ def grant_workspace(workspace: str | Path, agent: str | None = None,
     roster_path = td / "roster.json"
     doc = roster_lib.load(roster_path)
     res_ws = str(Path(workspace).expanduser().resolve())
+    if covers_team_dir(res_ws, td):
+        raise ValueError(
+            f"refusing to grant '{res_ws}': it contains the team directory "
+            f"({td}), whose files are the record this team is judged on. "
+            f"Agents write there through the bus tools, which run in a "
+            f"separate process and need no grant. Grant the working tree "
+            f"instead -- and if the team directory sits inside that tree, move "
+            f"it out (AGYTEAM_DURABLE_DIR), because a record kept inside the "
+            f"workspace is a record its subject can edit.")
     if agent:
         found = False
         for a in doc.get("agents", []):
