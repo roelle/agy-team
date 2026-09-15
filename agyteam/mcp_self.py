@@ -106,10 +106,30 @@ def my_capabilities(agent: str, scopes: scope.Scopes | None = None, team_dir: Pa
         lines.append(f"Roster declaration: agent '{agent}' not found in roster.json")
         return "\n".join(lines)
 
+    # Whether the roster's restrictions are enforced is a property of the
+    # runner, and this server is the one reader that acts on the answer.
+    # Stating tools_off as settled fact was false on every runner but one: a
+    # manager told "disabled tools: create_file, edit_file" ran `sed -i` on
+    # the fixture it was auditing, having been given a shell and a roster
+    # entry that only described a boundary.
+    try:
+        from .runner import capabilities
+        scoped = capabilities().get("supports_capability_scoping")
+    except Exception:
+        scoped = None
+    enforcement = {
+        True: "enforced by the runner: the schema for these never reaches you",
+        False: "NOT enforced by this runner — this is your team's expectation "
+               "of you, not a boundary. Hold to it, and say so on the bus if "
+               "you find yourself about to break it",
+        None: "enforcement could not be determined from here",
+    }[scoped]
+
     tools_off = entry.get("tools_off")
     if tools_off:
         tools_str = ", ".join(tools_off) if isinstance(tools_off, list) else str(tools_off)
         lines.append(f"- disabled tools (tools_off): {tools_str}")
+        lines.append(f"  ({enforcement})")
     else:
         lines.append("- disabled tools (tools_off): none (no tools disabled in roster)")
 

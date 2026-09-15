@@ -37,11 +37,14 @@ WORKER = types.SubagentConfig(
 
 class SdkRunner(Runner):
     label = "sdk"
-    # Both are real here: the audit hook is installed per session in
-    # sdk_agent.build_config, and workspaces are enforced by the SDK at the
-    # capability level rather than by instruction.
+    # All three are real here: the audit hook is installed per session in
+    # sdk_agent.build_config, workspaces are enforced by the SDK at the
+    # capability level rather than by instruction, and roster `tools_off` /
+    # `workers` reach build_config as disabled_tools, so the schema for a
+    # withheld tool never reaches the model.
     supports_audit = True
     supports_containment = True
+    supports_capability_scoping = True
 
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)

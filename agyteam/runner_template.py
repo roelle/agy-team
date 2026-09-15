@@ -77,6 +77,7 @@ class MyRunner(Runner):
     # actually implemented the mechanism and watched it work.
     supports_audit = False
     supports_containment = False
+    supports_capability_scoping = False
 
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)

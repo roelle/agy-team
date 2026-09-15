@@ -107,9 +107,9 @@ class Runner(ABC):
 
     ## Capability flags
 
-    Two properties this project documents as invariants are provided by the
+    Three properties this project documents as invariants are provided by the
     *runner*, not by the core. A runner that cannot provide one must say so
-    rather than let an operator assume otherwise. Both default to False,
+    rather than let an operator assume otherwise. All default to False,
     because the honest default for "can you do this?" is no.
 
     The point is not to rank runners. It is that a check which could not run
@@ -137,6 +137,19 @@ class Runner(ABC):
     #: belongs to whoever owns the process; agyteam should say so plainly
     #: rather than imply a guarantee it is not making.
     supports_containment = False
+
+    #: True if this runner enforces roster capability scoping -- `tools_off`
+    #: and `workers` -- by withholding the tool schema from the model. This is
+    #: the load-bearing half of "roles are enforced by capability, not
+    #: instruction", and it was undeclared while the introspection server told
+    #: every agent its `tools_off` list as settled fact. Measured: a manager
+    #: whose roster entry read tools_off: [create_file, edit_file] and "Does
+    #: not write the work" ran `sed -i` on the fixture it was auditing. Prose
+    #: that says "please don't" decays under deadline pressure; a schema the
+    #: model never sees cannot be reached for. On a runner where nothing
+    #: withholds it, the roster entry is a statement of intent, and anything
+    #: reporting it must say which of the two it is.
+    supports_capability_scoping = False
 
     def __init__(self, config: dict | None = None, observer=None):
         self.config = config or {}
@@ -195,16 +208,77 @@ class Runner(ABC):
         self.conversations_path.write_text(
             json.dumps(convs, indent=2, sort_keys=True))
 
+    @property
+    def retired_path(self):
+        return self.team_dir / "conversations_retired.jsonl"
+
     def reset(self, agent: str | None = None) -> None:
-        """Forget stored conversations so the next wake starts fresh."""
-        if agent is None:
-            convs = {}
-        else:
-            convs = self.conversations()
-            convs.pop(agent, None)
+        """Forget stored conversations so the next wake starts fresh.
+
+        The id is retired, not discarded. Dropping it is what `--cycle-all`
+        did: conversations.json was observed shrinking from five agents to two
+        to one across a single run, after which `python -m agyteam.session
+        <agent>` found nobody -- which is precisely the failure the base class
+        exists to prevent ("the SDK runner once wrote its sessions into the
+        CLI's conversation store without recording their ids, so they existed
+        but nobody could find them"). Anything that reverse-maps a
+        conversation id back to an agent -- audit attribution, containment --
+        fails open for a cycled agent otherwise, silently.
+        """
+        convs = self.conversations()
+        retiring = (list(convs.items()) if agent is None
+                    else [(agent, convs[agent])] if agent in convs else [])
+        if retiring:
+            try:
+                self.retired_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.retired_path.open("a", encoding="utf-8") as f:
+                    for name, cid in retiring:
+                        f.write(json.dumps({
+                            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "agent": name, "conversation": cid}) + "\n")
+            except OSError:
+                pass            # bookkeeping must not block the reset
+        convs = {} if agent is None else {k: v for k, v in convs.items()
+                                          if k != agent}
         self.conversations_path.parent.mkdir(parents=True, exist_ok=True)
         self.conversations_path.write_text(
             json.dumps(convs, indent=2, sort_keys=True))
+
+    def retired_conversations(self) -> list[dict]:
+        """Every conversation this team has cycled, oldest first."""
+        try:
+            text = self.retired_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
+
+    def agent_for_conversation(self, conv_id: str) -> str | None:
+        """Which agent a conversation id belongs to, live or retired.
+
+        Attribution must survive a cycle. A host that hands back a
+        conversation id and asks whose it is gets an answer for an agent that
+        was cycled an hour ago, rather than None and a guess.
+        """
+        if not conv_id:
+            return None
+        for agent, cid in self.conversations().items():
+            if cid == conv_id:
+                return agent
+        for rec in reversed(self.retired_conversations()):
+            if rec.get("conversation") == conv_id:
+                return rec.get("agent")
+        return None
 
     def recycle_agent(self, agent: str, reason: str = "") -> None:
         """Explicitly terminate and recycle an agent session. Default calls reset."""
@@ -240,6 +314,46 @@ class Runner(ABC):
                 self._observer.close()
             except Exception:
                 pass
+
+
+CAPABILITIES = ("supports_audit", "supports_containment",
+                "supports_capability_scoping")
+
+
+def capabilities(spec: str | None = None) -> dict:
+    """What the configured runner declares, without constructing it.
+
+    Returns each flag as True, False, or None for "could not tell" -- the
+    third state is the point. The obvious version of this, calling load(spec)
+    inside `except Exception`, does not survive contact with the loader:
+    load() signals every misconfiguration with SystemExit, which is a
+    BaseException and passes straight through. A grader that wrapped it that
+    way exited 1 with no score at all when AGYTEAM_RUNNER named a runner whose
+    constructor complained -- turning a tool that reports blindness honestly
+    into one that refuses to grade, which is a worse failure than the one it
+    was written to fix.
+
+    Reading the class attribute also avoids building a client, opening a
+    session or requiring an API key to answer a question about a declaration.
+    """
+    spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
+    out = {"spec": spec, "error": None}
+    out.update({flag: None for flag in CAPABILITIES})
+    try:
+        if ":" not in spec:
+            raise ValueError(f"expected 'module:Class', got {spec!r}")
+        mod_name, _, cls_name = spec.partition(":")
+        cls = getattr(importlib.import_module(mod_name), cls_name)
+        if not isinstance(cls, type) or not issubclass(cls, Runner):
+            raise TypeError(f"{spec} is not an agyteam.runner.Runner subclass")
+        for flag in CAPABILITIES:
+            value = getattr(cls, flag, None)
+            # A property object on the class (MixedRunner computes its flags
+            # per agent) cannot be read without an instance. Unknown, not False.
+            out[flag] = bool(value) if isinstance(value, bool) else None
+    except BaseException as e:      # noqa: BLE001 - SystemExit included, deliberately
+        out["error"] = f"could not inspect runner {spec!r}: {type(e).__name__}: {e}"
+    return out
 
 
 def load(spec: str | None = None, config: dict | None = None) -> Runner:

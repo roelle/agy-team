@@ -98,10 +98,23 @@ def task_prompt(name: str, staged_dir: Path) -> str:
             "and do not ask me to confirm a plan.")
 
 
+DEFAULT_RUNNER = "agyteam.runner_sdk:SdkRunner"
+
+
+def runner_spec() -> str:
+    """Honour AGYTEAM_RUNNER, defaulting to the SDK runner.
+
+    It was hardcoded here, in the same commit that made runners pluggable, so
+    the one script that measures whether the system learns could only ever
+    measure one runtime.
+    """
+    return os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
+
+
 def sup(team: str, audit: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ,
                AGYTEAM_TEAM=team,
-               AGYTEAM_RUNNER="agyteam.runner_sdk:SdkRunner",
+               AGYTEAM_RUNNER=runner_spec(),
                AGYTEAM_AUDIT_LOG=audit)
     return subprocess.run(
         [sys.executable, "-m", "agyteam.supervisor", *args],
@@ -122,6 +135,15 @@ def rows(path: Path, since: str) -> list[dict]:
     return out
 
 
+def line_count(path: Path) -> int:
+    """Lines in the audit log, used to bound one run's slice of it exactly."""
+    try:
+        with Path(path).open("rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
 def process_metrics(team_dir: Path, since: str) -> dict:
     bus = rows(team_dir / "bus.jsonl", since)
     reviews = rows(team_dir / "reviews.jsonl", since)
@@ -133,34 +155,107 @@ def process_metrics(team_dir: Path, since: str) -> dict:
     lateral = [e for e in bus
                if frm(e) not in ("manager", "tpm", "user", "supervisor")
                and e.get("to") not in ("manager", "tpm", "user")]
-    approved = [e for e in reviews if e.get("verdict") == "approved"]
+    # Governance records (a retro adopting a norm) are not work reviews and
+    # must not count toward "was this work checked".
+    approved = [e for e in reviews if e.get("verdict") == "approved"
+                and e.get("kind", "work") == "work"]
     # Self-review was invisible until the record gained an "author" field
     # (the first cold run's manager approved her own audit and nothing
     # structural could see it). record_review now refuses reviewer==author
     # outright; this metric exists to catch records from older code and any
     # future regression of that refusal.
-    reviewed_first = bool(approved and to_user and
-                          approved[0]["ts"] <= to_user[0]["ts"])
     self_approved = [e for e in approved
                      if e.get("author") in (None, e.get("reviewer"))]
+    unverified = [e for e in approved if e.get("author_verified") is False]
+
+    # One boolean used to carry two different questions, and answered neither.
+    # `approved[0].ts <= to_user[0].ts` compares against the FIRST message to
+    # the user, so a team that answers early, gets bounced by the supervisor,
+    # deliberates, earns a review and re-answers scores identically to a team
+    # that answers once and is never reviewed at all. Measured over 8
+    # controlled reps: False 8/8 in both arms. A metric that cannot separate
+    # the arms is not measuring anything.
+    #
+    # Split them. "Did the manager jump the gate" is about the first answer;
+    # "did the answer the user kept carry an approval" is about the last.
+    first_answer = to_user[0]["ts"] if to_user else None
+    last_answer = to_user[-1]["ts"] if to_user else None
     return {
         "self_or_authorless_approvals": len(self_approved),
+        "unverified_author_approvals": len(unverified),
         "messages": len(bus),
         "manager_delegated_to": delegated,
         "lateral_messages": len(lateral),
         "reviews": len(reviews),
-        "approved_review_before_answer": reviewed_first,
+        # the gate held on the first attempt
+        "answered_before_any_review": bool(
+            first_answer and not any(e["ts"] <= first_answer for e in approved)),
+        # the answer the user actually kept was backed by a review
+        "final_answer_was_reviewed": bool(
+            last_answer and any(e["ts"] <= last_answer for e in approved)),
         "answered_user": bool(to_user),
+        "answers_to_user": len(to_user),
     }
 
 
-def grade(task: str, since: str, team_dir: Path, audit: str, team: str) -> str:
+def grade(task: str, since: str, team_dir: Path, audit: str, team: str,
+          audit_from: int, audit_to: int) -> str:
     p = subprocess.run(
         [sys.executable, str(HERE / "grade.py"), task,
          "--since", since, "--team-dir", str(team_dir),
-         "--audit", audit, "--team", team],
+         "--audit", audit, "--team", team,
+         "--audit-from-line", str(audit_from),
+         "--audit-to-line", str(audit_to)],
         capture_output=True, text=True)
     return p.stdout + p.stderr
+
+
+def episode_summary(team_dir: Path, since: str) -> dict:
+    """Turns and seconds for the episodes in this window.
+
+    "If run A saturated the scale, judge on process and cost" was printed
+    beside no cost at all.
+    """
+    events = rows(team_dir / "events.jsonl", since)
+    eps = [e for e in events if e.get("event") == "episode"]
+    turns = [e for e in events if e.get("event") == "turn"]
+    return {
+        "turns": sum(int(e.get("turns") or 0) for e in eps) or len(turns),
+        "model_seconds": round(sum(float(e.get("duration_s") or 0)
+                                   for e in turns), 1),
+        "episode_seconds": round(sum(float(e.get("duration_s") or 0)
+                                     for e in eps), 1),
+    }
+
+
+def check_containment(stage: Path) -> None:
+    """Refuse to stage an answer key behind a guarantee the runner disclaims.
+
+    The staging step sets each agent's `workspaces` to the fixture directory
+    and the docstring says "the keys stay unreachable" -- which is exactly
+    what supports_containment = False declares does not work. On such a runner
+    the keys sit in this repo, readable, and the run produces a perfect score
+    that means nothing. verify_fixtures.py already refuses to measure with a
+    rotted instrument; this is the same refusal one step earlier.
+    """
+    sys.path.insert(0, str(REPO))
+    from agyteam.runner import capabilities
+    caps = capabilities(runner_spec())
+    if caps["supports_containment"] is True:
+        return
+    why = ("declares supports_containment = False"
+           if caps["supports_containment"] is False
+           else f"could not be inspected ({caps['error']})")
+    sys.exit(
+        f"runner {caps['spec']} {why}.\n"
+        f"Staging the fixtures at {stage} does not make bench/keys/ "
+        f"unreachable on this runner: roster `workspaces` are advisory here "
+        f"and the keys are readable in the repo.\n"
+        f"A benchmark the subject can read is not a benchmark. Either run "
+        f"this under a runner that enforces containment, or enforce it where "
+        f"the process lives -- filesystem permissions, a container, a "
+        f"separate account -- and copy the fixtures somewhere the keys are "
+        f"not.")
 
 
 def main() -> int:
@@ -180,13 +275,15 @@ def main() -> int:
                  "may have memories.")
 
     stage = Path(tempfile.mkdtemp(prefix="bench-stage-"))
-    print(f"cold team: {team_root}\nstaging:   {stage}\n")
+    print(f"cold team: {team_root}\nstaging:   {stage}\n"
+          f"runner:    {runner_spec()}\n")
 
     verify = subprocess.run([sys.executable, str(HERE / "verify_fixtures.py")],
                             capture_output=True, text=True)
     if verify.returncode != 0:
         sys.exit("bench fixtures are not intact; refusing to measure with a "
                  "rotted instrument:\n" + verify.stdout + verify.stderr)
+    check_containment(stage)
 
     reports = []
     for i, (task, fixdir) in enumerate(TASKS):
@@ -203,15 +300,39 @@ def main() -> int:
         since = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         label = "A (cold)" if i == 0 else "B (after retro + cycle)"
         print(f"=== run {label}: {task}, since {since} ===")
+        audit_from = line_count(Path(a.audit))
         p = sup(a.team, a.audit, "--say",
                 f"manager: {task_prompt(task, run_stage)}")
+        audit_to = line_count(Path(a.audit))
         if p.returncode != 0:
             print(p.stdout[-2000:], p.stderr[-2000:], sep="\n")
             sys.exit(f"run {label} failed; not grading a run that did not "
                      "happen")
 
-        print(grade(task, since, team_dir, a.audit, a.team))
         metrics = process_metrics(team_dir, since)
+        episode = episode_summary(team_dir, since)
+        metrics.update(episode)
+        # returncode != 0 does not mean the run happened. The supervisor exits
+        # 0 on "team went idle", which is what an episode looks like when the
+        # agents' bus servers are bound to a different team directory: every
+        # run ends "[done after 1 turns - team went idle]" and eight of them
+        # completed in sixteen minutes, producing a full set of meaningless
+        # scores. The script already computed both facts below and read
+        # neither.
+        if episode["turns"] <= 1 and not metrics["answered_user"]:
+            print(p.stdout[-2000:], p.stderr[-2000:], sep="\n")
+            sys.exit(
+                f"run {label} exited 0 but did not happen: "
+                f"{episode['turns']} turn(s), {metrics['messages']} bus "
+                f"message(s), nothing addressed to the user.\n"
+                f"A supervisor exits 0 when the team goes idle, so this is "
+                f"not a model failure. Check that the agents' bus is bound to "
+                f"{team_dir} -- a server process started against a previous "
+                f"team keeps its environment and writes to the old team's "
+                f"bus, where this run will never see it.")
+
+        print(grade(task, since, team_dir, a.audit, a.team,
+                    audit_from, audit_to))
         reports.append((label, task, metrics))
         print("process:", json.dumps(metrics, indent=2), "\n")
 
@@ -230,7 +351,27 @@ def main() -> int:
     for label, task, m in reports:
         print(f"  run {label}: delegated to {m['manager_delegated_to'] or 'nobody'}, "
               f"{m['lateral_messages']} lateral, "
-              f"review-before-answer={m['approved_review_before_answer']}")
+              f"gate-jumped={m['answered_before_any_review']}, "
+              f"final-answer-reviewed={m['final_answer_was_reviewed']}, "
+              f"{m['turns']} turns, {m['model_seconds']}s model, "
+              f"{m['episode_seconds']}s wall")
+
+    # Print the delta, because the derivative is the claim. Saying "judge on
+    # cost" and then printing no cost leaves the reader to do arithmetic the
+    # script already has the numbers for.
+    if len(reports) == 2:
+        (_, _, a_m), (_, _, b_m) = reports
+        print("\n  B - A:")
+        for field in ("turns", "model_seconds", "episode_seconds",
+                      "lateral_messages", "messages"):
+            delta = b_m[field] - a_m[field]
+            better = "cheaper" if field.endswith(("turns", "seconds")) else "more"
+            direction = "" if delta == 0 else (
+                f" ({better})" if (delta < 0) == field.endswith(("turns", "seconds"))
+                else "")
+            print(f"    {field}: {a_m[field]} -> {b_m[field]} "
+                  f"({delta:+g}){direction}")
+
     print("\nContent scores are above, printed per run. If run A saturated "
           "the scale, judge on process and cost; the level tells you the "
           "team is good, only the derivative tells you the system is "

@@ -145,6 +145,45 @@ def test_unconventional_team_dir_name_does_not_collide():
         os.environ.update(saved)
 
 
+def test_explicit_durable_dir_is_used_verbatim():
+    """load() promises it; durable_root() silently overrode it.
+
+    The fix for the cross-team memory collision derived the durable root from
+    the team directory unconditionally, so AGYTEAM_DURABLE_DIR stopped having
+    any effect the moment AGYTEAM_TEAM_DIR was also set. Nothing warned,
+    because nothing downstream can tell the difference. The file contradicted
+    itself two functions apart: "an explicit durable path wins outright and is
+    used verbatim" sat above the code that ignored it.
+    """
+    saved = dict(os.environ)
+    try:
+        root = Path(tempfile.mkdtemp())
+        _isolate({"AGYTEAM_TEAM_DIR": str(root / "teamA" / "team"),
+                  "AGYTEAM_DURABLE_DIR": str(root / "CUSTOM")})
+        s = scope.load()
+        assert s.team_dir() == root / "teamA" / "team"
+        assert s.agent_workspace("coder") == root / "CUSTOM" / "agents" / "coder"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_derived_durable_still_follows_the_team_dir():
+    """And the collision that change fixed stays fixed when durable is implicit."""
+    saved = dict(os.environ)
+    try:
+        root = Path(tempfile.mkdtemp())
+        got = []
+        for name in ("teamA", "teamB"):
+            _isolate({"AGYTEAM_TEAM_DIR": str(root / name / "team")})
+            got.append(scope.load().agent_workspace("coder"))
+        assert got == [root / "teamA" / "agents" / "coder",
+                       root / "teamB" / "agents" / "coder"]
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))

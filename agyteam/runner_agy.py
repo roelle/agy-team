@@ -54,8 +54,11 @@ class AgyRunner(Runner):
     # at all: no grants, no confinement, nothing. Agents are bounded by
     # whatever permission model the CLI itself applies, which agyteam neither
     # configures nor observes, so roster `workspaces` do nothing here.
+    # Nor does anything here withhold a tool schema: roster `tools_off` is
+    # read by the introspection server and by nothing that enforces it.
     supports_audit = False
     supports_containment = False
+    supports_capability_scoping = False
 
     def __init__(self, config=None, observer=None):
         super().__init__(config, observer=observer)

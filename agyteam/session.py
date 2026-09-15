@@ -24,6 +24,26 @@ from . import roster as roster_lib
 from . import scope
 
 
+def _last_retired(team_dir: Path, agent: str) -> str | None:
+    """When this agent was last cycled, from the retired-conversation log."""
+    try:
+        text = (team_dir / "conversations_retired.jsonl").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    stamps = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("agent") == agent:
+            stamps.append(rec.get("ts") or "")
+    return max(stamps) if stamps else None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="agyteam.session",
@@ -83,7 +103,21 @@ def main(argv=None) -> int:
     if conv_id:
         cmd += ["--conversation", conv_id]
     cmd += passthrough
-    where = f"conversation {conv_id[:8]}" if conv_id else "new conversation"
+    if conv_id:
+        where = f"conversation {conv_id[:8]}"
+    else:
+        # A cycled agent has no live conversation by design -- distillation
+        # pushed its learnings to memory and the next wake starts fresh. Say
+        # that, rather than opening a blank session that looks like the agent
+        # lost its history. Before conversations were retired rather than
+        # dropped, --cycle-all emptied this file and the only symptom was an
+        # agent that mysteriously remembered nothing.
+        retired = _last_retired(team_dir, args.agent)
+        if retired and not args.fresh:
+            print(f"[{args.agent} was cycled at {retired} — its learnings are "
+                  f"in memory and this starts a new conversation]",
+                  file=sys.stderr)
+        where = "new conversation"
     print(f"[{args.agent} — team {team_dir} — {where}]", file=sys.stderr)
     os.execve(resolved, cmd, env)   # replace this process; agy owns the tty
 

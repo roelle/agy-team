@@ -65,11 +65,23 @@ class MixedRunner(Runner):
         agent can read whatever the others are denied."""
         return all(self._sub(a).supports_containment for a in self._specs)
 
+    @property
+    def supports_capability_scoping(self) -> bool:
+        """True only if EVERY sub-runner withholds the schemas it is told to.
+
+        Weaker than the others look: an agent whose tools_off is unenforced
+        can do the thing the roster says it cannot, and the roster is what
+        every other agent reads to decide who to ask.
+        """
+        return all(self._sub(a).supports_capability_scoping for a in self._specs)
+
     def capability_report(self) -> dict:
         """Per-agent flags, so a mixed team can say exactly who is covered."""
         return {a: {"runner": self.runner_spec(a),
                     "supports_audit": self._sub(a).supports_audit,
-                    "supports_containment": self._sub(a).supports_containment}
+                    "supports_containment": self._sub(a).supports_containment,
+                    "supports_capability_scoping":
+                        self._sub(a).supports_capability_scoping}
                 for a in self._specs}
 
     def _sub(self, agent: str) -> Runner:

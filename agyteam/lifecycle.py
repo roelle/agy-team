@@ -170,37 +170,58 @@ def start_team(team_dir: str | Path | None = None) -> dict:
 def runner_capabilities() -> dict:
     """Which documented guarantees the configured runner actually provides.
 
-    Both are runner-provided, not core. An operator who reads "workspace
-    grants are the leak vector" or "tool calls are recorded where agents
-    cannot reach them" needs to know whether either mechanism exists on the
-    runtime they are about to use -- and listing granted `workspaces` without
-    this reads as "contained" to anyone skimming, on a runner where nothing
-    enforces it.
+    All three are runner-provided, not core. An operator who reads "workspace
+    grants are the leak vector", "tool calls are recorded where agents cannot
+    reach them" or "roles are enforced by capability, not instruction" needs
+    to know whether the mechanism exists on the runtime they are about to use
+    -- and listing granted `workspaces` without this reads as "contained" to
+    anyone skimming, on a runner where nothing enforces it.
+
+    Declarations are read off the class, never by constructing a runner: the
+    question is what a runner claims, and answering it must not need an API
+    key, a session, or a working configuration.
     """
-    from .runner import DEFAULT_RUNNER
-    spec = os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
-    out = {"spec": spec, "supports_audit": None, "supports_containment": None,
-           "audit_log": os.environ.get("AGYTEAM_AUDIT_LOG") or None}
-    try:
-        from .runner import load as load_runner
-        r = load_runner(spec)
-        out["supports_audit"] = bool(r.supports_audit)
-        out["supports_containment"] = bool(r.supports_containment)
-        if hasattr(r, "capability_report"):
-            out["per_agent"] = r.capability_report()
-    except Exception as e:
-        # Unknown is not the same as False, and neither is the same as True.
-        out["error"] = f"could not load runner {spec!r}: {e}"
+    from .runner import capabilities
+    out = capabilities()
+    out["audit_log"] = os.environ.get("AGYTEAM_AUDIT_LOG") or None
+    if out.get("error") is None:
+        out.pop("error")
+    # MixedRunner computes its flags per agent, so they are properties and
+    # unreadable off the class. It is the one runner worth constructing for,
+    # and it is cheap; anything that goes wrong leaves the flags as None.
+    if any(out.get(f) is None for f in ("supports_audit",
+                                        "supports_containment",
+                                        "supports_capability_scoping")):
+        try:
+            from .runner import load as load_runner
+            r = load_runner(out["spec"])
+            for flag in ("supports_audit", "supports_containment",
+                         "supports_capability_scoping"):
+                if out.get(flag) is None:
+                    out[flag] = bool(getattr(r, flag))
+            if hasattr(r, "capability_report"):
+                out["per_agent"] = r.capability_report()
+        except BaseException as e:      # noqa: BLE001 - SystemExit included
+            out.setdefault("error", f"could not load runner "
+                                    f"{out['spec']!r}: {type(e).__name__}: {e}")
     notes = []
     if out["supports_containment"] is False:
         notes.append("workspace grants have NO effect on this runner; "
                      "containment is whatever the host enforces")
+    if out["supports_capability_scoping"] is False:
+        notes.append("roster tools_off/workers are NOT enforced on this "
+                     "runner; they are a statement of intent, not a boundary")
     if out["supports_audit"] is False:
         notes.append("tool calls are not recorded; graders cannot show "
                      "evidence and must not report its absence as a finding")
     elif out["supports_audit"] and not out["audit_log"]:
         notes.append("this runner can audit but AGYTEAM_AUDIT_LOG is unset, "
                      "so no record is being written")
+    if any(out.get(f) is None for f in ("supports_audit",
+                                        "supports_containment",
+                                        "supports_capability_scoping")):
+        notes.append("one or more capabilities could not be determined; "
+                     "treat them as unknown, not as absent")
     if notes:
         out["warnings"] = notes
     return out
@@ -587,13 +608,21 @@ def main(argv: list[str] | None = None) -> int:
                       f"({mark})")
                 print(f"Runner: {rc.get('spec', '?')} "
                       f"[audit={rc.get('supports_audit')}, "
-                      f"containment={rc.get('supports_containment')}]")
+                      f"containment={rc.get('supports_containment')}, "
+                      f"tool-scoping={rc.get('supports_capability_scoping')}]")
                 for w in rc.get("warnings", []):
                     print(f"  ! {w}")
+                # Same rule as the grant list: a roster restriction printed
+                # without its enforcement status reads as a boundary.
+                scoped = rc.get("supports_capability_scoping")
+                off_mark = {True: "", False: " NOT ENFORCED",
+                            None: " enforcement unknown"}[scoped]
                 print("Agents:")
                 for a in res["agents"]:
                     aws = f" [workspaces: {', '.join(a.get('workspaces', []))}]" if a.get("workspaces") else ""
-                    print(f"  - {a['name']}: {a.get('role', '')}{aws}")
+                    off = a.get("tools_off")
+                    aoff = f" [tools_off: {', '.join(off)}{off_mark}]" if off else ""
+                    print(f"  - {a['name']}: {a.get('role', '')}{aws}{aoff}")
                 gh = res.get("git_hygiene")
                 if gh and (gh.get("is_git") or gh.get("error")):
                     from .git_hygiene import format_hygiene_report

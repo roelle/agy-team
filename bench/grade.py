@@ -30,11 +30,19 @@ READ_ONLY = re.compile(
     r"git\s+(status|log|diff|show))\b")
 
 
-def rows(path: Path, since: str) -> list[dict]:
+def rows(path: Path, since: str, from_line: int | None = None,
+         to_line: int | None = None) -> list[dict]:
+    """Parsed JSONL at or after `since`, optionally restricted to a line range.
+
+    The line range is how a run is separated from the run before it in a
+    shared append-only log; timestamps alone are too coarse.
+    """
     if not path.exists():
         return []
+    lines = path.read_text(errors="replace").splitlines()
+    lines = lines[(from_line or 0):(to_line if to_line is not None else len(lines))]
     out = []
-    for line in path.read_text(errors="replace").splitlines():
+    for line in lines:
         try:
             e = json.loads(line)
         except Exception:
@@ -42,6 +50,15 @@ def rows(path: Path, since: str) -> list[dict]:
         if (e.get("ts") or "").replace("T", " ") >= since:
             out.append(e)
     return out
+
+
+def line_count(path: Path) -> int:
+    """Lines in an append-only file; 0 when it does not exist yet."""
+    try:
+        with Path(path).open("rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
 
 
 def main() -> int:
@@ -52,6 +69,17 @@ def main() -> int:
     ap.add_argument("--audit", default=str(Path.home() / "agy-lab-notes/audit.jsonl"))
     ap.add_argument("--team", help="only count audit rows tagged with this team "
                     "(rows written before the tag existed are kept)")
+    # --since is minute-granular and the audit log is one global file, so two
+    # runs started inside the same minute grade each other's commands.
+    # Measured over 8 back-to-back reps: every rep's window contained foreign
+    # stage-directory references, one of them 31 own rows against 3 borrowed.
+    # It was harmless there only because the affected checks were saturated;
+    # for any A/B use of the bench it is a cross-arm leak in the scoring path.
+    # Line bounds are exact, and an append-only file makes them stable.
+    ap.add_argument("--audit-from-line", type=int, default=None,
+                    help="ignore audit rows before this 0-based line")
+    ap.add_argument("--audit-to-line", type=int, default=None,
+                    help="ignore audit rows at or after this 0-based line")
     a = ap.parse_args()
 
     key = json.loads((HERE / "keys" / f"{a.task}.json").read_text())
@@ -76,15 +104,24 @@ def main() -> int:
     else:
         runner_spec = os.environ.get("AGYTEAM_RUNNER", "")
         if runner_spec:
-            try:
-                from agyteam.runner import load as load_runner
-                if not load_runner(runner_spec).supports_audit:
-                    blind = (f"runner {runner_spec} declares supports_audit = "
-                             "False: it cannot record tool calls")
-            except Exception:
-                pass        # cannot introspect it; fall through to the file
+            # Read the declaration off the class. Constructing the runner
+            # inside `except Exception` was a regression introduced by the
+            # commit that added this very handling: agyteam.runner.load()
+            # signals every misconfiguration with SystemExit, a BaseException,
+            # which passes straight through. One bad AGYTEAM_RUNNER turned the
+            # grader from "reports blindness honestly" into "exit 1, no score
+            # at all" -- a worse failure than the one it was written to fix.
+            from agyteam.runner import capabilities
+            caps = capabilities(runner_spec)
+            if caps["supports_audit"] is False:
+                blind = (f"runner {runner_spec} declares supports_audit = "
+                         "False: it cannot record tool calls")
+            elif caps["supports_audit"] is None:
+                blind = (f"could not read the capabilities of runner "
+                         f"{runner_spec} ({caps['error']}); unknown is not "
+                         f"the same as audited")
 
-    audit = rows(audit_path, a.since)
+    audit = rows(audit_path, a.since, a.audit_from_line, a.audit_to_line)
     if a.team:
         # Two teams can share the audit file and their agent names can
         # collide; without this filter one team's shell activity is graded
@@ -92,6 +129,11 @@ def main() -> int:
         audit = [e for e in audit if e.get("team", a.team) == a.team]
 
     said = "\n".join((e.get("content") or "") for e in bus)
+    # An audit nobody was told about is not an audit. One rep scored 9/9 with
+    # an empty to_user -- its whole bus was tpm -> manager -- because the
+    # grader scores text and shell commands and never asked whether an answer
+    # was delivered. Same species as grading a run that did not happen.
+    answered_user = any(e.get("to") == "user" for e in bus)
     cmds = [e.get("args", {}).get("CommandLine", "") for e in audit
             if e.get("tool") == "run_command"]
     executed = [c for c in cmds if c and not READ_ONLY.match(c)]
@@ -102,6 +144,12 @@ def main() -> int:
     else:
         print(f"{len(bus)} bus messages, {len(cmds)} shell commands "
               f"({len(executed)} of them not read-only)\n")
+
+    if not bus:
+        print(">> NO BUS ACTIVITY in this window. Either the run did not "
+              "happen, or it wrote to a different team directory than the one "
+              f"being graded ({a.team_dir}). Refusing to score it.")
+        return 2
 
     found = 0
     print("-- defects planted, and verified present before the run --")
@@ -172,6 +220,11 @@ def main() -> int:
         if found == len(key["defects"]) and not executed:
             print(">> every defect named and nothing executed. Check whether "
                   "the key leaked into a workspace before believing this score.")
+    if not answered_user:
+        print(">> THE USER WAS NEVER ANSWERED. Nothing in this window is "
+              "addressed to 'user', so whatever the team found, it did not "
+              "deliver. Treat the score above as a measure of internal "
+              "activity only.")
     return 0
 
 

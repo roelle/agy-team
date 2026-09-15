@@ -77,16 +77,29 @@ class Scopes:
     # another. The supervisor papered over it by writing BOTH env vars at
     # startup, which fixed its own process and left every other caller split.
     team_dir_override: Path | None = None
+    # Whether `durable` was named outright (AGYTEAM_DURABLE_DIR, the config
+    # file, or an argument) rather than derived from the teams root. load()
+    # promises an explicit path is "used verbatim"; without this flag
+    # durable_root() silently ignored it whenever AGYTEAM_TEAM_DIR was also
+    # set, and the file contradicted itself two functions apart.
+    durable_explicit: bool = False
 
     def durable_root(self) -> Path:
         """The directory that holds BOTH `team/` and `agents/` for this team.
 
-        Derived from the team directory, because a team is the unit of
-        isolation: its roster, bus and its agents' memories have to move
-        together. When only AGYTEAM_TEAM_DIR was set, `durable` stayed at the
-        default and every team's agents landed in
-        ~/agy-teams/default/agents/<name> — two teams, one memory directory,
-        each reading the other's learnings, and no error anywhere.
+        Two rules, in order:
+
+        1. An explicitly named durable path wins, verbatim. That is what
+           AGYTEAM_DURABLE_DIR is for, and an operator who sets it and gets a
+           different directory has been lied to. Nothing warns, because
+           nothing can tell the difference later.
+        2. Otherwise derive from the team directory, because a team is the
+           unit of isolation: its roster, bus and its agents' memories have to
+           move together. When only AGYTEAM_TEAM_DIR was set, `durable` stayed
+           at the default and every team's agents landed in
+           ~/agy-teams/default/agents/<name> — two teams, one memory
+           directory, each reading the other's learnings, and no error
+           anywhere.
 
         Layout is <root>/team and <root>/agents, so a team dir named "team"
         means its root is the parent. A team dir named anything else is taken
@@ -94,7 +107,7 @@ class Scopes:
         parent from colliding.
         """
         td = self.team_dir_override
-        if td is None:
+        if td is None or self.durable_explicit:
             return self.durable
         return td.parent if td.name == "team" else td
 
@@ -165,7 +178,9 @@ def load(durable=None, project=None, shared=None, team=None) -> Scopes:
     exact = durable or os.environ.get("AGYTEAM_DURABLE_DIR") or cfg.get("durable")
     if exact:
         dur = _expand(exact)
+        explicit = True
     else:
+        explicit = False
         root = _expand(os.environ.get("AGYTEAM_TEAMS_ROOT")
                        or cfg.get("teams_root") or DEFAULT_TEAMS_ROOT)
         dur = root / tm
@@ -175,7 +190,8 @@ def load(durable=None, project=None, shared=None, team=None) -> Scopes:
     dur.mkdir(parents=True, exist_ok=True)
     override = os.environ.get("AGYTEAM_TEAM_DIR")
     return Scopes(durable=dur, project=proj, shared=shr, team=tm,
-                  team_dir_override=_expand(override) if override else None)
+                  team_dir_override=_expand(override) if override else None,
+                  durable_explicit=explicit)
 
 
 def team_dir(team_dir: Path | str | None = None,
