@@ -70,6 +70,19 @@ TOOLS = [
     tool("list_reviews",
          "List durable verification reviews recorded for this team.",
          {}),
+    tool("record_retro",
+         "Record your answers to the three retrospective questions. Call this "
+         "when asked to reflect, instead of (or as well as) writing the "
+         "answers in your reply — the retrospective reads this record "
+         "directly, and on some hosts your reply text never reaches it. "
+         "Each answer must be a real sentence grounded in the work record; "
+         "stubs like 'none' or 'n/a' are rejected.",
+         {"went_well": string("What went well, grounded in the record"),
+          "did_not": string("What did not go well, or cost more than it should"),
+          "should_change": string(
+              "One concrete change — a rule a gate could check, or an "
+              "explicit 'no change, and here is why'")},
+         ["went_well", "did_not", "should_change"]),
 ]
 
 # Roster mutation is off unless AGYTEAM_ROSTER_ADMIN=1 *and* the transport
@@ -398,6 +411,20 @@ def _record_review(t: Transport, a: dict) -> str:
             f"{proof_file}]{caveat}")
 
 
+def _record_retro(t: Transport, a: dict) -> str:
+    """Write one agent's retrospective answers where the retro can read them.
+
+    Validation lives in retro_store and runs here, at recording time, so a
+    stub comes back while the agent still has the context to answer properly.
+    """
+    from . import retro_store
+    return retro_store.record(
+        _team_dir(t), t.me,
+        a.get("went_well", ""), a.get("did_not", ""),
+        a.get("should_change", ""),
+        role=str(a.get("role") or "participant"))
+
+
 def _list_reviews(t: Transport) -> str:
     rev_path = _reviews_path(t)
     if not rev_path.exists():
@@ -546,6 +573,7 @@ def main(transport: Transport, admin: bool = False):
         "list_teammates": lambda a: _list_teammates(transport),
         "record_review": lambda a: _record_review(transport, a),
         "list_reviews": lambda a: _list_reviews(transport),
+        "record_retro": lambda a: _record_retro(transport, a),
     }
     tools = list(TOOLS)
     if admin and transport.supports_roster_admin:

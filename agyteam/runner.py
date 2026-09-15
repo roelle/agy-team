@@ -95,6 +95,16 @@ class Runner(ABC):
     the rest of the system depends on. See `wake` for what to return when no
     reply text exists.
 
+    That last sentence was false for one caller for some time, and the cost of
+    a contract nobody enforces is worth stating once: `retro()` parsed this
+    return value for its three sections, so on a runner honouring the contract
+    exactly, a full retrospective produced a report reading "(missing or
+    invalid)" and never wrote NORMS.md -- team-level learning silently did not
+    happen, while agent-level learning worked because distillation measures
+    files on disk. Retro answers now go to disk too (`agyteam/retro_store.py`,
+    the `record_retro` tool). Anything else that grows a dependency on reply
+    text is a bug in that caller, not a requirement on your runner.
+
     ## Capability flags
 
     Two properties this project documents as invariants are provided by the

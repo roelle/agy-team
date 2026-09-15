@@ -44,6 +44,7 @@ def repetition_ratio(text: str) -> float:
         return 1.0
     return len(raw) / max(len(zlib.compress(raw, 6)), 1)
 from . import persona
+from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
@@ -93,7 +94,12 @@ Reflect on this record and answer these three questions, in this exact order:
 3. What should we change
 
 Under "What should we change", provide concrete proposals or improvements for the team.
-Be specific, grounded in the record above, and direct."""
+Be specific, grounded in the record above, and direct.
+
+Record your answers with the record_retro tool:
+record_retro(went_well=..., did_not=..., should_change=...)
+That record is what the retrospective reads. On some hosts your reply text
+never reaches it, so an answer written only in your reply can be lost."""
 
 RETRO_LEADER_PROMPT = """You are leading the team retrospective on recent work.
 {tension_note}
@@ -117,7 +123,13 @@ OR
 - An explicit "no change, and here is why" explaining substantively why no norm change is needed.
 
 A retro that produces neither has failed and will be rejected.
-Be direct, constructive, and grounded in the record."""
+Be direct, constructive, and grounded in the record.
+
+Record your synthesis with the record_retro tool as well as writing it here:
+record_retro(went_well=..., did_not=..., should_change=...)
+with your NORMS.md change (or your reasoned "no change") in should_change.
+That record is what the retrospective reads. On some hosts your reply text
+never reaches it, so a synthesis written only in your reply can be lost."""
 
 Q1_RE = re.compile(
     r"(?im)^\s*(?:#+\s*)?(?:\*{0,2}\s*)?(?:1[\.\)]\s*)?(?:what\s+went\s+well)[\s\:\?\-\*]*"
@@ -1064,6 +1076,37 @@ class Supervisor:
         norms_path.write_text(new_content, encoding="utf-8")
         return norms_path
 
+    def _retro_no_content_error(self, leader: str, leader_reply: str,
+                                channels: dict) -> str:
+        """Say WHICH channel was empty, not just that the report failed.
+
+        The project's own rule about silent zeros, applied to itself. A
+        turn-completion signal means the agent answered and the supervisor
+        could not hear it; that is not the same as the agent saying nothing,
+        and a report that conflates them sends whoever reads it looking for a
+        model problem that is not there.
+        """
+        got_text = bool(leader_reply.strip()) and not leader_reply.startswith("[error:")
+        recorded = retro_store.path(self.team_dir).exists()
+        if not got_text and not recorded:
+            return (f"{leader} produced neither a recorded answer nor reply "
+                    f"text. The runner reported the turn ended but returned "
+                    f"nothing readable, and {retro_store.FILENAME} was never "
+                    f"written — so it cannot be told from here whether the "
+                    f"leader answered. If this runner cannot return "
+                    f"transcripts, check that record_retro reached the same "
+                    f"team directory the supervisor is reading "
+                    f"({self.team_dir}).")
+        if not got_text:
+            return (f"{leader} returned no reply text and recorded no "
+                    f"retrospective answer of its own this run "
+                    f"({channels['store']} teammate answer(s) were recorded). "
+                    f"Ask the leader to call record_retro.")
+        return ("Leader response failed to provide the three required "
+                "sections in order (1. What went well, 2. What did not, "
+                "3. What should we change), and no record_retro answer was "
+                "recorded to fall back on.")
+
     def _record_norm_review(self, reviewer: str, norm_change: str) -> dict:
         """Record an approved review in reviews.jsonl for the adopted norm change."""
         first_line = norm_change.strip().splitlines()[0].lstrip("#*- ").strip()
@@ -1204,6 +1247,11 @@ class Supervisor:
             if not self.quiet:
                 self._log(f"  → {capped_note}")
 
+        # Everything recorded from here on belongs to this retro. Taken before
+        # the first wake so a slow turn cannot land outside its own window.
+        retro_since = time.strftime("%Y-%m-%d %H:%M:%S")
+        channels = {"store": 0, "reply": 0}
+
         # Teammate reflections turn
         reflections = {}
         for agent in participants:
@@ -1225,6 +1273,16 @@ class Supervisor:
                 except Exception:
                     pass
 
+            # Disk first, transcript second. A runner that cannot return text
+            # is explicitly allowed by the Runner contract, and this was the
+            # one caller that quietly required it.
+            recorded = retro_store.latest_by_agent(self.team_dir, retro_since).get(agent)
+            if recorded:
+                reply = retro_store.as_reflection(recorded)
+                channels["store"] += 1
+            elif reply.strip() and not reply.startswith("[error:"):
+                channels["reply"] += 1
+
             if len(reply) > config.RETRO_MAX_REFLECTION_CHARS:
                 trunc_msg = "\n[... reflection truncated to character cap ...]"
                 keep_chars = max(0, config.RETRO_MAX_REFLECTION_CHARS - len(trunc_msg))
@@ -1233,7 +1291,8 @@ class Supervisor:
             reflections[agent] = reply
             if not self.quiet:
                 first = reply.strip().splitlines()[0] if reply.strip() else ""
-                self._log(f"    {agent}: {first[:120]}")
+                via = "recorded" if recorded else "reply text"
+                self._log(f"    {agent} ({via}): {first[:120]}")
 
         # Leader synthesis turn
         if reflections:
@@ -1269,9 +1328,21 @@ class Supervisor:
 
         retro_file = self.team_dir / "retro.md"
 
+        # Same precedence as the reflections: what the leader recorded beats
+        # what the leader said, because only one of the two is guaranteed to
+        # exist. Five agents woken and four minutes of model time produced a
+        # report reading "(missing or invalid)" three times over, on a runner
+        # doing exactly what the contract permits.
         sections = parse_retro_sections(leader_reply)
+        leader_record = retro_store.latest_by_agent(
+            self.team_dir, retro_since).get(leader)
+        if leader_record:
+            sections = parse_retro_sections(retro_store.as_reflection(leader_record))
+            channels["store"] += 1
+        elif sections:
+            channels["reply"] += 1
         if not sections:
-            err = "Leader response failed to provide the three required sections in order (1. What went well, 2. What did not, 3. What should we change)."
+            err = self._retro_no_content_error(leader, leader_reply, channels)
             report_text = format_retro_report(
                 leader=leader,
                 participants=participants,
