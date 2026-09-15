@@ -29,11 +29,25 @@ and the retry wrapper may re-run a turn that already succeeded.
 
 ## What you must declare
 
-Set the two capability flags honestly. They default to False, and False is not
-a failing grade — it is the input other tools need in order to tell "we could
-not look" apart from "there was nothing to find". A grader that reports a team
-checked nothing, when really the runner cannot observe tool calls, has produced
-the exact class of false finding this project exists to eliminate.
+Set the three capability flags honestly — `supports_audit`,
+`supports_containment`, `supports_capability_scoping`. They default to False,
+and False is not a failing grade: it is the input other tools need in order to
+tell "we could not look" apart from "there was nothing to find". A grader that
+reports a team checked nothing, when really the runner cannot observe tool
+calls, has produced the exact class of false finding this project exists to
+eliminate. The third one is the easiest to get wrong by omission: unless you
+withhold the schema for a tool listed in a roster's `tools_off`, the answer is
+False, and an agent will be told its restrictions are an expectation rather
+than a boundary.
+
+## Prove it with the eval matrix
+
+`evals/test_runner_columns.py` runs the core flows over two runner columns,
+one returning prose and one returning "". Point the minimal column at your
+runner and run the suite: **anything that passes under the rich column and
+fails under yours is a dependency on something no runner promised**, and so
+far every one of those has been a defect in agyteam rather than a shortcoming
+of the host. Report it rather than working around it.
 
 ## Two details that will bite you
 
