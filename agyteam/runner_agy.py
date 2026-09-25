@@ -36,7 +36,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .runner import Runner, with_retry
+from .runner import Runner, is_retryable
 
 PERMISSION_HINT = (
     'called a tool that needs approval, which headless mode cannot prompt for. '
@@ -189,17 +189,27 @@ class AgyRunner(Runner):
             return err
         self._resolved = resolved
         conv_id = self.conversation_id(agent) if self.persist else None
+
         # The brief goes in exactly once, on the turn that creates the
         # conversation; every later wake resumes a session that already has it.
-        if not conv_id:
-            message = f"{self._brief(agent)}\n\n---\n\n{message}"
+        def opening(msg):
+            return f"{self._brief(agent)}\n\n---\n\n{msg}"
+
         try:
-            r = self._run(agent, message, conv_id)
-            # A conversation can vanish (pruned, or a different team dir). One
-            # cold retry beats stranding the agent forever on a dead id.
-            if conv_id and r.returncode != 0:
+            r = self._run(agent, message if conv_id else opening(message), conv_id)
+            # A conversation can vanish (pruned, or a different team dir), and
+            # one cold retry beats stranding the agent on a dead id. Two things
+            # this used to get wrong. The retry reused a message that had no
+            # brief -- it was resuming, after all -- so the new conversation
+            # began with no identity, no tool signatures and no rules, and every
+            # later wake resumed that. And it retried on ANY failure, so a 503
+            # threw away the agent's whole context. A transient failure now
+            # keeps the conversation: the supervisor requeues the mail and the
+            # next wake resumes where the agent was.
+            if (conv_id and r.returncode != 0
+                    and not is_retryable(f"{r.stdout}\n{r.stderr}")):
                 self.reset(agent)
-                r = self._run(agent, message, None)
+                r = self._run(agent, opening(message), None)
         except subprocess.TimeoutExpired:
             err = f"[error: {agent} timed out after {self.timeout}s]"
             self._record_failure(agent, conv_id or "", err, duration_s=time.monotonic() - t0)

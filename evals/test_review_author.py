@@ -158,6 +158,19 @@ def test_audit_log_counts_as_a_channel(team, monkeypatch, tmp_path):
     assert review(team, author="coder").startswith("[review recorded:")
 
 
+def test_another_teams_agent_does_not_vouch_for_this_one(team, monkeypatch,
+                                                         tmp_path):
+    """One audit file, two teams, one agent name. Each entry carries its team
+    for exactly this reason, and the gate was ignoring it."""
+    audit = tmp_path / "audit.jsonl"
+    audit.write_text(json.dumps({"ts": TS, "team": "other-team",
+                                 "agent": "coder", "tool": "run_command"}) + "\n")
+    monkeypatch.setenv("AGYTEAM_AUDIT_LOG", str(audit))
+    monkeypatch.setenv("AGYTEAM_TEAM", "this-team")
+    out = review(team, author="coder")
+    assert out.startswith("[error:") and "no recorded activity" in out
+
+
 # --- governance records must not satisfy a work gate ------------------------
 
 def test_norm_adoption_is_not_a_work_review(tmp_path):

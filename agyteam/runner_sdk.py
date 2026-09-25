@@ -91,7 +91,11 @@ class SdkRunner(Runner):
     # identical to slow work. Callers that legitimately take longer (a model
     # turn) pass their own, larger ceiling.
     def _submit(self, coro, timeout: float | None = cfg.OP_TIMEOUT_S):
-        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if not self._thread.is_alive():
+            coro.close()
+            raise RuntimeError("the SDK runner's event loop has stopped; "
+                               "no agent can be woken until it is recreated")
+        fut = asyncio.run_coroutine_threadsafe(self._guarded(coro), self._loop)
         try:
             return fut.result(timeout=timeout)
         except BaseException:
@@ -102,6 +106,24 @@ class SdkRunner(Runner):
             # not die and the user's only escape was SIGKILL.
             fut.cancel()
             raise
+
+    @staticmethod
+    async def _guarded(coro):
+        """Keep SystemExit from killing the loop thread.
+
+        config.api_key() exits when GEMINI_API_KEY is unset, and it is reached
+        from inside a coroutine here. asyncio lets SystemExit escape the loop
+        rather than setting it on the future, so the loop thread died, the
+        caller's future was never resolved, and every wake after that waited
+        out its full timeout -- ten minutes per agent for a turn -- to report
+        a bare TimeoutError. A missing key read as a hung team. Converted
+        here, the reason arrives at once, in the caller's thread, and the
+        loop survives to serve the next wake.
+        """
+        try:
+            return await coro
+        except SystemExit as e:
+            raise RuntimeError(str(e) or "SystemExit") from None
 
     async def _ensure(self, agent: str) -> Agent:
         if agent in self._agents:

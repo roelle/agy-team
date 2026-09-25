@@ -49,13 +49,14 @@ def covers_team_dir(workspace: str | Path, team_dir: str | Path) -> bool:
     return ws == td or ws in td.parents
 
 
-def grant_workspace(workspace: str | Path, agent: str | None = None,
-                    team_dir: str | Path | None = None) -> dict:
-    """Grant a workspace directory path to the team or a specific agent."""
-    td = resolve_team_dir(team_dir)
-    td.mkdir(parents=True, exist_ok=True)
-    roster_path = td / "roster.json"
-    doc = roster_lib.load(roster_path)
+def _checked_workspace(workspace: str | Path, td: Path) -> str:
+    """Resolve a workspace to grant, or refuse one that reaches the record.
+
+    Every path that puts a workspace on the roster goes through here. The
+    rule used to live inside grant_workspace alone, so `add_agent(...,
+    workspaces=[...])` -- `lifecycle add --workspace` -- wrote the same grant
+    grant_workspace refuses.
+    """
     res_ws = str(Path(workspace).expanduser().resolve())
     if covers_team_dir(res_ws, td):
         raise ValueError(
@@ -66,6 +67,17 @@ def grant_workspace(workspace: str | Path, agent: str | None = None,
             f"instead -- and if the team directory sits inside that tree, move "
             f"it out (AGYTEAM_DURABLE_DIR), because a record kept inside the "
             f"workspace is a record its subject can edit.")
+    return res_ws
+
+
+def grant_workspace(workspace: str | Path, agent: str | None = None,
+                    team_dir: str | Path | None = None) -> dict:
+    """Grant a workspace directory path to the team or a specific agent."""
+    td = resolve_team_dir(team_dir)
+    td.mkdir(parents=True, exist_ok=True)
+    roster_path = td / "roster.json"
+    doc = roster_lib.load(roster_path)
+    res_ws = _checked_workspace(workspace, td)
     if agent:
         found = False
         for a in doc.get("agents", []):
@@ -134,7 +146,7 @@ def add_agent(name: str, role: str = "", workspaces: list[str | Path] | None = N
         raise ValueError(f"agent '{name}' is already on the roster")
     entry = {"name": name, "role": role}
     if workspaces:
-        entry["workspaces"] = [str(Path(w).expanduser().resolve()) for w in workspaces]
+        entry["workspaces"] = [_checked_workspace(w, td) for w in workspaces]
     if extra:
         entry.update(extra)
     agents.append(entry)

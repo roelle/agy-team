@@ -3,12 +3,27 @@
 No daemon, no ports, no dependencies — it works anywhere the agents share a
 filesystem, which includes every environment agyteam currently runs in. Swap it
 out via AGYTEAM_BUS_TRANSPORT if you have something better.
+
+## An inbox is a read-modify-write, so it is locked
+
+Appending to an inbox is safe on its own. Acknowledging is not: it reads the
+inbox, drops what was handled, and writes the rest back, and a message a
+teammate appended in between was overwritten. Measured: 10-14 of 400 messages
+lost to one sender and one reader. Every change to an inbox, append included,
+now happens under agyteam/filelock.py, and a rewrite replaces the file
+atomically so a reader never sees it half-written.
+
+A line that still cannot be parsed (a torn write, a hand edit) is skipped on
+read instead of raising. Raising made every read of that inbox fail forever,
+and the supervisor's loop with it.
 """
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 
-from . import roster
+from . import filelock, roster
 from .transport import Message, Transport
 
 
@@ -73,24 +88,53 @@ class FileTransport(Transport):
                     f"{', '.join(known)}, user]")
         entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "from": self.me,
                  "to": to, "content": content}
+        line = json.dumps(entry) + "\n"
         with self.log.open("a") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(line)
         # The user gets a real mailbox like anyone else. Logging their messages
         # only to bus.jsonl made answers unreadable without grepping the log,
         # and left nothing that could tell whether the ask had been answered.
-        with (self.inbox_dir / f"{to}.jsonl").open("a") as f:
-            f.write(json.dumps(entry) + "\n")
+        inbox = self._inbox(to)
+        with filelock.locked(inbox):
+            with inbox.open("a") as f:
+                f.write(line)
         return (f"[delivered to {to}]" if to != "user"
                 else "[delivered to the user]")
 
+    def _inbox(self, name: str) -> Path:
+        return self.inbox_dir / f"{name}.jsonl"
+
+    @staticmethod
+    def _rewrite(path: Path, text: str) -> None:
+        """Replace `path` whole, so a concurrent reader sees old or new, never half."""
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
     def _read_inbox(self) -> list[Message]:
-        path = self.inbox_dir / f"{self.me}.jsonl"
-        if not path.exists() or not path.read_text().strip():
+        path = self._inbox(self.me)
+        try:
+            text = path.read_text()
+        except OSError:
             return []
-        msgs = [Message(ts=m["ts"], sender=m["from"], to=m["to"],
-                        content=m["content"])
-                for m in (json.loads(l)
-                          for l in path.read_text().splitlines() if l.strip())]
+        msgs = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                m = json.loads(line)
+                msgs.append(Message(ts=m["ts"], sender=m["from"], to=m["to"],
+                                    content=m["content"]))
+            except (ValueError, KeyError, TypeError):
+                continue            # skipped, never fatal; see module docstring
         return sorted(msgs, key=lambda m: 0 if m.sender == "user" else 1)
 
     def peek(self) -> list[Message]:
@@ -100,47 +144,50 @@ class FileTransport(Transport):
         return self._read_inbox()
 
     def acknowledge(self, msgs: list[Message] | None = None) -> None:
-        """Remove acknowledged messages from the inbox file."""
-        path = self.inbox_dir / f"{self.me}.jsonl"
-        if not path.exists():
-            return
-        content = path.read_text()
-        if not content.strip():
-            return
-        if msgs is None:
-            path.write_text("")
-            return
-        if not msgs:
-            return
+        """Remove acknowledged messages from the inbox file.
 
-        lines = [l for l in content.splitlines() if l.strip()]
-        targets = []
-        for m in msgs:
-            sender = getattr(m, "sender", None) or getattr(m, "from", "")
-            to = getattr(m, "to", self.me)
-            ts = getattr(m, "ts", "")
-            c = getattr(m, "content", "")
-            targets.append((ts, sender, to, c))
-
-        remaining = []
-        for line in lines:
+        `msgs=None` means "everything that was fetched", but it is read as
+        "everything in the file" -- which, without the lock, also swallowed
+        anything that had arrived since the fetch. Pass the messages.
+        """
+        if msgs is not None and not msgs:
+            return
+        path = self._inbox(self.me)
+        with filelock.locked(path):
             try:
-                entry = json.loads(line)
-                key = (
-                    entry.get("ts", ""),
-                    entry.get("from") or entry.get("sender", ""),
-                    entry.get("to", ""),
-                    entry.get("content", ""),
-                )
+                content = path.read_text()
+            except OSError:
+                return
+            if not content.strip():
+                return
+            if msgs is None:
+                self._rewrite(path, "")
+                return
+
+            targets = []
+            for m in msgs:
+                sender = getattr(m, "sender", None) or getattr(m, "from", "")
+                targets.append((getattr(m, "ts", ""), sender,
+                                getattr(m, "to", self.me), getattr(m, "content", "")))
+
+            remaining = []
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    key = (entry.get("ts", ""),
+                           entry.get("from") or entry.get("sender", ""),
+                           entry.get("to", ""), entry.get("content", ""))
+                except Exception:
+                    remaining.append(line)
+                    continue
                 if key in targets:
                     targets.remove(key)
                 else:
                     remaining.append(line)
-            except Exception:
-                remaining.append(line)
 
-        new_content = "\n".join(remaining) + ("\n" if remaining else "")
-        path.write_text(new_content)
+            self._rewrite(path, "".join(l + "\n" for l in remaining))
 
     def requeue(self, msgs_or_role, msgs=None) -> None:
         """Prepend unconsumed messages back to the inbox."""
@@ -177,16 +224,19 @@ class FileTransport(Transport):
             by_recipient.setdefault(recip, []).append(entry)
 
         for recip, entries in by_recipient.items():
-            path = self.inbox_dir / f"{recip}.jsonl"
-            existing = path.read_text() if path.exists() else ""
-            existing_lines = [l for l in existing.splitlines() if l.strip()]
-            existing_entries = []
-            for l in existing_lines:
-                try:
-                    existing_entries.append(json.loads(l))
-                except Exception:
-                    pass
-            entries_to_add = [e for e in entries if e not in existing_entries]
-            if entries_to_add:
-                prefix = "".join(json.dumps(e) + "\n" for e in entries_to_add)
-                path.write_text(prefix + existing)
+            path = self._inbox(recip)
+            with filelock.locked(path):
+                existing = path.read_text() if path.exists() else ""
+                existing_entries = []
+                for l in existing.splitlines():
+                    if l.strip():
+                        try:
+                            existing_entries.append(json.loads(l))
+                        except Exception:
+                            pass
+                entries_to_add = [e for e in entries if e not in existing_entries]
+                if entries_to_add:
+                    prefix = "".join(json.dumps(e) + "\n" for e in entries_to_add)
+                    if existing and not existing.endswith("\n"):
+                        existing += "\n"
+                    self._rewrite(path, prefix + existing)

@@ -55,6 +55,16 @@ def test_an_ancestor_cannot_be_granted_either(team):
         lifecycle.grant_workspace(team.parent.parent, team_dir=team)
 
 
+def test_adding_an_agent_cannot_smuggle_the_grant_in(team):
+    """The rule lived in grant_workspace alone, so `lifecycle add
+    --workspace` wrote the very grant grant_workspace refuses."""
+    before = (team / "roster.json").read_text()
+    with pytest.raises(ValueError, match="record"):
+        lifecycle.add_agent("qa", "reviews", workspaces=[team.parent],
+                            team_dir=team)
+    assert (team / "roster.json").read_text() == before
+
+
 def test_a_working_tree_beside_it_is_fine(team, tmp_path):
     """The rule must not make ordinary work impossible, or it gets removed."""
     tree = tmp_path / "repo"

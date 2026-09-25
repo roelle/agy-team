@@ -214,7 +214,12 @@ def _author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, lis
         audit = _jsonl(Path(audit_env))
         if audit:
             channels += 1
+            # One audit file can serve several teams whose agent names
+            # collide; that is why each entry carries its team. Matching on
+            # the name alone let another team's "coder" vouch for this one's.
+            team = os.environ.get("AGYTEAM_TEAM", "")
             calls = [e for e in audit if e.get("agent") == author
+                     and not (team and e.get("team") and e["team"] != team)
                      and (e.get("ts") or "").replace("T", " ") >= since]
             if calls:
                 evidence.append(f"{len(calls)} tool call(s)")

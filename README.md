@@ -722,6 +722,10 @@ AGYTEAM_EXTRA_ARGS=--mcp .venv/bin/python evals/run_evals.py # SDK agent, memory
 .venv/bin/python evals/test_a2a.py                    # A2A behavioral, ~15¢
 ```
 
+`pytest evals/` runs every offline suite, the script-style ones included: a
+script test whose returned score is short now fails under pytest instead of
+passing silently (see `evals/conftest.py`).
+
 Current status — all green:
 
 | suite | what it proves | score |
@@ -731,7 +735,7 @@ Current status — all green:
 | `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 64/64 |
 | `test_self.py` | agent introspection server, tool functionality, robust isolation | 22/22 |
 | `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 51/51 |
-| `test_review.py` | durable review records, approval gate, and supervisor integration | 21/21 |
+| `test_review.py` | durable review records, approval gate, and supervisor integration | 25/25 |
 | `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 69/69 |
 | `test_cycle.py` | conversation cycle, distill abort safety, frontmatter parsing | 83/83 |
 | `test_continuity.py` | whether a wake resumes context or cold-starts, per runner | 4/4 |

@@ -794,7 +794,15 @@ class Supervisor:
         for agent, transport in ordered_transports:
             if self.hops >= self.max_hops:
                 return dispatched
-            msgs = transport.fetch()
+            # One agent's unreadable inbox is that agent's problem. Raising
+            # here ended step() for everyone, every pass, until someone found
+            # the file -- the same isolation a failed turn already gets.
+            try:
+                msgs = transport.fetch()
+            except Exception as e:
+                self._log(f"  ! could not read {agent}'s mail: "
+                          f"{type(e).__name__}: {e}")
+                continue
             if not msgs:
                 continue
             senders = ", ".join(sorted({m.sender for m in msgs}))
@@ -886,10 +894,24 @@ class Supervisor:
         """Dispatch until the user is answered, or nobody has mail.
 
         Returns total turns taken; self.stopped says why we stopped.
+
+        Each call is one episode, and everything that bounds or judges an
+        episode starts fresh here. `--chat` calls this once per message on
+        one Supervisor, and none of it used to be reset: `stopped` survived
+        from the previous message, so every episode after the first ran a
+        single pass and broke -- a round trip through a teammate came back
+        one message late -- while the hop budget drained across the whole
+        session, and the review baseline stayed where it was at start-up, so
+        one approved review early on made every later unreviewed answer read
+        as reviewed.
         """
         t0 = time.monotonic()
         total = 0
         bounced = False
+        self.stopped = ""
+        self.hops = 0
+        self._user_mail_at_start = self._user_mail_count()
+        self._approved_reviews_at_start = self._approved_reviews_count()
         while self.hops < self.max_hops:
             n = self.step()
             total += n
@@ -1766,22 +1788,30 @@ def generate_report(team_dir: Path | str | None = None) -> dict:
     for ag in inbox_agents:
         all_agent_names.add(ag)
 
-    approved_reviews_count = sum(1 for r in reviews if r.get("verdict") == "approved")
+    # Work reviews only. Norm adoptions share the file (kind == "norm") and
+    # are a decision the team made about itself, not verification of anyone's
+    # work; counting them is the laundering record_review's docstring names.
+    # Rows predating the field are work, as _approved_reviews_count reads them.
+    approved_work = [r for r in reviews if r.get("verdict") == "approved"
+                     and r.get("kind", "work") == "work"]
 
     raw_episodes = [ev for ev in events if ev.get("event") == "episode"]
     episodes_data = []
+    prev_ts = ""
     for idx, ep in enumerate(raw_episodes, 1):
         ep_reviewed = ep.get("reviewed")
+        ep_ts = ep.get("ts") or ""
         if ep_reviewed is None:
-            ep_ts = ep.get("ts")
-            if ep_ts and any(r.get("verdict") == "approved" and r.get("ts", "") <= ep_ts for r in reviews):
-                ep_reviewed = True
-            elif approved_reviews_count > 0:
-                ep_reviewed = True
-            else:
-                ep_reviewed = False
+            # Older episodes carry no flag. A review can only have verified an
+            # episode if it was recorded during it -- after the previous one
+            # ended and by the time this one did. This used to count any
+            # approved review anywhere in the history, so one approval marked
+            # every unflagged episode, before it and after, as reviewed.
+            ep_reviewed = bool(ep_ts) and any(
+                prev_ts < (r.get("ts") or "") <= ep_ts for r in approved_work)
         else:
             ep_reviewed = bool(ep_reviewed)
+        prev_ts = ep_ts or prev_ts
 
         episodes_data.append({
             "episode": idx,
@@ -1902,6 +1932,7 @@ def generate_report(team_dir: Path | str | None = None) -> dict:
         report["reviews"] = [
             {
                 "ts": r.get("ts"),
+                "kind": r.get("kind", "work"),
                 "reviewer": r.get("reviewer"),
                 "what": r.get("what"),
                 "verdict": r.get("verdict"),
@@ -1983,8 +2014,12 @@ def format_report(data: dict) -> str:
     reviews = data.get("reviews", [])
     if reviews:
         lines.append("\nReviews:")
-        appr = sum(1 for r in reviews if r.get("verdict") == "approved")
-        lines.append(f"  Total reviews: {len(reviews)} ({appr} approved, {len(reviews) - appr} other)")
+        work = [r for r in reviews if r.get("kind", "work") == "work"]
+        appr = sum(1 for r in work if r.get("verdict") == "approved")
+        norms = len(reviews) - len(work)
+        lines.append(f"  Work reviews: {len(work)} ({appr} approved, "
+                     f"{len(work) - appr} other)"
+                     + (f"; norm adoptions: {norms}" if norms else ""))
         latest = reviews[-1]
         lines.append(f"  Latest: [{latest.get('reviewer', 'unknown')}: {latest.get('verdict', 'unknown')}] {latest.get('what', '')}")
 

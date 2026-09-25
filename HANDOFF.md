@@ -97,6 +97,16 @@ that passes vacuously is worse than no check because you believe you have
 one. `bench/verify_fixtures.py` counts its own assertions for the same
 reason.
 
+The suite that checks the gate has to be able to fail too, and for a while it
+could not. The older evals are scripts: each test prints PASS/FAIL and
+*returns* a `(passed, total)` score. pytest collects those functions, ignores
+the return value, and reports them passed. So `pytest evals/` was green while
+ten of `test_review.py`'s proof-gate checks failed: once the gate began
+checking authors, every one of those cases named a non-teammate and was
+refused at the author check, so none reached the proof gate it was meant to
+test. `evals/conftest.py` now fails any test whose returned score is short.
+**Run `pytest evals/`; a green result now means every check passed.**
+
 The rule has a second edge that cost us more: **a check that could not run
 must never be reported as a check that found something.** The proof gate
 shells out to pytest, the plugin install is deliberately dependency-free, and
@@ -203,6 +213,20 @@ is its team's expectation rather than a boundary, and asks it to hold to the
 expectation anyway. That is the best available answer, not a good one: if a
 role must be *unable* to do something, remove the capability where the
 process lives.
+
+**The proof gate runs agent-written code outside the agent's containment.**
+`record_review` executes the `proof_file` a reviewer names, as a subprocess of
+the bus server, and the bus server is exactly the process that *can* write the
+team directory. So on `SdkRunner`, an agent confined to its workspace can write
+a "test" there that appends to `reviews.jsonl` or edits `roster.json`, and have
+the gate run it. The code also inherits the server's environment and can read
+whatever that process can. This is not fixed here and a check would not fix
+it: a proof can start a background process that writes after any
+before-and-after comparison. The real fix is to run proofs where they cannot
+reach the record: a container, a sandbox such as bubblewrap, or a separate
+account with no write access to the team directory. Until a deployment does
+that, treat a review's integrity as resting on the reviewer's role, not on the
+gate.
 
 Containment belongs to whoever owns the process, and agyteam should say so
 rather than imply a guarantee it is not making. A denylist of dangerous
