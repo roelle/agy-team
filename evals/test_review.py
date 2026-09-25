@@ -60,18 +60,21 @@ def test_mcp_review_tools() -> tuple[int, int]:
     out_empty = text_of(r_empty[0])
 
     # 2. Validation failures: proof_file missing, empty, not found, invalid verdict, empty what, verification mismatches, evasion vectors
+    # The author must be a real teammate, or every one of these is refused at
+    # the author check and none of them reaches the proof gate it is meant to
+    # exercise -- which is what happened once the gate began checking authors.
     r_val = call("syseng", [
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved"}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": ""}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": "nonexistent_test.py"}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "rejected", "proof_file": str(pass_file)}),
-        ("record_review", {"author": "someone-else", "what": "", "verdict": "approved", "proof_file": str(pass_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(syntax_err_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(import_err_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "changes_requested", "proof_file": str(empty_file)}),
-        ("record_review", {"author": "someone-else", "what": "feature X", "verdict": "approved", "proof_file": str(empty_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "approved"}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "approved", "proof_file": ""}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "approved", "proof_file": "nonexistent_test.py"}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "rejected", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "coder", "what": "", "verdict": "approved", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "approved", "proof_file": str(fail_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "changes_requested", "proof_file": str(pass_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "changes_requested", "proof_file": str(syntax_err_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "changes_requested", "proof_file": str(import_err_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "changes_requested", "proof_file": str(empty_file)}),
+        ("record_review", {"author": "coder", "what": "feature X", "verdict": "approved", "proof_file": str(empty_file)}),
     ])[2:]
     out_no_proof = text_of(r_val[0])
     out_empty_proof = text_of(r_val[1])

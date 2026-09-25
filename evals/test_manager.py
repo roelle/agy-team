@@ -522,10 +522,12 @@ def test_manager_persona_and_roster() -> tuple[int, int]:
         checks.append(check("manager role states Interrupt-driven property",
                             "interrupt-driven" in tpm_role and "grounded in the record" in tpm_role,
                             tpm_entry.get("role", "")))
+        # `boots` is tpm; `tpm_entry` has been the manager since the split,
+        # and this check read the manager's entry under tpm's name.
         checks.append(check("tpm preserves tools_off and workers=false",
-                            tpm_entry.get("tools_off") == ["run_command", "create_file", "edit_file"]
-                            and tpm_entry.get("workers") is False,
-                            f"tools_off={tpm_entry.get('tools_off')}, workers={tpm_entry.get('workers')}"))
+                            boots.get("tools_off") == ["run_command", "create_file", "edit_file"]
+                            and boots.get("workers") is False,
+                            f"tools_off={boots.get('tools_off')}, workers={boots.get('workers')}"))
         checks.append(check("install.sh self-test isolates AGYTEAM_RUNNER with env -u",
                             "env -u AGYTEAM_RUNNER" in install_script,
                             "env -u AGYTEAM_RUNNER check"))

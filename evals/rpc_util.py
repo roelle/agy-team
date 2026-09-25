@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The same placeholder evals/conftest.py sets, for the same reason, when these
+# suites are run as scripts -- which is how the README says to run them, and
+# where conftest never loads. Without it test_observer.py built a real SDK
+# session with no key and failed; see conftest.py for why this is honest.
+os.environ.setdefault("GEMINI_API_KEY", "offline-tests-never-call-a-model")
+
 # Prefer the repo venv, but fall back to whatever interpreter is running these
 # tests: the offline contract suites are stdlib-only by design, so system
 # python or a foreign virtualenv must not turn into a FileNotFoundError.
