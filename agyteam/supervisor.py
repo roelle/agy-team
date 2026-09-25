@@ -687,45 +687,50 @@ class Supervisor:
         return {a: t.peek() for a, t in self.transports.items()}
 
     def _sweep_due_tasks(self) -> None:
-        """Wake owners of tasks whose check_after has passed, as ordinary mail.
+        """Deliver due task reminders as ordinary mail, before this pass's fetch.
 
-        A due task earns no special wake path -- it earns a message, sent
-        through the same bus a teammate would use, so this step()'s own
-        per-agent fetch loop delivers it a few lines down. That is the whole
-        mechanism: no new daemon, no scheduler, no place for a restarted
-        process to lose track of what it was waiting on, because what it was
-        waiting on is a field on a task in tasks.jsonl, not memory this
-        process held. Due tasks for the same owner are grouped into one
-        message instead of one per task, the same way step() already groups
-        an agent's mail by sender.
+        A reminder earns no special wake path -- it earns a message, so the
+        per-agent fetch loop a few lines down delivers it like any other. The
+        logic lives in tasks.sweep() rather than here because the supervisor
+        is only one of the things that can call it; see that module.
+        """
+        if not tasks_lib.path(self.team_dir).exists():
+            return
+        bus = None
+
+        def send(to, content):          # opened only if something is due
+            nonlocal bus
+            if bus is None:
+                bus = load_transport("supervisor")
+            return bus.send(to, content)
+
+        try:
+            tasks_lib.sweep(self.team_dir, send, owners=set(self.transports))
+        except Exception as e:
+            self._log(f"[supervisor] reminder sweep failed: {type(e).__name__}: {e}")
+        finally:
+            if bus is not None and hasattr(bus, "close"):
+                bus.close()
+
+    def _log_pending_reminders(self) -> None:
+        """Say what this run is leaving behind that only a sweep can deliver.
+
+        A run that goes idle and exits with reminders still set has delivered
+        everything it can, and nothing else will deliver the rest unless
+        something sweeps. Silence here would read as "nothing pending".
         """
         try:
-            due = tasks_lib.due(self.team_dir)
+            pending = tasks_lib.reminders(self.team_dir)
         except Exception:
             return
-        if not due:
+        if not pending:
             return
-        by_owner: dict[str, list[dict]] = {}
-        for t in due:
-            owner = t.get("owner")
-            if owner and owner in self.transports:
-                by_owner.setdefault(owner, []).append(t)
-        if not by_owner:
-            return
-        bus = load_transport("supervisor")
-        try:
-            for owner, owed in by_owner.items():
-                lines = [f"- {t['id']} ({t.get('project')}): {t.get('title')}"
-                         + (f" — {t['note']}" if t.get("note") else "")
-                         for t in owed]
-                plural = "task is" if len(owed) == 1 else "tasks are"
-                bus.send(owner,
-                         f"{len(owed)} {plural} due for a check-in you asked "
-                         f"for:\n" + "\n".join(lines))
-                for t in owed:
-                    tasks_lib.mark_swept(self.team_dir, t["id"])
-        finally:
-            bus.close()
+        nxt = min((t["check_after"] for t in pending
+                   if not tasks_lib.unreadable(t)), default="now")
+        self._log(f"[{len(pending)} task reminder(s) still set, next at {nxt}. "
+                  f"They are delivered only while something sweeps: run the "
+                  f"supervisor with --daemon, or schedule "
+                  f"`python -m agyteam.tasks sweep`.]")
 
     @staticmethod
     def _has_user_mail(transport) -> bool:
@@ -941,6 +946,7 @@ class Supervisor:
                       f"Raise --max-hops or send a new instruction.]")
         else:
             self._log(f"[done after {total} turns — {self.stopped}]")
+        self._log_pending_reminders()
         try:
             dur = time.monotonic() - t0
             self.observer.record_episode(

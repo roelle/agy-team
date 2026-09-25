@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import persona, roster as roster_lib, scope
@@ -405,11 +406,28 @@ def check_tasks_log(r: Report, team_dir: Path) -> None:
     else:
         r.line(OK, f"{len(open_tasks)} open task(s), all owned by roster agents")
 
-    due_now = tasks_lib.due(team_dir)
-    if due_now:
-        r.line(WARN, f"{len(due_now)} task(s) are due for a check-in right "
-                     f"now -- the next supervisor pass will deliver them")
-        for t in due_now:
+    bad = [t for t in tasks_lib.reminders(team_dir) if tasks_lib.unreadable(t)]
+    if bad:
+        r.line(WARN, f"{len(bad)} reminder time(s) cannot be read; they fire "
+                     f"at the next sweep instead of when intended")
+        for t in bad:
+            r.detail(f"{t['id']}: check_after={t['check_after']!r}")
+
+    # Overdue is the symptom that matters, and it needs no knowledge of how
+    # this host schedules agents: wherever something sweeps, a reminder is
+    # delivered within one poll of coming due. One that is still waiting well
+    # past its time means nothing is sweeping this team.
+    grace = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600))
+    overdue = [t for t in tasks_lib.due(team_dir, now=grace)
+               if not tasks_lib.unreadable(t)]
+    if overdue:
+        oldest = min(t["check_after"] for t in overdue)
+        r.line(WARN, f"{len(overdue)} reminder(s) overdue, the oldest since "
+                     f"{oldest}: nothing is sweeping this team")
+        r.detail("Reminders are delivered by the supervisor's --daemon loop, or "
+                 "by `python -m agyteam.tasks sweep` run from any scheduler "
+                 "this host has. Without one, a reminder never arrives.")
+        for t in overdue:
             r.detail(f"{t['id']}: {t.get('owner')} — {t.get('title')}")
 
 

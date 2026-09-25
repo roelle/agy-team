@@ -438,23 +438,39 @@ not need to schedule an external cron job to poke itself later either — that
 just moves the schedule somewhere nothing here can see it. Instead:
 
 ```
-create_task(project, title, owner=None, note=None)   # start tracking something
-claim_task(task_id)                                   # take ownership
-update_task(task_id, status=None, check_after=None, note=None)
-complete_task(task_id, note=None)                     # shorthand for status="done"
+create_task(project, title, owner=None, note=None, check_after=None)
+claim_task(task_id)                                   # take an unowned task
+update_task(task_id, status=None, check_after=None, owner=None, note=None)
+complete_task(task_id, note=None)                     # done; clears the reminder
 list_tasks(project=None, owner=None, status=None)
 ```
 
-Call `update_task(task_id, status="blocked", check_after="1h")` when you're
-waiting on something external, and go work on something else — a different
-task, a teammate's message, whatever's next. When `check_after` passes, the
-supervisor's existing poll (the same one `peek()` uses, above) turns it into
-an ordinary bus message to the task's owner, exactly as if a teammate had
-written it. No new wake path, no daemon of its own, and nothing for a
-restarted process to lose track of: what an agent is waiting on is a field on
-a task in `team/tasks.jsonl`, not memory a process held. Several due tasks for
-the same owner arrive as one message. `agyteam.doctor` checks the log parses
-and every open task's owner is still on the roster.
+Start the sim, then `update_task(task_id, status="running", check_after="2h")`,
+and go work on something else. When the time passes, the reminder arrives as an
+ordinary message to the task's owner, through the same transport a teammate's
+message uses, so it wakes the agent the same way. Several reminders for one
+owner arrive as one message. Nothing for a restarted process to lose track of:
+what an agent is waiting on is a field on a task in `team/tasks.jsonl`, not
+memory a process held.
+
+`check_after` takes a duration (`90m`, `2h`, `1.5 hours`, `1d`) or an ISO-8601
+time **with a zone** (`2026-09-26T05:00:00Z`, `…-07:00`). Anything else is
+refused when it is set, rather than stored and never fired. Only a task's owner
+can change it; `update_task(owner=...)` hands it on; claims are decided under a
+file lock, so of any number of agents claiming at once exactly one wins.
+
+**Something has to sweep.** The supervisor delivers reminders on every pass, so
+a team under `--daemon` needs nothing more. A `--say` run that goes idle and
+exits, a push transport, or agents driven some other way do not sweep, and
+say so: `run_until_idle` reports the reminders it leaves behind, the tool that
+sets one says what delivers it, and `agyteam.doctor` warns when reminders are
+overdue. On such a host, run the sweep from whatever scheduler it already has
+— one entry for the team, not one per agent:
+
+```bash
+python -m agyteam.tasks sweep     # deliver what is due, then exit
+python -m agyteam.tasks list      # what is tracked, and when each reminder fires
+```
 
 A `project` is a grouping string on a task, not a separate object — if
 project-level metadata turns out to be needed later, it can be added as a

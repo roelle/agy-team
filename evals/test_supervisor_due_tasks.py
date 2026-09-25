@@ -130,6 +130,23 @@ def test_a_due_task_owned_by_nobody_on_the_roster_is_skipped(team):
     assert tasks.due(team)  # still due; nobody swept it
 
 
+def test_going_idle_with_reminders_set_says_so(team, capsys):
+    """A --say run exits when the team idles. A reminder due tomorrow is then
+    delivered by nothing, and "team went idle" alone reads as "nothing left"."""
+    t = tasks.create(team, project="p", title="x", owner="coder")
+    tasks.update(team, t["id"], "coder", status="running",
+                 check_after="2099-01-01T00:00:00Z")
+    runner = ScriptedRunner({})
+    sup = Supervisor(AGENTS, runner, team_dir=team, quiet=False)
+    try:
+        sup.run_until_idle()
+    finally:
+        sup.close()
+    out = capsys.readouterr().out
+    assert "1 task reminder(s) still set" in out
+    assert "python -m agyteam.tasks sweep" in out
+
+
 def test_run_until_idle_completes_after_delivering_one_due_task(team):
     t = tasks.create(team, project="p", title="x", owner="coder")
     tasks.update(team, t["id"], "coder", status="blocked",

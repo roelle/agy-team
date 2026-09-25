@@ -153,18 +153,33 @@ inside the workspace is a record its subject can edit.
 existed, the pattern for "check on this sim in an hour" was an agent
 scheduling an external cron job to poke itself — a schedule this codebase
 could not see, that a restart forgot, and that a teammate asking "is anything
-still running?" had nowhere to look for. The fix was not a new scheduler; it
-was recognizing that `Supervisor.step()` already has one, because it already
-polls `Transport.peek()` on an interval to notice mail. A task that is
-`blocked` carries an optional `check_after`; `tasks.due()` returns exactly
-what has come due, and `Supervisor._sweep_due_tasks()` turns each one into an
-ordinary `send()` to the owner before `step()`'s existing per-agent fetch loop
-runs — so a due task is delivered the same way a teammate's message is,
-through code that was already tested. Power-cycle survival was, in the end,
-free: `tasks.jsonl` is folded to current state the same way `retro_store.py`
-folds `retro_inbox.jsonl`, so a process that just started reading a log
-written by one that no longer exists arrives at the same state a long-running
-one would have. There is nothing else to restore.
+still running?" had nowhere to look for. The fix was not a new scheduler.
+Any unfinished task may carry a `check_after`, and `tasks.sweep()` turns the
+ones that have come due into an ordinary `send()` to the owner, so a reminder
+wakes an agent through whatever already wakes it for mail. Power-cycle
+survival was free: `tasks.jsonl` is folded to current state the same way
+`retro_store.py` folds `retro_inbox.jsonl`, so there is nothing else to restore.
+
+What sweep() cannot do is call itself, and the first version hid that.
+`Supervisor.step()` calls it, which covers `--daemon` and nothing else: a
+`--say` run exits when the team idles, a push transport bypasses the
+supervisor, and a host that drives agents its own way never runs it. Those
+are the hosts where a reminder silently never arrives, the exact failure the
+feature exists to remove. So `python -m agyteam.tasks sweep` exists for any
+scheduler a host already has, and the gap is loud in three places: the idle
+exit counts what it leaves behind, the tool that sets a reminder says what
+delivers it, and `agyteam.doctor` warns on overdue reminders, a symptom that
+needs no knowledge of how the host schedules anything.
+
+The first version also stored `check_after` verbatim and compared strings, so
+`1 hour` fired at once, `2H` never did, and an unpadded date waited a year. A
+reminder is now parsed when it is set, or refused with a sentence saying what
+would work, because a reminder that is accepted and never fires is worse than
+one that is refused. And "only the owner may update" was checked before the
+write rather than with it: eight agents claiming one task produced several
+winners in every trial. Decisions on shared records now happen under
+`agyteam/filelock.py`. **If you add a read-then-write on any file in the team
+directory, take that lock; appending alone does not need it, deciding does.**
 
 **Read this part before you trust a grant.** Workspace confinement is
 enforced by `SdkRunner`. Runners that drive an external host have no
@@ -295,11 +310,10 @@ you measure anything.**
   degeneration and missed it (7.0x observed vs 8.0x threshold). Volume
   caught it. Treat both signals as necessary; if you retune, tune against a
   captured real spew, not synthetic text.
-- `agyteam_tasks` (like `agyteam_self`) is mounted for the agy CLI plugin
-  path only — `agyteam/sdk_agent.py` never lists it in `mcp_servers`, the
-  same gap `agyteam_self` already had. An SDK-runner agent has no task tools
-  today; if that turns out to matter, wire it in next to `agyteam_bus` behind
-  a flag the way `with_bus` already works, rather than making it unconditional.
+- `agyteam_self` is mounted for the agy CLI plugin path only;
+  `agyteam/sdk_agent.py` never lists it. (`agyteam_tasks` had the same gap and
+  now travels with the bus, because the brief lists task tools and an agent
+  must not be told about tools it does not have.)
 
 ## What is measured, and what is not yet
 

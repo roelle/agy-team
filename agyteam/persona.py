@@ -264,10 +264,23 @@ def tool_index(admin: bool = False) -> str:
     {content, to} against a tool that wanted (to, content).
 
     Redundant on a schema-injecting host and load-bearing everywhere else, so
-    it always ships. Generated from mcp_bus.TOOLS rather than written out, so
-    a tool whose arguments change cannot leave a stale signature here.
+    it always ships. Generated from the servers' TOOLS rather than written
+    out, so a tool whose arguments change cannot leave a stale signature here.
+
+    The task tools are listed for the same reason: a tool the agent does not
+    know exists is not a tool it has, and "remind me when the sim is done" is
+    precisely the call an agent under a deadline will not go looking for.
     """
     from .mcp_bus import ADMIN_TOOLS, TOOLS
+    from .mcp_tasks import TOOLS as TASK_TOOLS
+
+    def sig_line(t: dict) -> str:
+        schema = t.get("inputSchema", {})
+        props = list(schema.get("properties", {}))
+        required = schema.get("required", [])
+        sig = ", ".join(p if p in required else f"[{p}]" for p in props)
+        summary = t.get("description", "").split(". ")[0].rstrip(".")
+        return f"- {t['name']}({sig}) — {summary}."
 
     lines = [
         "## Your teammate tools",
@@ -277,13 +290,15 @@ def tool_index(admin: bool = False) -> str:
         "missing one does nothing.",
         "",
     ]
-    for t in list(TOOLS) + (list(ADMIN_TOOLS) if admin else []):
-        schema = t.get("inputSchema", {})
-        props = list(schema.get("properties", {}))
-        required = schema.get("required", [])
-        sig = ", ".join(p if p in required else f"[{p}]" for p in props)
-        summary = t.get("description", "").split(". ")[0].rstrip(".")
-        lines.append(f"- {t['name']}({sig}) — {summary}.")
+    lines += [sig_line(t) for t in list(TOOLS) + (list(ADMIN_TOOLS) if admin else [])]
+    lines += [
+        "",
+        "Task tools, for work that outlives a turn. Waiting on something slow? "
+        "Put a reminder on its task (check_after) and do other work; you will "
+        "get a message when it comes due, instead of having to remember.",
+        "",
+    ]
+    lines += [sig_line(t) for t in TASK_TOOLS]
     return "\n".join(lines)
 
 

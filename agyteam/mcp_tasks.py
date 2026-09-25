@@ -1,9 +1,9 @@
 """MCP stdio server for tracking work that outlives a single turn.
 
-Companion to `agyteam/tasks.py`, which is the actual record (an append-only
-log an agent's tools never touch directly -- see that module's docstring for
-why). This server is the agent-facing surface over it: create a task, claim
-one, update its status or ask to be checked again later, list what exists.
+Companion to `agyteam/tasks.py`, which is the record and holds every rule --
+who may change a task, what a valid reminder is, and the lock that makes a
+claim mean something. This server only translates tool calls into those
+functions and their refusals into sentences.
 
 Like agyteam/mcp_bus.py, agyteam/mcp_memory.py and agyteam/mcp_self.py, this is
 pure Python standard library, built on agyteam.mcp_base.serve.
@@ -13,9 +13,7 @@ set AGYTEAM_AGENT (agy CLI path). Refuses to start nameless rather than
 guessing, so a task can never be filed under the wrong owner.
 """
 import os
-import re
 import sys
-import time
 from pathlib import Path
 
 from .mcp_base import serve, string, tool
@@ -25,51 +23,54 @@ from . import tasks as tasks_lib
 
 TOOLS = [
     tool("create_task",
-         "Start tracking a piece of work that may span many turns -- a "
-         "simulation run, a build, anything you would otherwise have to "
-         "remember to come back to. Defaults to owned by you; pass owner to "
-         "hand it to a teammate instead.",
+         "Start tracking work that will outlive this turn -- a simulation, a "
+         "long build, anything you would otherwise have to remember to come "
+         "back to. Owned by you unless you name a teammate. Pass check_after "
+         "to be reminded.",
          {"project": string("Grouping key for related tasks, e.g. 'sim-sweep-42'"),
           "title": string("Short description of the task"),
-          "owner": string("Agent who owns it (default: you)"),
-          "note": string("Optional detail: what you started, where its output "
-                         "will land, anything a check-in will need")},
+          "owner": string("Teammate who owns it (default: you)"),
+          "note": string("What you started, where its output will land, and "
+                         "anything a later check-in will need"),
+          "check_after": string(f"When to be reminded: {tasks_lib.WHEN_HELP}")},
          ["project", "title"]),
     tool("claim_task",
-         "Take ownership of an unclaimed or your own task, and mark it "
-         "'claimed'. Refuses if another agent already owns it.",
+         "Take ownership of a task nobody owns yet. Refuses if a teammate "
+         "already owns it; they can hand it over with update_task(owner=...).",
          {"task_id": string("Task id from create_task or list_tasks")},
          ["task_id"]),
     tool("update_task",
-         "Change a task's status, note, or when it should be checked again. "
-         "Use status='blocked' with check_after when you are waiting on "
-         "something external (a sim, a build) and want to be reminded "
-         "instead of polling yourself -- the team will message you when "
-         "check_after passes, so you are free to work on other tasks until "
-         "then. check_after accepts a duration like '90m', '2h', '1d', or an "
-         "ISO-8601 UTC timestamp. Only the task's owner may update it.",
+         "Change a task you own: its status, its note, who owns it, or when "
+         "you want to be reminded about it. Set check_after when you are "
+         "waiting on something (a running sim, a build) and go do other work; "
+         "you will get a message when it comes due, on any unfinished task.",
          {"task_id": string("Task id"),
-          "status": string("New status: queued, claimed, running, blocked, "
-                           "done, failed, or cancelled"),
-          "check_after": string("When to be reminded, e.g. '1h', or 'clear' "
-                                "to stop waiting on a time"),
+          "status": string("queued, claimed, running, blocked, done, failed, "
+                           "or cancelled"),
+          "check_after": string(f"When to be reminded: {tasks_lib.WHEN_HELP}. "
+                                "Or 'clear' to remove the reminder"),
+          "owner": string("Hand the task to this teammate"),
           "note": string("Replace the task's note with this")},
          ["task_id"]),
     tool("complete_task",
-         "Mark a task done. Shorthand for update_task(status='done').",
+         "Mark a task you own done, which also removes its reminder.",
          {"task_id": string("Task id"),
           "note": string("Optional final note, e.g. where the result landed")},
          ["task_id"]),
     tool("list_tasks",
          "List tasks, most recently updated last. Pass owner=<your name> to "
-         "see only your own; pass no arguments to see the whole team's.",
+         "see only your own; no arguments shows the whole team's.",
          {"project": string("Filter to one project"),
           "owner": string("Filter to one owner"),
           "status": string("Filter to one status")}),
 ]
 
-_DURATION = re.compile(r"^(\d+)([smhd])$")
-_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+# What a reminder depends on, said where it is set. A reminder nothing
+# delivers is indistinguishable from one that is simply not due yet, so the
+# agent is told the condition rather than left to assume it.
+_DELIVERY = ("[reminder set for {when}. It arrives as a message once that time "
+             "passes and the team's supervisor (or a scheduled `python -m "
+             "agyteam.tasks sweep`) next runs.]")
 
 
 def _resolve_context(team_dir: Path | None = None) -> tuple[scope.Scopes, Path]:
@@ -82,21 +83,25 @@ def _resolve_context(team_dir: Path | None = None) -> tuple[scope.Scopes, Path]:
     return scopes, scopes.team_dir()
 
 
-def _resolve_check_after(raw: str) -> str:
-    """Accept a duration shorthand or a literal ISO-8601 UTC timestamp."""
-    m = _DURATION.match(raw.strip())
-    if not m:
-        return raw.strip()
-    n, unit = int(m.group(1)), m.group(2)
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                          time.gmtime(time.time() + n * _UNIT_SECONDS[unit]))
-
-
 def _known_agents(team_dir: Path) -> set:
     try:
-        return {a["name"] for a in roster_lib.load(team_dir / "roster.json").get("agents", [])}
+        return {a["name"] for a in
+                roster_lib.load(team_dir / "roster.json").get("agents", [])}
     except Exception:
         return set()
+
+
+def _check_teammate(team_dir: Path, name: str) -> str | None:
+    known = _known_agents(team_dir)
+    if known and name not in known:
+        return (f"[error: '{name}' is not on this roster. Known agents: "
+                f"{', '.join(sorted(known))}]")
+    return None
+
+
+def _text(a: dict, key: str) -> str:
+    v = a.get(key)
+    return v.strip() if isinstance(v, str) else ""
 
 
 def _render(rows: list[dict]) -> str:
@@ -104,7 +109,7 @@ def _render(rows: list[dict]) -> str:
         return "[no tasks]"
     lines = []
     for t in rows:
-        check = f", check after {t['check_after']}" if t.get("check_after") else ""
+        check = f", reminder at {t['check_after']}" if t.get("check_after") else ""
         lines.append(f"- {t['id']} [{t.get('status')}] ({t.get('project')}) "
                      f"{t.get('title')} — owner: {t.get('owner') or 'unclaimed'}{check}")
         if t.get("note"):
@@ -112,81 +117,69 @@ def _render(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _with_delivery(t: dict, text: str) -> str:
+    if t and t.get("check_after"):
+        return f"{text}\n{_DELIVERY.format(when=t['check_after'])}"
+    return text
+
+
 def _create_task(agent: str, team_dir: Path, a: dict) -> str:
-    project = (a.get("project") or "").strip()
-    title = (a.get("title") or "").strip()
-    if not project:
-        return "[error: create_task is missing required argument: project]"
-    if not title:
-        return "[error: create_task is missing required argument: title]"
-    owner = (a.get("owner") or "").strip() or agent
-    known = _known_agents(team_dir)
-    if known and owner not in known:
-        return (f"[error: '{owner}' is not on this roster. Known agents: "
-                f"{', '.join(sorted(known))}]")
-    t = tasks_lib.create(team_dir, project, title, owner=owner,
-                         created_by=agent, note=a.get("note") or "")
-    return f"[task created: {t['id']}]\n{_render([t])}"
+    project, title = _text(a, "project"), _text(a, "title")
+    if not project or not title:
+        missing = [n for n, v in (("project", project), ("title", title)) if not v]
+        return (f"[error: create_task is missing required argument(s): "
+                f"{', '.join(missing)}]")
+    owner = _text(a, "owner") or agent
+    err = _check_teammate(team_dir, owner)
+    if err:
+        return err
+    t = tasks_lib.create(team_dir, project, title, owner=owner, created_by=agent,
+                         note=_text(a, "note"),
+                         check_after=_text(a, "check_after") or None)
+    return _with_delivery(t, f"[task created: {t['id']}]\n{_render([t])}")
 
 
 def _claim_task(agent: str, team_dir: Path, a: dict) -> str:
-    task_id = (a.get("task_id") or "").strip()
+    task_id = _text(a, "task_id")
     if not task_id:
         return "[error: claim_task is missing required argument: task_id]"
-    current = tasks_lib.get(team_dir, task_id)
-    if current is None:
+    t = tasks_lib.claim(team_dir, task_id, agent)
+    if t is None:
         return f"[error: no task with id '{task_id}']"
-    if current.get("owner") and current["owner"] != agent:
-        return (f"[error: task {task_id} is already owned by "
-                f"'{current['owner']}' — ask them to hand it off]")
-    t = tasks_lib.update(team_dir, task_id, agent, status="claimed", owner=agent)
     return f"[claimed]\n{_render([t])}"
 
 
 def _update_task(agent: str, team_dir: Path, a: dict) -> str:
-    task_id = (a.get("task_id") or "").strip()
+    task_id = _text(a, "task_id")
     if not task_id:
         return "[error: update_task is missing required argument: task_id]"
-    current = tasks_lib.get(team_dir, task_id)
-    if current is None:
+    owner = _text(a, "owner") or None
+    if owner:
+        err = _check_teammate(team_dir, owner)
+        if err:
+            return err
+    raw = _text(a, "check_after")
+    clear = raw.lower() == "clear"
+    t = tasks_lib.update(team_dir, task_id, agent,
+                         status=_text(a, "status") or None,
+                         owner=owner,
+                         check_after=None if clear or not raw else raw,
+                         clear_check_after=clear,
+                         note=a.get("note") if isinstance(a.get("note"), str) else None)
+    if t is None:
         return f"[error: no task with id '{task_id}']"
-    if current.get("owner") and current["owner"] != agent:
-        return (f"[error: task {task_id} is owned by '{current['owner']}', "
-                f"not you — claim_task first if they have handed it off]")
-
-    status = a.get("status")
-    if status is not None and status not in tasks_lib.STATUSES:
-        return (f"[error: unknown status '{status}'. Use one of: "
-                f"{', '.join(sorted(tasks_lib.STATUSES))}]")
-
-    check_after_raw = a.get("check_after")
-    check_after, clear = None, False
-    if isinstance(check_after_raw, str) and check_after_raw.strip():
-        if check_after_raw.strip().lower() == "clear":
-            clear = True
-        else:
-            check_after = _resolve_check_after(check_after_raw)
-
-    if status == "blocked" and not check_after and not current.get("check_after"):
-        return ("[error: status='blocked' needs check_after so the team "
-                "knows when to remind you — pass e.g. check_after='1h']")
-
-    t = tasks_lib.update(team_dir, task_id, agent, status=status,
-                         check_after=check_after, clear_check_after=clear,
-                         note=a.get("note"))
-    return f"[updated]\n{_render([t])}"
+    out = f"[updated]\n{_render([t])}"
+    return _with_delivery(t, out) if raw and not clear else out
 
 
 def _complete_task(agent: str, team_dir: Path, a: dict) -> str:
-    a = dict(a)
-    a["status"] = "done"
-    return _update_task(agent, team_dir, a)
+    return _update_task(agent, team_dir, {**a, "status": "done", "check_after": ""})
 
 
 def _list_tasks(team_dir: Path, a: dict) -> str:
-    rows = tasks_lib.list_tasks(team_dir, project=a.get("project"),
-                                owner=a.get("owner"), status=a.get("status"))
-    return _render(rows)
+    return _render(tasks_lib.list_tasks(team_dir, project=_text(a, "project") or None,
+                                        owner=_text(a, "owner") or None,
+                                        status=_text(a, "status") or None))
 
 
 def main(agent: str, team_dir: Path | None = None):
@@ -201,7 +194,13 @@ def main(agent: str, team_dir: Path | None = None):
 
     def dispatch(name, args):
         fn = handlers.get(name)
-        return fn(args) if fn else f"[error: unknown tool '{name}']"
+        if not fn:
+            return (f"[error: unknown tool '{name}'. This server provides: "
+                    f"{', '.join(sorted(handlers))}]")
+        try:
+            return fn(args)
+        except tasks_lib.TaskError as e:
+            return f"[error: {e}]"
 
     serve(f"agy-team-tasks:{agent}", TOOLS, dispatch)
 

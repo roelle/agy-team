@@ -313,6 +313,11 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
             mcp_servers.append(types.McpStdioServer(
                 name="agyteam_bus", type="stdio", command=sys.executable,
                 args=["-m", "agyteam.mcp_bus"], env=mcp_env))
+            # Task tools travel with the bus: both are team tools, and the
+            # brief lists both, so an agent that has one must have the other.
+            mcp_servers.append(types.McpStdioServer(
+                name="agyteam_tasks", type="stdio", command=sys.executable,
+                args=["-m", "agyteam.mcp_tasks"], env=mcp_env))
 
     off = [types.BuiltinTools(t) for t in (disabled_tools or [])]
 
