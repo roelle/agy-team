@@ -431,6 +431,35 @@ deliberately and reimplement those four guarantees. The SDK's native triggers
 (`google.antigravity.triggers.on_file_change` / `every`) push straight into a
 live session and are firmly in the second category.
 
+### Long-running work: tasks, projects, and time-based check-ins
+
+An agent running a sim that takes hours does not need to poll it, and it does
+not need to schedule an external cron job to poke itself later either — that
+just moves the schedule somewhere nothing here can see it. Instead:
+
+```
+create_task(project, title, owner=None, note=None)   # start tracking something
+claim_task(task_id)                                   # take ownership
+update_task(task_id, status=None, check_after=None, note=None)
+complete_task(task_id, note=None)                     # shorthand for status="done"
+list_tasks(project=None, owner=None, status=None)
+```
+
+Call `update_task(task_id, status="blocked", check_after="1h")` when you're
+waiting on something external, and go work on something else — a different
+task, a teammate's message, whatever's next. When `check_after` passes, the
+supervisor's existing poll (the same one `peek()` uses, above) turns it into
+an ordinary bus message to the task's owner, exactly as if a teammate had
+written it. No new wake path, no daemon of its own, and nothing for a
+restarted process to lose track of: what an agent is waiting on is a field on
+a task in `team/tasks.jsonl`, not memory a process held. Several due tasks for
+the same owner arrive as one message. `agyteam.doctor` checks the log parses
+and every open task's owner is still on the roster.
+
+A `project` is a grouping string on a task, not a separate object — if
+project-level metadata turns out to be needed later, it can be added as a
+field the same way `note` was.
+
 ## Session lifecycle: cycling and distillation
 
 Distillation (sweeping unsaved learnings into memory files) fires on `/quit`,

@@ -14,6 +14,11 @@
       "command": "__PYTHON__",
       "args": ["-m", "agyteam.mcp_self"],
       "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
+    },
+    "agyteam_tasks": {
+      "command": "__PYTHON__",
+      "args": ["-m", "agyteam.mcp_tasks"],
+      "env": {"PYTHONPATH": "__AGYTEAM_HOME__"}
     }
   }
 }

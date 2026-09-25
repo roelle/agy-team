@@ -133,8 +133,8 @@ directory that works, per agent, and audit grants when a task involves
 anything the team is being measured on.
 
 **The team directory is the record, and no agent is ever granted write
-access to it.** `bus.jsonl`, `reviews.jsonl`, `retro_inbox.jsonl`, `NORMS.md`,
-`roster.json` and `conversations.json` are written by agyteam processes and
+access to it.** `bus.jsonl`, `reviews.jsonl`, `retro_inbox.jsonl`, `tasks.jsonl`,
+`NORMS.md`, `roster.json` and `conversations.json` are written by agyteam processes and
 read back as the account of what the team did. Agents reach them through the
 MCP servers, which are *separate processes* with their own filesystem access —
 so no agent needs a grant there to do anything it is supposed to do, and a
@@ -148,6 +148,23 @@ refuses a path containing the team directory, and `agyteam.doctor` fails on one
 already in the roster. Keep the team directory out of every working tree — if
 they are co-located, move it with `AGYTEAM_DURABLE_DIR`, because a record
 inside the workspace is a record its subject can edit.
+
+**A due task is mail, not a second wake path.** Before `agyteam/tasks.py`
+existed, the pattern for "check on this sim in an hour" was an agent
+scheduling an external cron job to poke itself — a schedule this codebase
+could not see, that a restart forgot, and that a teammate asking "is anything
+still running?" had nowhere to look for. The fix was not a new scheduler; it
+was recognizing that `Supervisor.step()` already has one, because it already
+polls `Transport.peek()` on an interval to notice mail. A task that is
+`blocked` carries an optional `check_after`; `tasks.due()` returns exactly
+what has come due, and `Supervisor._sweep_due_tasks()` turns each one into an
+ordinary `send()` to the owner before `step()`'s existing per-agent fetch loop
+runs — so a due task is delivered the same way a teammate's message is,
+through code that was already tested. Power-cycle survival was, in the end,
+free: `tasks.jsonl` is folded to current state the same way `retro_store.py`
+folds `retro_inbox.jsonl`, so a process that just started reading a log
+written by one that no longer exists arrives at the same state a long-running
+one would have. There is nothing else to restore.
 
 **Read this part before you trust a grant.** Workspace confinement is
 enforced by `SdkRunner`. Runners that drive an external host have no
@@ -278,6 +295,11 @@ you measure anything.**
   degeneration and missed it (7.0x observed vs 8.0x threshold). Volume
   caught it. Treat both signals as necessary; if you retune, tune against a
   captured real spew, not synthetic text.
+- `agyteam_tasks` (like `agyteam_self`) is mounted for the agy CLI plugin
+  path only — `agyteam/sdk_agent.py` never lists it in `mcp_servers`, the
+  same gap `agyteam_self` already had. An SDK-runner agent has no task tools
+  today; if that turns out to matter, wire it in next to `agyteam_bus` behind
+  a flag the way `with_bus` already works, rather than making it unconditional.
 
 ## What is measured, and what is not yet
 

@@ -48,6 +48,7 @@ from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
+from . import tasks as tasks_lib
 from .transport import Message
 from .transport import load as load_transport
 
@@ -685,6 +686,47 @@ class Supervisor:
         """Mail waiting, without consuming it. None where unsupported."""
         return {a: t.peek() for a, t in self.transports.items()}
 
+    def _sweep_due_tasks(self) -> None:
+        """Wake owners of tasks whose check_after has passed, as ordinary mail.
+
+        A due task earns no special wake path -- it earns a message, sent
+        through the same bus a teammate would use, so this step()'s own
+        per-agent fetch loop delivers it a few lines down. That is the whole
+        mechanism: no new daemon, no scheduler, no place for a restarted
+        process to lose track of what it was waiting on, because what it was
+        waiting on is a field on a task in tasks.jsonl, not memory this
+        process held. Due tasks for the same owner are grouped into one
+        message instead of one per task, the same way step() already groups
+        an agent's mail by sender.
+        """
+        try:
+            due = tasks_lib.due(self.team_dir)
+        except Exception:
+            return
+        if not due:
+            return
+        by_owner: dict[str, list[dict]] = {}
+        for t in due:
+            owner = t.get("owner")
+            if owner and owner in self.transports:
+                by_owner.setdefault(owner, []).append(t)
+        if not by_owner:
+            return
+        bus = load_transport("supervisor")
+        try:
+            for owner, owed in by_owner.items():
+                lines = [f"- {t['id']} ({t.get('project')}): {t.get('title')}"
+                         + (f" — {t['note']}" if t.get("note") else "")
+                         for t in owed]
+                plural = "task is" if len(owed) == 1 else "tasks are"
+                bus.send(owner,
+                         f"{len(owed)} {plural} due for a check-in you asked "
+                         f"for:\n" + "\n".join(lines))
+                for t in owed:
+                    tasks_lib.mark_swept(self.team_dir, t["id"])
+        finally:
+            bus.close()
+
     @staticmethod
     def _has_user_mail(transport) -> bool:
         try:
@@ -736,6 +778,8 @@ class Supervisor:
                     self.runner.sync_roster(current_roster)
             except Exception:
                 pass
+
+        self._sweep_due_tasks()
 
         dispatched = 0
         ordered_transports = sorted(

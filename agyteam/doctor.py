@@ -353,6 +353,66 @@ def check_plugin_install(r: Report, spec: str) -> None:
              + "Reinstall: bash plugin/install.sh")
 
 
+def check_tasks_log(r: Report, team_dir: Path) -> None:
+    """Is tasks.jsonl readable, and does every open task point at someone real?
+
+    A task owned by an agent no longer on the roster will never be checked --
+    nobody's mail loop is listening for it, since the sweep in
+    Supervisor._sweep_due_tasks only sends to owners with a live transport --
+    and the task log gives no other signal that this happened. Same shape as
+    a workspace grant reaching the team directory: silent until someone goes
+    looking for why a task never got picked back up.
+    """
+    from . import tasks as tasks_lib
+
+    log_path = tasks_lib.path(team_dir)
+    if not log_path.exists():
+        r.line(OK, "no tasks.jsonl yet (nothing tracked)")
+        return
+
+    try:
+        raw_lines = [ln for ln in
+                     log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                     if ln.strip()]
+    except OSError as e:
+        r.line(BAD, f"could not read tasks.jsonl: {e}")
+        return
+
+    records = tasks_lib.read(team_dir)
+    bad_lines = len(raw_lines) - len(records)
+    if bad_lines:
+        r.line(BAD, f"tasks.jsonl has {bad_lines} unparseable line(s)")
+    else:
+        r.line(OK, f"tasks.jsonl parses cleanly ({len(raw_lines)} entries)")
+
+    try:
+        known = {a["name"] for a in
+                 roster_lib.load(team_dir / "roster.json").get("agents", [])}
+    except Exception:
+        known = set()
+
+    snap = tasks_lib.snapshot(team_dir)
+    open_tasks = [t for t in snap.values()
+                  if t.get("status") not in ("done", "failed", "cancelled")]
+    orphaned = [t for t in open_tasks
+                if known and t.get("owner") and t["owner"] not in known]
+    if orphaned:
+        r.line(BAD, f"{len(orphaned)} open task(s) owned by an agent not on "
+                    f"the roster")
+        for t in orphaned:
+            r.detail(f"{t['id']}: owner '{t['owner']}' "
+                     f"({t.get('project')}: {t.get('title')})")
+    else:
+        r.line(OK, f"{len(open_tasks)} open task(s), all owned by roster agents")
+
+    due_now = tasks_lib.due(team_dir)
+    if due_now:
+        r.line(WARN, f"{len(due_now)} task(s) are due for a check-in right "
+                     f"now -- the next supervisor pass will deliver them")
+        for t in due_now:
+            r.detail(f"{t['id']}: {t.get('owner')} — {t.get('title')}")
+
+
 def check_brief(r: Report, team_dir: Path, agent: str, lines: int) -> None:
     try:
         agents = roster_lib.load(team_dir / "roster.json")["agents"]
@@ -417,6 +477,8 @@ def main(argv=None) -> int:
     check_plugin_install(r, caps.get("spec") or "")
     print()
     check_stale_bus_servers(r, team_dir)
+    print()
+    check_tasks_log(r, team_dir)
     print()
     check_brief(r, team_dir, agent, a.brief_lines)
 

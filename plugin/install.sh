@@ -82,17 +82,19 @@ fi
 # Neutral cwd matters as much as the path: run from the repo and `./agyteam/`
 # shadows the install, so the check passes by testing the wrong copy.
 ( cd / && env -u AGYTEAM_RUNNER PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
-import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self
+import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self, agyteam.mcp_tasks
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
 from agyteam.runner import load as load_runner
 from agyteam.observer import load as load_observer
+from agyteam import tasks as load_tasks
 load_bus('installer-selftest').teammates()      # forces roster parsing
 load_memory('installer-selftest').index()       # forces memory store load
 load_runner()                                   # forces runner load
 load_observer()                                 # forces observer load
+load_tasks.due('$DURABLE/team')                 # forces the task log to load
 json.load(open('$PLUGIN_DST/mcp_config.json')); json.load(open('$PLUGIN_DST/plugin.json'))
-print('verified: servers import; transport, memory store, runner, and observer all load')" )
+print('verified: servers import; transport, memory store, runner, observer, and tasks all load')" )
 
 # And that every module the installed sources import is actually there. The
 # import above only executes top-level imports; the two modules that went

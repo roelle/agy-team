@@ -35,12 +35,12 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent
 
-# Where an installed server starts. The three MCP servers are what the plugin
+# Where an installed server starts. The four MCP servers are what the plugin
 # mounts; supervisor/session are what the operator runs by hand next to them;
 # doctor and this module are what they run when something is wrong, which is
 # exactly when the repo may not be on the machine.
-SEEDS = ("mcp_memory", "mcp_bus", "mcp_self", "supervisor", "session",
-         "runner_agy", "doctor", "install_check")
+SEEDS = ("mcp_memory", "mcp_bus", "mcp_self", "mcp_tasks", "supervisor",
+         "session", "runner_agy", "doctor", "install_check")
 
 # Not imported by anything -- copied so whoever adapts a seam on that machine
 # has the contract in front of them rather than in a repo they may not have.
