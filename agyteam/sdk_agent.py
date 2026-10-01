@@ -195,6 +195,24 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
 
     hooks.append(block_dangerous)
 
+    # The roster's policy, applied here as it is applied by the generic hook
+    # and inside the servers -- one rule, three askers. Paths are left to the
+    # SDK's own workspace enforcement, whose list is wider than the roster's.
+    from . import policy as policy_lib
+    _team_dir = os.environ.get("AGYTEAM_TEAM_DIR")
+
+    @pre_tool_call_decide
+    def team_policy(tool_call):
+        tname = getattr(tool_call.name, "value", None) or str(tool_call.name)
+        refusal = policy_lib.check_tool_policy(
+            name, tname, dict(tool_call.args or {}), team_dir=_team_dir,
+            check_paths=False)
+        if refusal:
+            return types.HookResult(allow=False, message=refusal)
+        return types.HookResult(allow=True)
+
+    hooks.append(team_policy)
+
     # AGYTEAM_EXTRA_WORKSPACES is an OBSERVATION grant -- transcripts, a
     # toolchain, a reference tree -- and observation must not come with a
     # pen. The one time it did, the risk was an agent "correcting" the

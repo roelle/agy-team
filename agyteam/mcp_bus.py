@@ -27,7 +27,8 @@ import time
 from pathlib import Path
 
 from .mcp_base import serve, string, tool
-from .transport import Transport, load
+from . import heartbeat, policy
+from .transport import KINDS, Transport, load
 
 # The repo this module lives in, for resolving relative proof paths and the
 # project venv without baking any one machine's layout into the file.
@@ -40,7 +41,15 @@ TOOLS = [
          "their inbox and they act on it when they next check. Include full "
          "context and a concrete ask — they cannot see your conversation.",
          {"to": string("Teammate name from list_teammates, or 'user'"),
-          "content": string("The message: context, the ask, where to put results")},
+          "content": string("The message: context, the ask, where to put results"),
+          "kind": {"type": "string", "enum": list(KINDS),
+                   "description": "What this message is. deliverable, question, "
+                                  "blocker, review and reminder wake the recipient "
+                                  "(as does the default, work); ack, fyi and status "
+                                  "are left in their inbox for their next wake and "
+                                  "wake nobody -- use them for anything that needs "
+                                  "no action"},
+          "task_id": string("The task this is about, if any")},
          ["to", "content"]),
     tool("broadcast",
          "Send one message to every teammate at once. Use sparingly — for "
@@ -65,7 +74,10 @@ TOOLS = [
           "author": string("Agent whose work this review verifies (not you)"),
           "verdict": string("Verdict: 'approved' or 'changes_requested'"),
           "proof_file": string("Path to a test file containing executable assertions"),
-          "findings": string("Observations, defect analysis, or behavior notes")},
+          "findings": string("Observations, defect analysis, or behavior notes"),
+          "task_id": string("The task this review verifies, if it has one; a task "
+                            "that requires_review closes only on an approved "
+                            "review naming it")},
          ["what", "author", "verdict", "proof_file"]),
     tool("list_reviews",
          "List durable verification reviews recorded for this team.",
@@ -83,6 +95,11 @@ TOOLS = [
               "One concrete change — a rule a gate could check, or an "
               "explicit 'no change, and here is why'")},
          ["went_well", "did_not", "should_change"]),
+    tool("list_retros",
+         "The team's retrospectives: the latest report's outcome and each "
+         "teammate's most recent recorded answers. record_retro writes these; "
+         "this reads them back.",
+         {}),
 ]
 
 # Roster mutation is off unless AGYTEAM_ROSTER_ADMIN=1 *and* the transport
@@ -145,86 +162,9 @@ def _reviews_path(t: Transport) -> Path:
     return _team_dir(t) / "reviews.jsonl"
 
 
-def _jsonl(path: Path) -> list[dict]:
-    """Read a JSONL file, skipping anything unparseable. Missing file is []."""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return []
-    out = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(rec, dict):
-            out.append(rec)
-    return out
-
-
-def _episode_start(team_dir: Path) -> str:
-    """Timestamp of the last completed episode, or "" for the whole history.
-
-    Reviews are scoped to the episode in progress. Without a boundary the
-    only available question is "has this agent ever done anything", which a
-    long-lived team answers yes to forever.
-    """
-    eps = [e.get("ts") or "" for e in _jsonl(team_dir / "events.jsonl")
-           if e.get("event") == "episode"]
-    return max(eps) if eps else ""
-
-
-def _author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, list[str]]:
-    """Did `author` actually do anything since `since`?
-
-    Returns (verifiable, evidence). `verifiable` is False only when no channel
-    could be read at all -- which is not the same as the author having been
-    idle, and must not be reported as though it were.
-
-    Three independent channels, because each can be absent for its own
-    reason: the bus is always present but an agent can work without
-    publishing; turn events exist whenever the supervisor drove the turn; the
-    audit log exists only on a runner that records tool calls.
-    """
-    evidence, channels = [], 0
-
-    bus = _jsonl(team_dir / "bus.jsonl")
-    if bus:
-        channels += 1
-        sent = [e for e in bus
-                if (e.get("from") or e.get("frm") or e.get("sender")) == author
-                and (e.get("ts") or "") >= since]
-        if sent:
-            evidence.append(f"{len(sent)} bus message(s)")
-
-    events = _jsonl(team_dir / "events.jsonl")
-    if events:
-        channels += 1
-        turns = [e for e in events
-                 if e.get("event") in ("turn", "failure")
-                 and e.get("agent") == author and (e.get("ts") or "") >= since]
-        if turns:
-            evidence.append(f"{len(turns)} recorded turn(s)")
-
-    audit_env = os.environ.get("AGYTEAM_AUDIT_LOG")
-    if audit_env:
-        audit = _jsonl(Path(audit_env))
-        if audit:
-            channels += 1
-            # One audit file can serve several teams whose agent names
-            # collide; that is why each entry carries its team. Matching on
-            # the name alone let another team's "coder" vouch for this one's.
-            team = os.environ.get("AGYTEAM_TEAM", "")
-            calls = [e for e in audit if e.get("agent") == author
-                     and not (team and e.get("team") and e["team"] != team)
-                     and (e.get("ts") or "").replace("T", " ") >= since]
-            if calls:
-                evidence.append(f"{len(calls)} tool call(s)")
-
-    return bool(channels), evidence
+from .activity import author_activity as _author_activity  # noqa: E402
+from .activity import episode_start as _episode_start  # noqa: E402
+from .activity import jsonl as _jsonl  # noqa: E402
 
 
 def _extract_crash_detail(proc: subprocess.CompletedProcess) -> str:
@@ -449,11 +389,14 @@ def _record_review(t: Transport, a: dict) -> str:
 
     rev_path = _reviews_path(t)
     rev_path.parent.mkdir(parents=True, exist_ok=True)
+    task_id = a.get("task_id") if isinstance(a.get("task_id"), str) else ""
+    task_id = task_id.strip() or None
     entry = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "kind": "work",
         "reviewer": t.me,
         "author": author,
+        "task_id": task_id,
         # False means nothing could be read, not that the author was idle --
         # an idle author is refused above and never reaches this line.
         "author_verified": author_verified,
@@ -469,8 +412,93 @@ def _record_review(t: Transport, a: dict) -> str:
     caveat = "" if author_verified else (
         f" [{author}'s activity could not be verified: no bus, event or audit "
         f"record was readable]")
+
+    # The verdict reaches the author as one message of kind "review", and
+    # the task's creator if that is someone else -- instead of the reviewer
+    # spending a turn to forward it and the author a turn to acknowledge.
+    notice = (f"Review of '{what}': {verdict}."
+              + (f" Findings: {findings_str}" if findings_str else "")
+              + (f" (task {task_id})" if task_id else ""))
+    told = []
+    for who in dict.fromkeys([author, _task_creator(t, task_id)]):
+        if who and who not in (t.me, "user"):
+            try:
+                t.send_kind(who, notice, kind="review", task_id=task_id)
+                told.append(who)
+            except Exception:
+                pass
+    told_note = f" [{', '.join(told)} notified]" if told else ""
     return (f"[review recorded: {verdict} for '{what}' with proof "
-            f"{proof_file}]{caveat}")
+            f"{proof_file}]{caveat}{told_note}")
+
+
+def _task_creator(t: Transport, task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    try:
+        from . import tasks as tasks_lib
+        task = tasks_lib.get(_team_dir(t), task_id)
+        return task.get("created_by") if task else None
+    except Exception:
+        return None
+
+
+def _send(t: Transport, a: dict) -> str:
+    """send_to_teammate: policy, the review gate on deliverables, and an
+    honest status -- the message is in an inbox, and whether anyone will
+    wake its recipient is a fact this process can check."""
+    to, content = _args("send_to_teammate", a, "to", "content")
+    kind = (a.get("kind") or "work").strip().lower() if isinstance(a.get("kind"), str) else "work"
+    if kind not in KINDS:
+        return (f"[error: kind must be one of {', '.join(KINDS)}, not {kind!r}]")
+    task_id = a.get("task_id").strip() if isinstance(a.get("task_id"), str) else None
+    refusal = policy.check_tool_policy(t.me, "send_to_teammate", {"to": to},
+                                       team_dir=_team_dir(t), check_paths=False)
+    if refusal:
+        return refusal
+    if to == "user" and task_id:
+        try:
+            from . import tasks as tasks_lib
+            task = tasks_lib.get(_team_dir(t), task_id)
+        except Exception:
+            task = None
+        if task and task.get("requires_review") and \
+                not tasks_lib.approved_review_for(_team_dir(t), task_id):
+            return (f"[refused: task {task_id} requires an approved review before "
+                    f"its result goes to the user, and none names it. Have a "
+                    f"teammate record_review(..., task_id='{task_id}') first]")
+    out = t.send_kind(to, content, kind=kind, task_id=task_id or None)
+    if not out.startswith("[error"):
+        who = heartbeat.describe(_team_dir(t))
+        if to == "user":
+            out = "[queued for the user; they read it when they next look]"
+        elif kind in ("ack", "fyi", "status"):
+            out = f"[queued for {to} as {kind}; they will read it on their next wake, which this does not cause]"
+        else:
+            out = f"[queued for {to}; {who}]"
+    return out
+
+
+def _list_retros(t: Transport) -> str:
+    from . import retro_store
+    team_dir = _team_dir(t)
+    lines = ["# Retrospectives", ""]
+    report = team_dir / "retro.md"
+    try:
+        head = [l for l in report.read_text(encoding="utf-8").splitlines() if l.strip()]
+        outcome = next((l for l in head if l.startswith("**Norm change") or
+                        l.startswith("**No norm") or l.startswith("**FAILED")), None)
+        lines.append(f"Latest report: {head[0] if head else report}"
+                     + (f" — {outcome}" if outcome else ""))
+    except OSError:
+        lines.append("No retrospective report has been written yet.")
+    answers = retro_store.latest_by_agent(team_dir)
+    if not answers:
+        lines.append("No recorded answers yet (record_retro writes them).")
+    for agent, rec in sorted(answers.items()):
+        lines.append(f"\n## {agent} ({rec.get('ts', '')}, {rec.get('role', 'participant')})")
+        lines.append(retro_store.as_reflection(rec))
+    return "\n".join(lines)
 
 
 def _record_retro(t: Transport, a: dict) -> str:
@@ -626,16 +654,21 @@ def _args(tool_name: str, a: dict, *names: str):
 
 
 def main(transport: Transport, admin: bool = False):
+    def _broadcast(a):
+        refusal = policy.check_tool_policy(transport.me, "broadcast", {},
+                                           team_dir=_team_dir(transport),
+                                           check_paths=False)
+        return refusal or transport.broadcast(*_args("broadcast", a, "content"))
+
     handlers = {
-        "send_to_teammate": lambda a: transport.send(
-            *_args("send_to_teammate", a, "to", "content")),
-        "broadcast": lambda a: transport.broadcast(
-            *_args("broadcast", a, "content")),
+        "send_to_teammate": lambda a: _send(transport, a),
+        "broadcast": _broadcast,
         "check_inbox": lambda a: _check_inbox(transport),
         "list_teammates": lambda a: _list_teammates(transport),
         "record_review": lambda a: _record_review(transport, a),
         "list_reviews": lambda a: _list_reviews(transport),
         "record_retro": lambda a: _record_retro(transport, a),
+        "list_retros": lambda a: _list_retros(transport),
     }
     tools = list(TOOLS)
     if admin and transport.supports_roster_admin:

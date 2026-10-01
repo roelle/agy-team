@@ -191,6 +191,37 @@ winners in every trial. Decisions on shared records now happen under
 `agyteam/filelock.py`. **If you add a read-then-write on any file in the team
 directory, take that lock; appending alone does not need it, deciding does.**
 
+**Role policy is one function, asked from three places.** `tools_off` was
+enforced in exactly one of them, the SDK runner; everywhere else the roster
+entry was a description, and on a host runtime the manager had every native
+tool, assigned work to implementers directly, and could message anyone. An
+integrator wrote six hundred lines of host hook to get back what the roster
+already said. `agyteam/policy.py` holds the rule once; the SDK hook, the
+generic `hook_pre_tool_use`, and the bus and task servers all ask it, and
+`evals/test_tool_policy.py` checks the three answers are the same words. The
+servers asking it is the part that matters: it means who an agent may message
+and who may hand work to whom holds on a host with no hooks at all. What it
+cannot do is tell who is calling a server. An agent that can reach another
+agent's MCP mount can speak as them; that is the host's mount exposure to fix,
+and no check inside the server can see it.
+
+**Turns run concurrently, and the ledger is what makes that survivable.**
+`Supervisor.step()` waited on each `wake()`: eight turns finished one at a
+time over thirty-five minutes, a twelve-minute turn holding seven agents who
+had mail. Dispatch is now `begin()`/`poll()`, with a thread adapter for
+runners that only `wake()`. The hazards of that are exactly the ones a
+serial loop never had, and each has a test: a turn that ends between the
+last poll and the wait (a lost wakeup; `wait_turn` waits on a predicate), two
+callers dispatching at once (a step lock), the user answered while another
+turn is mid-flight (`stop_on_answer` is judged after draining), an agent
+leaving the roster with a turn running (cancelled, dropped from the ledger),
+a restart (resumable handles are polled again; thread turns are declared
+dead and their mail, never acknowledged, is delivered again). And the one
+that cost two days: a wake path failing in milliseconds was counted as a
+dispatched turn, so the daemon never slept -- two spawns a second with
+nothing in `events.jsonl`. Failures now back off, are recorded whoever
+reported them, and escalate once.
+
 **Read this part before you trust a grant.** Workspace confinement is
 enforced by `SdkRunner`. Runners that drive an external host have no
 workspace mechanism at all — no grants, no confinement — and agents are
@@ -313,6 +344,16 @@ installed copy alone. **After changing anything in `agyteam/`, reinstall before
 you measure anything.**
 
 ## Known sharp edges
+
+- **A wait condition on a task (`until=`) runs in the supervisor's process.**
+  It reads a file or checks a pid; it does not run a command, and that is
+  deliberate -- a command an agent wrote would run with the supervisor's
+  privileges, which is the proof-gate problem again. If you add a predicate,
+  keep it to reads.
+- **The hook's payload shape is the host's.** `hook_pre_tool_use` accepts the
+  common key names and allows the call when it cannot identify the agent,
+  with a note on stderr. A host whose payload it does not understand gets no
+  policy, not a blocked team; check stderr the first time.
 
 - **`python -m` puts the current directory ahead of `PYTHONPATH`.** Launched
   from the wrong directory, you will import a different checkout's `agyteam`

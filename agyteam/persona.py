@@ -246,6 +246,39 @@ def seed_norms(
     )
 
 
+#: Sections of the brief a team may replace with its own text.
+OVERRIDABLE = ("teamwork", "principal", "contract", "continuity", "consistency",
+               "verification", "accountability")
+
+
+def team_overrides(team_dir: Path | str | None = None, scopes=None) -> dict[str, str]:
+    """Team-specific brief text from <team_dir>/persona/*.md.
+
+    A file named for a section (teamwork.md, contract.md, ...) replaces that
+    section of every brief; a file named for an agent (coder.md) is appended
+    to that agent's brief. Without this the only way to change what a team
+    is told was to edit this module, which is to say fork it. NORMS.md
+    remains the place for rules the team adopts; this is for the standing
+    text a team is briefed with.
+    """
+    try:
+        td = scope.team_dir(team_dir=team_dir, scopes=scopes)
+    except Exception:
+        return {}
+    d = Path(td) / "persona"
+    if not d.is_dir():
+        return {}
+    out = {}
+    for f in sorted(d.glob("*.md")):
+        try:
+            text = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            out[f.stem] = text
+    return out
+
+
 def roster_lines(agent: str, agents: list[dict]) -> str:
     peers = [f"- {a['name']}: {a.get('role', '')}"
              for a in agents if a["name"] != agent]
@@ -339,11 +372,16 @@ def brief(
         is_principal = bool(spec.get("gatekeeper"))
     else:
         is_principal = ("manager" in agent.lower() or "faces outward" in role_text.lower())
-    parts = [identity(agent, agents),
-             tool_index(),
-             PRINCIPAL if is_principal else TEAMWORK,
-             CONTRACT, CONTINUITY, CONSISTENCY,
-             VERIFICATION, ACCOUNTABILITY]
+    over = team_overrides(team_dir=team_dir, scopes=scopes)
+    sections = [("principal" if is_principal else "teamwork",
+                 PRINCIPAL if is_principal else TEAMWORK),
+                ("contract", CONTRACT), ("continuity", CONTINUITY),
+                ("consistency", CONSISTENCY), ("verification", VERIFICATION),
+                ("accountability", ACCOUNTABILITY)]
+    parts = [identity(agent, agents), tool_index()]
+    parts += [over.get(name, default) for name, default in sections]
+    if over.get(agent):
+        parts.append(over[agent])
     norms = load_norms(team_dir=team_dir, scopes=scopes)
     if norms and norms.strip():
         parts.append(norms.strip())

@@ -320,6 +320,21 @@ verify (the review-before-delivery contract), and reported accurate results.
   every agent's learnings to memory first.
 - Shared deliverables go in `team/shared/`.
 
+**Policy holds outside the SDK too.** `agyteam/policy.py` is one function,
+`check_tool_policy(agent, tool, args)`, driven by roster fields and asked from
+three places with the same answer: the SDK session's pre-tool hook, a generic
+hook any host with hook support can run (`python -m agyteam.hook_pre_tool_use`
+reads the call as JSON on stdin and exits 2 with the refusal), and inside the
+bus and task servers themselves, so what those servers do holds on a host with
+no hooks at all. Per agent: `tools_off` (names), `allowed_send_to` (who it may
+message; `user` only if listed), `assigns_tasks: false` (no creating tasks for
+others, no hand-offs), `workspaces` (with the team's, the only paths its file
+tools may touch — on a hosted UI a file tool outside the workspace opens a
+dialog nobody can click and the turn hangs to its timeout), `confined: false`
+to opt a platform-maintaining role out of that. Team-wide, `"policy":
+{"detach_commands": [...]}` refuses a foreground run of a command that takes
+hours unless it is already detached.
+
 ## Reactive teamwork (no human polling)
 
 A teammate's message *wakes* the agent it was sent to. Whatever that agent sends
@@ -352,7 +367,30 @@ they decide *how* an agent is woken:
 | `agyteam.runner_sdk:SdkRunner` (default) | a persistent SDK session per agent | `google-antigravity` |
 | `agyteam.runner_agy:AgyRunner` | `agy --conversation <id> -p "<message>"` | the agy CLI |
 | `agyteam.runner_mixed:MixedRunner` | per-agent runner from `roster.json` | `google-antigravity` |
+| `agyteam.runner_host:HostRunner` | a host's own start / deliver / stop-hook commands, from config | any hosted runtime |
 | your own | anything | — |
+
+**`HostRunner` is for a runtime that owns the agent loop** — an IDE or hosted
+agent platform whose whole surface is "start a conversation", "deliver a
+message", and a hook that runs when a turn ends, with no transcript coming
+back. Configure its argv templates, a signal directory the stop hook appends
+to, and a model map; see the module docstring. It creates each conversation
+with a content-free primer and registers the id *before* delivering the brief,
+so no turn ever runs unattributed, and it cancels a turn that outlives its
+timeout. `evals/test_runner_host.py` drives it against a fake host.
+
+**Turns run concurrently.** The supervisor dispatches with the runner's
+`begin()`/`poll()` and reaps turns as they end, so four agents with mail take
+one turn's time rather than four, and a twelve-minute turn for one agent holds
+nobody else up. A runner that only implements `wake()` gets `begin`/`poll` from
+the base class (one thread per turn). What is in flight is in
+`team/inflight.json`; a restarted supervisor resumes turns the host is still
+running and redelivers the mail of turns that died with it. A wake path that
+fails is retried with exponential backoff rather than at process speed, every
+failure is an event, and three in a row send one message to the manager.
+`--inbox-pull` wakes an agent with a one-line summary and lets it read its
+mail with `check_inbox`, for hosts that would rather not see every message
+body pasted into a prompt.
 
 ```bash
 export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
@@ -380,6 +418,18 @@ like `coder` remain on the SDK with capability-enforced roles.
 
 `check_inbox` still exists as a tool — useful mid-task, since a teammate may
 answer while you're working — but it is no longer how delivery happens.
+
+**Messages have a kind.** `send_to_teammate(to, content, kind=..., task_id=...)`:
+`deliverable`, `question`, `blocker`, `review` and `reminder` wake the
+recipient, as does the default `work`; `ack`, `fyi` and `status` are left in
+the inbox for the recipient's next wake and wake nobody. One review used to
+cost six turns (request, forward, verdict, cc, user, cc); now
+`record_review(..., task_id=)` delivers the verdict to the author as one
+`review` message, `complete_task` tells the task's creator, and an ack costs
+nothing. The tool result says `[queued for X; ...]` and whether a supervisor
+is running to deliver it — never "delivered", which a manager once read as
+received and waited on eleven times in seven minutes. `list_retros` reads
+back what `record_retro` wrote.
 
 Runaway protection: a hop budget bounds one stimulus (`--max-hops`, default 32)
 so agents can't ping-pong your token budget away, and an agent that fails is
@@ -438,12 +488,37 @@ not need to schedule an external cron job to poke itself later either — that
 just moves the schedule somewhere nothing here can see it. Instead:
 
 ```
-create_task(project, title, owner=None, note=None, check_after=None)
+create_task(project, title, owner=None, note=None, check_after=None,
+            until=None, poll_every=None, deadline=None,
+            collaborators=None, requires_review=None)
 claim_task(task_id)                                   # take an unowned task
-update_task(task_id, status=None, check_after=None, owner=None, note=None)
-complete_task(task_id, note=None)                     # done; clears the reminder
+update_task(task_id, status=None, check_after=None, until=None, ...)
+complete_task(task_id, note, evidence=None)           # the note is required
 list_tasks(project=None, owner=None, status=None)
 ```
+
+**Waiting on a sim without spending turns on it.** `until="file_exists:/path"`
+(or `file_contains:/path:text`, `pid_exited:1234`) makes the sweep check the
+condition itself, every `poll_every` (default 5m), and wake the owner once:
+when it holds, or at `deadline` if it never does. Twenty wakes in seventy
+minutes to learn "still running" twenty times was the measurement that led
+here. Conditions read files and process tables; none runs a command, because
+the sweep runs with the supervisor's privileges.
+
+**Closing carries evidence.** `complete_task` requires a closing note (it
+replaces the old one — three closed tasks used to still read "actively
+triaging"), takes an `evidence` path or review, refuses while a
+`collaborators` entry has no recorded activity since the task was created,
+and on a `requires_review` task refuses until an approved review names it
+(`record_review(..., task_id=)`); such a task's result cannot be sent to the
+user either until then. Status spellings like `in_progress`, `waiting` and
+`completed` are accepted and mapped.
+
+A team can replace a section of the brief, or add to one agent's, without
+forking `persona.py`: `team/persona/teamwork.md` (or `principal`, `contract`,
+`continuity`, `consistency`, `verification`, `accountability`) replaces that
+section for everyone; `team/persona/coder.md` is appended to coder's brief.
+`NORMS.md` stays the place for rules the team adopts in retrospectives.
 
 Start the sim, then `update_task(task_id, status="running", check_after="2h")`,
 and go work on something else. When the time passes, the reminder arrives as an

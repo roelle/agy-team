@@ -364,7 +364,18 @@ def check_tasks_log(r: Report, team_dir: Path) -> None:
     a workspace grant reaching the team directory: silent until someone goes
     looking for why a task never got picked back up.
     """
+    from . import heartbeat
     from . import tasks as tasks_lib
+
+    beat = heartbeat.running(team_dir)
+    if beat:
+        r.line(OK, f"a supervisor is running (pid {beat.get('pid')}, "
+                   f"{len(beat.get('inflight') or [])} turn(s) in flight)")
+    else:
+        r.line(WARN, "no supervisor is running: mail is queued but nobody is "
+                     "woken, and reminders are not delivered")
+        r.detail("python -m agyteam.supervisor --daemon, or a host scheduler "
+                 "that runs `python -m agyteam.tasks sweep`")
 
     log_path = tasks_lib.path(team_dir)
     if not log_path.exists():
@@ -442,7 +453,7 @@ def check_brief(r: Report, team_dir: Path, agent: str, lines: int) -> None:
                     f"{', '.join(a['name'] for a in agents)}")
         return
     text = persona.brief(agent, agents, team_dir=team_dir)
-    has_index = "send_to_teammate(to, content)" in text
+    has_index = "send_to_teammate(to, content" in text
     r.line(OK if has_index else BAD,
            "the brief carries the bus tool signatures"
            if has_index else

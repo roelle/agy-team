@@ -79,15 +79,15 @@ def test_the_index_is_generated_not_transcribed():
     props = spec["inputSchema"]["properties"]
     props["urgency"] = {"type": "string", "description": "temporary"}
     try:
-        assert "send_to_teammate(to, content, [urgency])" in persona.tool_index()
+        assert "send_to_teammate(to, content, [kind], [task_id], [urgency])" in persona.tool_index()
     finally:
         del props["urgency"]
-    assert "send_to_teammate(to, content)" in persona.tool_index()
+    assert "send_to_teammate(to, content, [kind], [task_id])" in persona.tool_index()
 
 
 def test_required_and_optional_are_distinguishable():
     index = persona.tool_index()
-    assert "record_review(what, author, verdict, proof_file, [findings])" in index
+    assert "record_review(what, author, verdict, proof_file, [findings], [task_id])" in index
     assert "check_inbox()" in index
 
 
@@ -100,7 +100,7 @@ def test_admin_tools_are_absent_unless_asked_for():
 def test_the_brief_itself_carries_the_index():
     text = persona.brief("coder", [{"name": "coder", "role": "implements"},
                                    {"name": "qa", "role": "reviews"}])
-    assert "send_to_teammate(to, content)" in text
+    assert "send_to_teammate(to, content" in text
 
 
 if __name__ == "__main__":

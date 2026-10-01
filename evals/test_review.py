@@ -88,7 +88,10 @@ def test_mcp_review_tools() -> tuple[int, int]:
     out_changes_empty = text_of(r_val[9])
     out_approved_empty = text_of(r_val[10])
 
-    # 3. Successful recording: approved and changes_requested
+    # 3. Successful recording: approved and changes_requested. The author
+    # must have worked: once anything is on the bus the gate can check, and
+    # a review notice to the author is itself a bus message.
+    call("coder", [("send_to_teammate", {"to": "syseng", "content": "built both"})])
     r_rec = call("syseng", [
         ("record_review", {
             "author": "coder",

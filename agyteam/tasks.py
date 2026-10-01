@@ -72,7 +72,26 @@ _KIND_SWEPT = "swept"
 
 # Fields an "updated" or "swept" entry may carry into the folded state. `id`,
 # `kind`, `ts` and `by` describe the log entry, not the task.
-_MUTABLE_FIELDS = ("project", "title", "owner", "status", "note", "check_after")
+_MUTABLE_FIELDS = ("project", "title", "owner", "status", "note", "check_after",
+                   "collaborators", "requires_review", "evidence", "until",
+                   "poll_every", "deadline")
+
+# What an agent may call a status and what it is here. The allowed set was
+# discoverable only by trial -- update_task(status="in_progress") was refused
+# with a list -- so the obvious spellings are accepted and normalised.
+STATUS_ALIASES = {"in_progress": "running", "in-progress": "running",
+                  "started": "running", "active": "running",
+                  "waiting": "blocked", "paused": "blocked",
+                  "complete": "done", "completed": "done", "finished": "done",
+                  "closed": "done", "canceled": "cancelled", "todo": "queued",
+                  "open": "queued", "pending": "queued"}
+
+
+def normalize_status(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    return STATUS_ALIASES.get(s, s)
 
 _FMT = "%Y-%m-%dT%H:%M:%SZ"
 _CANONICAL = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -131,6 +150,77 @@ def parse_when(raw: str, now: float | None = None) -> str:
     return dt.astimezone(timezone.utc).strftime(_FMT)
 
 
+def parse_duration(raw: str) -> str:
+    """A duration shorthand, validated and returned as written ('90m')."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise TaskError("poll_every is empty; give a duration like '10m' or '1h'")
+    m = _DURATION.match(raw.strip())
+    if not m or m.group(2).lower() not in _UNIT_SECONDS:
+        raise TaskError(f"poll_every {raw!r} is not a duration; give e.g. '10m' or '1h'")
+    return raw.strip()
+
+
+def duration_seconds(raw: str) -> float:
+    m = _DURATION.match(raw.strip())
+    return float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]
+
+
+# --- waiting on something external ------------------------------------------
+#
+# Twenty wakes in seventy minutes to learn "still running" twenty times.
+# A task may instead carry a condition the sweep checks itself, in-process,
+# and the owner is woken once: when it holds, or when the deadline passes.
+# Conditions read files and process tables; none runs a command, because
+# the sweep runs with the supervisor's privileges and a command an agent
+# wrote would run with them too.
+
+UNTIL_KINDS = ("file_exists", "file_contains", "pid_exited")
+
+
+def parse_until(raw: str) -> dict:
+    """'file_exists:/path', 'file_contains:/path:text', 'pid_exited:1234'."""
+    kind, _, rest = (raw or "").strip().partition(":")
+    kind = kind.strip().lower()
+    if kind == "file_exists" and rest:
+        return {"type": kind, "path": rest.strip()}
+    if kind == "file_contains" and rest:
+        path, _, text = rest.partition(":")
+        if path.strip() and text:
+            return {"type": kind, "path": path.strip(), "text": text}
+    if kind == "pid_exited" and rest.strip().isdigit():
+        return {"type": kind, "pid": int(rest.strip())}
+    raise TaskError(f"until {raw!r} is not a condition this can check; give "
+                    f"'file_exists:/path', 'file_contains:/path:text' or "
+                    f"'pid_exited:1234'")
+
+
+def validate_until(until: dict) -> None:
+    if not isinstance(until, dict) or until.get("type") not in UNTIL_KINDS:
+        raise TaskError(f"until must be one of {', '.join(UNTIL_KINDS)}")
+
+
+def satisfied(until: dict) -> bool:
+    """Does the condition hold right now? Any error reads as 'not yet'."""
+    try:
+        t = until.get("type")
+        if t == "file_exists":
+            return Path(until["path"]).expanduser().exists()
+        if t == "file_contains":
+            return until["text"] in Path(until["path"]).expanduser().read_text(
+                encoding="utf-8", errors="replace")
+        if t == "pid_exited":
+            try:
+                os.kill(int(until["pid"]), 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
+            return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return False
+
+
 # --- the log --------------------------------------------------------------
 
 def _append(team_dir: Path | str, entry: dict) -> None:
@@ -176,7 +266,9 @@ def snapshot(team_dir: Path | str) -> dict[str, dict]:
         if rec.get("kind", _KIND_CREATED) == _KIND_CREATED:
             state[tid] = {k: rec.get(k) for k in
                           ("id", "project", "title", "owner", "status",
-                           "created_by", "note", "check_after")}
+                           "created_by", "note", "check_after", "collaborators",
+                           "requires_review", "evidence", "until", "poll_every",
+                           "deadline")}
             state[tid]["created_at"] = rec.get("ts")
             state[tid]["updated_at"] = rec.get("ts")
         elif tid in state:
@@ -196,12 +288,17 @@ def get(team_dir: Path | str, task_id: str) -> dict | None:
 
 def create(team_dir: Path | str, project: str, title: str,
            owner: str | None = None, created_by: str = "",
-           note: str = "", check_after: str | None = None) -> dict:
+           note: str = "", check_after: str | None = None,
+           collaborators: list[str] | None = None, requires_review: bool = False,
+           until: dict | None = None, poll_every: str | None = None,
+           deadline: str | None = None) -> dict:
     """Append a new task and return its current state."""
     if not project or not project.strip():
         raise TaskError("project is required")
     if not title or not title.strip():
         raise TaskError("title is required")
+    if until:
+        validate_until(until)
     entry = {
         "id": "task_" + uuid.uuid4().hex[:8],
         "kind": _KIND_CREATED,
@@ -213,7 +310,17 @@ def create(team_dir: Path | str, project: str, title: str,
         "created_by": created_by,
         "note": note.strip() if note else "",
         "check_after": parse_when(check_after) if check_after else None,
+        "collaborators": [c for c in (collaborators or []) if c and c != owner],
+        "requires_review": bool(requires_review),
+        "evidence": None,
+        "until": until or None,
+        "poll_every": parse_duration(poll_every) if poll_every else None,
+        "deadline": parse_when(deadline) if deadline else None,
     }
+    if until and not entry["check_after"]:
+        # A condition is checked from the next sweep on, not left to wait
+        # for a reminder nobody set.
+        entry["check_after"] = _now()
     with filelock.locked(path(team_dir)):
         _append(team_dir, entry)
     return get(team_dir, entry["id"])
@@ -241,7 +348,10 @@ def claim(team_dir: Path | str, task_id: str, agent: str) -> dict | None:
 def update(team_dir: Path | str, task_id: str, by: str, *,
            status: str | None = None, owner: str | None = None,
            check_after: str | None = None, clear_check_after: bool = False,
-           note: str | None = None) -> dict | None:
+           note: str | None = None, evidence: str | None = None,
+           collaborators: list[str] | None = None,
+           until: dict | None = None, poll_every: str | None = None,
+           deadline: str | None = None) -> dict | None:
     """Append a mutation by `by`. None if task_id is unknown.
 
     Only the owner may change an owned task, and passing `owner` is how they
@@ -250,10 +360,15 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
     because a reminder on finished work would only ever wake someone to read
     that it was finished.
     """
+    status = normalize_status(status)
     if status is not None and status not in STATUSES:
         raise TaskError(f"unknown status {status!r}; use one of "
                         f"{', '.join(sorted(STATUSES))}")
     when = parse_when(check_after) if check_after is not None else None
+    if until:
+        validate_until(until)
+    every = parse_duration(poll_every) if poll_every else None
+    due_by = parse_when(deadline) if deadline else None
     with filelock.locked(path(team_dir)):
         current = snapshot(team_dir).get(task_id)
         if current is None:
@@ -276,8 +391,68 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
             entry["check_after"] = when
         if note is not None:
             entry["note"] = note.strip()
+        if evidence is not None:
+            entry["evidence"] = evidence.strip()
+        if collaborators is not None:
+            entry["collaborators"] = [c for c in collaborators if c]
+        if until:
+            entry["until"] = until
+            if not when and not current.get("check_after"):
+                entry["check_after"] = _now()
+        if every:
+            entry["poll_every"] = every
+        if due_by:
+            entry["deadline"] = due_by
         _append(team_dir, entry)
     return get(team_dir, task_id)
+
+
+def complete(team_dir: Path | str, task_id: str, by: str, note: str,
+             evidence: str | None = None) -> dict | None:
+    """Close a task, with the closing note it must carry.
+
+    Three closed tasks still read "actively triaging..." because closing did
+    not ask for a note and the fold kept the old one. A joint task was closed
+    by one owner ten minutes before the other's result landed. A deliverable
+    reached the user before its review existed. So: a note, every
+    collaborator seen working since the task was created, and -- where the
+    task says so -- an approved review that names it.
+    """
+    if not note or not note.strip():
+        raise TaskError("a closing note is required: what was done and where "
+                        "the result is")
+    current = get(team_dir, task_id)
+    if current is None:
+        return None
+    if current.get("owner") and current["owner"] != by:
+        raise TaskError(f"task {task_id} is owned by '{current['owner']}', not '{by}'")
+    from .activity import author_activity
+    idle = []
+    for c in current.get("collaborators") or []:
+        verifiable, evidence_of = author_activity(Path(team_dir), c, current.get("created_at") or "")
+        if verifiable and not evidence_of:
+            idle.append(c)
+    if idle:
+        raise TaskError(f"task {task_id} lists {', '.join(idle)} as collaborator(s) "
+                        f"with no recorded activity since it was created; their "
+                        f"part has not landed. Wait for it, or remove them with "
+                        f"update_task(collaborators=...)")
+    if current.get("requires_review") and not approved_review_for(team_dir, task_id):
+        raise TaskError(f"task {task_id} requires an approved review before it "
+                        f"closes, and none names it. Have a teammate "
+                        f"record_review(..., task_id='{task_id}') first")
+    return update(team_dir, task_id, by, status="done", note=note, evidence=evidence)
+
+
+def approved_review_for(team_dir: Path | str, task_id: str) -> dict | None:
+    """The most recent approved work review that names this task, or None."""
+    from .activity import jsonl
+    found = None
+    for r in jsonl(Path(team_dir) / "reviews.jsonl"):
+        if (r.get("task_id") == task_id and r.get("verdict") == "approved"
+                and r.get("kind", "work") == "work"):
+            found = r
+    return found
 
 
 def list_tasks(team_dir: Path | str, project: str | None = None,
@@ -317,6 +492,17 @@ def _due_in(state: dict[str, dict], now: str) -> list[dict]:
 def due(team_dir: Path | str, now: str | None = None) -> list[dict]:
     """Unfinished tasks whose reminder has come due."""
     return _due_in(snapshot(team_dir), now or _now())
+
+
+def _describe(until: dict) -> str:
+    t = until.get("type")
+    if t == "file_exists":
+        return f"{until.get('path')} exists"
+    if t == "file_contains":
+        return f"{until.get('path')} contains {until.get('text')!r}"
+    if t == "pid_exited":
+        return f"process {until.get('pid')} exited"
+    return str(until)
 
 
 def reminder_text(owed: list[dict]) -> str:
@@ -374,8 +560,26 @@ def sweep(team_dir: Path | str, send, owners=None,
         by_owner: dict[str, list[dict]] = {}
         for t in _due_in(state, now):
             o = t.get("owner")
-            if o and (owners is None or o in owners):
-                by_owner.setdefault(o, []).append(t)
+            if not o or (owners is not None and o not in owners):
+                continue
+            until = t.get("until")
+            if until and not unreadable(t):
+                if satisfied(until):
+                    t = dict(t, note=(t.get("note") or "") +
+                             f" [condition met: {_describe(until)}]")
+                elif t.get("deadline") and t["deadline"] <= now:
+                    t = dict(t, note=(t.get("note") or "") +
+                             f" [deadline {t['deadline']} passed; condition NOT met: "
+                             f"{_describe(until)}]")
+                else:
+                    # Not yet: look again later, and wake nobody.
+                    every = t.get("poll_every") or "5m"
+                    nxt = time.strftime(_FMT, time.gmtime(
+                        time.time() + duration_seconds(every)))
+                    _append(team_dir, {"id": t["id"], "kind": _KIND_SWEPT, "ts": now,
+                                       "check_after": nxt})
+                    continue
+            by_owner.setdefault(o, []).append(t)
         for owner, owed in by_owner.items():
             try:
                 result = send(owner, reminder_text(owed))

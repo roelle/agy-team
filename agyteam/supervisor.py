@@ -29,6 +29,7 @@ from pathlib import Path
 
 from . import config
 from . import filelock
+from . import heartbeat
 from . import memory as memory_lib
 
 
@@ -64,30 +65,10 @@ def _rewrite(path: Path, text: str) -> None:
 
 
 def supervisor_running(team_dir: Path | str) -> dict | None:
-    """The live supervisor's heartbeat, or None if nothing is driving this team.
+    """The live supervisor's heartbeat, or None; see agyteam/heartbeat.py."""
+    return heartbeat.running(team_dir)
 
-    Stale if the process is gone or the file is older than two minutes:
-    a supervisor writes it every few seconds while it runs and removes it on
-    a clean exit, so an old file means one that died.
-    """
-    p = Path(team_dir) / "supervisor.json"
-    try:
-        doc = json.loads(p.read_text(encoding="utf-8"))
-        ts = time.strptime(doc["ts"], "%Y-%m-%dT%H:%M:%SZ")
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    import calendar
-    if time.time() - calendar.timegm(ts) > 120:
-        return None
-    pid = doc.get("pid")
-    if isinstance(pid, int) and pid != os.getpid():
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return None
-        except PermissionError:
-            pass
-    return doc
+
 from . import persona
 from . import retro_store
 from . import roster as roster_lib
@@ -833,7 +814,7 @@ class Supervisor:
 
     @property
     def heartbeat_path(self) -> Path:
-        return self.team_dir / "supervisor.json"
+        return heartbeat.path(self.team_dir)
 
     def _save_ledger(self) -> None:
         doc = {}

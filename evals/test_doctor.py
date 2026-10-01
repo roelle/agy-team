@@ -99,7 +99,7 @@ def test_it_echoes_the_brief_so_a_missing_index_is_visible_now(tmp_path):
     td = make_team(tmp_path)
     p = run(td, tmp_path, "--brief-lines", "40")
     assert "the brief carries the bus tool signatures" in p.stdout
-    assert "send_to_teammate(to, content)" in p.stdout, \
+    assert "send_to_teammate(to, content" in p.stdout, \
         "the default echo must reach far enough to show the tool index"
 
 

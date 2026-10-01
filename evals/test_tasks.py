@@ -358,7 +358,7 @@ def test_tool_refusals_are_sentences_not_exceptions(team, monkeypatch):
 def test_setting_a_reminder_says_what_delivers_it(team):
     out = mcp_tasks._create_task("coder", team, {"project": "p", "title": "sim",
                                                  "check_after": "1h"})
-    assert "tasks sweep" in out and "supervisor" in out
+    assert "sweep" in out and "supervisor" in out
 
 
 def test_handing_off_to_someone_not_on_the_roster_is_refused(team):
@@ -369,9 +369,9 @@ def test_handing_off_to_someone_not_on_the_roster_is_refused(team):
 
 def test_complete_task_clears_the_reminder(team):
     t = remind(team, when=FUTURE)
-    mcp_tasks._complete_task("coder", team, {"task_id": t["id"]})
+    mcp_tasks._complete_task("coder", team, {"task_id": t["id"], "note": "shipped"})
     got = tasks.get(team, t["id"])
-    assert (got["status"], got["check_after"]) == ("done", None)
+    assert (got["status"], got["check_after"], got["note"]) == ("done", None, "shipped")
 
 
 # --- the preflight -------------------------------------------------------------------
