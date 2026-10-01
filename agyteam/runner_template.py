@@ -27,6 +27,25 @@ invent one, and do not return "[error: ...]" for a turn that merely produced no
 readable output: that string means failure, the supervisor records it as one,
 and the retry wrapper may re-run a turn that already succeeded.
 
+Returning "" is only half of it. The agent's words reach the team through the
+bus tools -- `send_to_teammate`, `record_review`, `record_retro` -- which are
+served by agyteam's MCP servers (plugin/mcp_config.template.json). **Your host
+must mount those servers for its agents.** A host that does not gets a team
+whose reviews are never recorded and whose retrospective reads "(missing or
+invalid)" in every section; that is not the runner's "" at fault, it is a
+mount that is absent, and it looks identical from the supervisor's side.
+
+## Before writing one: agyteam/runner_host.py
+
+If your host has a command that starts a conversation, a command that delivers
+a message, and a hook that fires when a turn ends, you do not need this file.
+`agyteam.runner_host:HostRunner` is that runner, driven by configuration:
+argv templates, a signal directory, a model map. Read it first; it also shows
+the non-blocking contract -- `begin()` returns a handle, `poll()` says when the
+turn ended -- that lets the supervisor run several agents' turns at once. A
+runner that only implements `wake()` gets that contract from the base class
+(a thread per turn), which is fine for a host whose turn is a subprocess.
+
 ## What you must declare
 
 Set the three capability flags honestly — `supports_audit`,

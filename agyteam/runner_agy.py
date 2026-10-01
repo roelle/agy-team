@@ -135,6 +135,7 @@ class AgyRunner(Runner):
                 total_tokens=usage.get("total_tokens"),
                 model=(payload.get("model") if isinstance(payload, dict) else None)
                       or self._model_for(agent) or None,
+                **self.meta_for(agent),
             )
         except Exception:
             pass  # accounting must never break a turn

@@ -89,7 +89,7 @@ class ScriptedRunner(Runner):
                 pass
         try:
             self.observer.record_turn(agent, self.conversation_id(agent) or "scripted",
-                                      duration_s=0.01)
+                                      duration_s=0.01, **self.meta_for(agent))
         except Exception:
             pass
         if retro_reply:

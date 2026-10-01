@@ -20,7 +20,9 @@ import importlib
 import json
 import os
 import random
+import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 
 # The default must be the runner that works everywhere. runner_sdk needs
@@ -151,9 +153,123 @@ class Runner(ABC):
     #: reporting it must say which of the two it is.
     supports_capability_scoping = False
 
+    #: True if begin() returns a handle that can be polled by a *different*
+    #: process -- one that identifies the turn on the host, not a thread in
+    #: this one. The supervisor keeps such handles across its own restarts;
+    #: a non-resumable turn dies with the process and its mail is redelivered.
+    resumable = False
+
+    #: True if this runner delivers mail as a one-line summary and lets the
+    #: agent read it with check_inbox, instead of pasting every body into the
+    #: wake prompt. See Supervisor.wake_prompt.
+    inbox_pull = False
+
     def __init__(self, config: dict | None = None, observer=None):
         self.config = config or {}
         self._observer = observer
+        # Per-agent context the supervisor sets before a turn and a runner
+        # folds into the turn event it records: what woke the agent, which
+        # hop it is. Pop it in record_turn's kwargs; see turn_meta().
+        self.turn_meta: dict[str, dict] = {}
+        self._turns: dict[str, dict] = {}
+        self._turns_lock = threading.Lock()
+        self._turn_done = threading.Condition(self._turns_lock)
+
+    # --- non-blocking turns ----------------------------------------------------
+    #
+    # The supervisor dispatches with begin()/poll(), so several agents can
+    # take turns at once and a twelve-minute turn holds nobody else up.
+    # A runner that only knows how to wake() gets these for free: begin()
+    # runs wake() on a thread and poll() reports when it returned. A runner
+    # on a host that runs turns out of process overrides them with handles
+    # that mean something to the host -- see runner_host.py -- and sets
+    # `resumable` so the supervisor can pick the turn back up after a restart.
+
+    def begin(self, agent: str, message: str) -> dict:
+        """Start a turn and return a JSON-serialisable handle for poll().
+
+        Returns once the turn has actually started, so the order in which the
+        supervisor begins turns is the order in which agents are woken.
+        """
+        self._turn_state()
+        tid = uuid.uuid4().hex[:12]
+        started = threading.Event()
+        rec = {"agent": agent, "reply": None, "raised": None, "cancelled": False}
+        with self._turns_lock:
+            self._turns[tid] = rec
+
+        def run():
+            started.set()
+            try:
+                reply = self.wake(agent, message)
+            except BaseException as e:          # noqa: BLE001 - the turn must report
+                reply, raised = f"[error: {type(e).__name__}: {e}]", e
+            else:
+                raised = None
+            with self._turn_done:
+                rec["reply"], rec["raised"] = reply, raised
+                self._turn_done.notify_all()
+
+        threading.Thread(target=run, name=f"turn-{agent}-{tid}", daemon=True).start()
+        started.wait(timeout=5)
+        return {"id": tid, "agent": agent, "thread": True}
+
+    def _turn_state(self) -> None:
+        # Subclasses that skip super().__init__() still get working turns.
+        if not hasattr(self, "_turns_lock"):
+            self.turn_meta = getattr(self, "turn_meta", {})
+            self._turns = {}
+            self._turns_lock = threading.Lock()
+            self._turn_done = threading.Condition(self._turns_lock)
+
+    def poll(self, handle: dict) -> str | None:
+        """The reply once the turn has ended, else None.
+
+        An exception the turn raised is returned as "[error: ...]" and left on
+        the handle under "raised", so the caller can tell a runner that
+        reported a failure from one that crashed.
+        """
+        self._turn_state()
+        with self._turns_lock:
+            rec = self._turns.get(handle.get("id", ""))
+            if rec is None:
+                # Not ours: a handle from before this process started. A
+                # thread cannot be resumed, so the turn is over as far as we
+                # can tell, and the mail it carried is still in the inbox.
+                return "[error: turn was started by a previous process and cannot be resumed]"
+            if rec["reply"] is None:
+                return None
+            handle["raised"] = repr(rec["raised"]) if rec["raised"] else None
+            del self._turns[handle["id"]]
+            return rec["reply"]
+
+    def cancel(self, handle: dict) -> None:
+        """Best effort. A thread cannot be killed; its result is discarded."""
+        self._turn_state()
+        with self._turns_lock:
+            rec = self._turns.get(handle.get("id", ""))
+            if rec is not None:
+                rec["cancelled"] = True
+
+    def wait_turn(self, timeout: float) -> None:
+        """Block until some turn ends or `timeout` passes.
+
+        The supervisor calls this instead of sleeping while turns are in
+        flight. Host runners whose turns end out of process override it with
+        a short sleep.
+        """
+        self._turn_state()
+        with self._turn_done:
+            # wait_for, not wait: a turn that ended between the caller's last
+            # poll and this call would otherwise be waited on for the full
+            # timeout, and nothing in the turn's thread can know to wake us.
+            self._turn_done.wait_for(
+                lambda: any(r["reply"] is not None for r in self._turns.values()),
+                timeout=timeout)
+
+    def meta_for(self, agent: str) -> dict:
+        """What the supervisor recorded about this turn, for record_turn."""
+        return getattr(self, "turn_meta", {}).pop(agent, {})
 
     @property
     def observer(self):
@@ -321,6 +437,14 @@ class Runner(ABC):
 
         Errors should be returned as text starting with "[error:", not raised;
         a supervisor must survive one agent failing.
+
+        **Where the agent's words go.** Nothing reads this return value for
+        content. Retrospective answers reach the retro through the
+        `record_retro` tool and reviews through `record_review`, both served
+        by the bus MCP server -- so a host must mount agyteam's MCP servers
+        for its agents, or those records are never written and a retro on
+        that host reports every section missing. That is a mount that is
+        absent, not a runner that returned "".
         """
 
     def close(self) -> None:

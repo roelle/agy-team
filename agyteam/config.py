@@ -179,3 +179,12 @@ def api_key() -> str:
     if not key:
         raise SystemExit("GEMINI_API_KEY not set (put it in .env at project root)")
     return key
+
+# After a failed wake, how long before that agent is tried again: doubling
+# from the base each consecutive failure, capped. A deliver that fails fast
+# and is retried at once is a spawn storm -- measured at two process spawns a
+# second, for days, in --daemon mode -- and after ESCALATE_AFTER_FAILURES in
+# a row the manager (or the user) is sent one message saying so.
+WAKE_BACKOFF_BASE_S = float(os.environ.get("AGYTEAM_WAKE_BACKOFF_BASE", 5))
+WAKE_BACKOFF_MAX_S = float(os.environ.get("AGYTEAM_WAKE_BACKOFF_MAX", 300))
+ESCALATE_AFTER_FAILURES = int(os.environ.get("AGYTEAM_ESCALATE_AFTER", 3))

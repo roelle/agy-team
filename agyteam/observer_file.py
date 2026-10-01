@@ -158,6 +158,10 @@ class FileObserver(Observer):
         }
         self._write_event(event)
 
+    def record_event(self, event: str, **fields) -> None:
+        self._write_event({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "event": event, **fields})
+
     def events(self, event_type: str | None = None) -> list[dict]:
         """Return recorded events, or [] if missing or empty."""
         try:

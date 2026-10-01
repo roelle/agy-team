@@ -81,13 +81,18 @@ class FileTransport(Transport):
 
     # --- messaging -------------------------------------------------------
 
-    def send(self, to: str, content: str) -> str:
+    def send(self, to: str, content: str, kind: str = "work",
+             task_id: str | None = None) -> str:
         known = [a["name"] for a in self._agents()]
         if to != "user" and known and to not in known:
             return (f"[error: no teammate named '{to}'. Teammates: "
                     f"{', '.join(known)}, user]")
         entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "from": self.me,
                  "to": to, "content": content}
+        if kind and kind != "work":
+            entry["kind"] = kind
+        if task_id:
+            entry["task_id"] = task_id
         line = json.dumps(entry) + "\n"
         with self.log.open("a") as f:
             f.write(line)
@@ -132,7 +137,9 @@ class FileTransport(Transport):
             try:
                 m = json.loads(line)
                 msgs.append(Message(ts=m["ts"], sender=m["from"], to=m["to"],
-                                    content=m["content"]))
+                                    content=m["content"],
+                                    kind=m.get("kind") or "work",
+                                    task_id=m.get("task_id")))
             except (ValueError, KeyError, TypeError):
                 continue            # skipped, never fatal; see module docstring
         return sorted(msgs, key=lambda m: 0 if m.sender == "user" else 1)
@@ -207,6 +214,10 @@ class FileTransport(Transport):
             recip = explicit_role or getattr(m, "to", None) or self.me
             if isinstance(m, Message):
                 entry = {"ts": m.ts, "from": m.sender, "to": m.to, "content": m.content}
+                if m.kind and m.kind != "work":
+                    entry["kind"] = m.kind
+                if m.task_id:
+                    entry["task_id"] = m.task_id
             elif isinstance(m, dict):
                 entry = {
                     "ts": m.get("ts", time.strftime("%Y-%m-%d %H:%M:%S")),

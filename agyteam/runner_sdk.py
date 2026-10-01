@@ -249,6 +249,7 @@ class SdkRunner(Runner):
                 cache_read_tokens=cache_tok,
                 total_tokens=tot_tok,
                 model=model,
+                **self.meta_for(agent),
             )
         except Exception:
             pass

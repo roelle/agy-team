@@ -28,6 +28,7 @@ import zlib
 from pathlib import Path
 
 from . import config
+from . import filelock
 from . import memory as memory_lib
 
 
@@ -43,13 +44,57 @@ def repetition_ratio(text: str) -> float:
     if len(raw) < 2000:
         return 1.0
     return len(raw) / max(len(zlib.compress(raw, 6)), 1)
+
+
+def _rewrite(path: Path, text: str) -> None:
+    """Replace `path` whole, so a concurrent reader sees old or new, never half."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def supervisor_running(team_dir: Path | str) -> dict | None:
+    """The live supervisor's heartbeat, or None if nothing is driving this team.
+
+    Stale if the process is gone or the file is older than two minutes:
+    a supervisor writes it every few seconds while it runs and removes it on
+    a clean exit, so an old file means one that died.
+    """
+    p = Path(team_dir) / "supervisor.json"
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        ts = time.strptime(doc["ts"], "%Y-%m-%dT%H:%M:%SZ")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    import calendar
+    if time.time() - calendar.timegm(ts) > 120:
+        return None
+    pid = doc.get("pid")
+    if isinstance(pid, int) and pid != os.getpid():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return None
+        except PermissionError:
+            pass
+    return doc
 from . import persona
 from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
 from . import tasks as tasks_lib
-from .transport import Message
+from .transport import Message, wakes
 from .transport import load as load_transport
 
 WAKE_PROMPT = """You have new messages from your team:
@@ -70,6 +115,19 @@ That is a normal, common, correct outcome — not a failure to participate.
 When the work you were asked for is done, send the result to whoever asked for
 it, once. Anything you want a teammate or the user to see must go through
 send_to_teammate; text you write here is seen by nobody."""
+
+PULL_PROMPT = """[wake] {n} message(s) in your inbox: {summary}
+
+Call check_inbox to read them, then act: do the work if it is yours, or
+delegate with send_to_teammate.
+
+Send a message only when it carries something the recipient does not already
+have — a deliverable, an answer, a question, a blocker, or a correction. Do NOT
+send acknowledgements, thanks, "got it", or "standing by" notes; if you must
+note that something was seen, send it with kind="ack", which wakes nobody.
+Doing nothing is a normal, correct outcome. Anything you want a teammate or the
+user to see must go through send_to_teammate; text you write here is seen by
+nobody."""
 
 DISTILL_PROMPT = """Write down, using save_memory, what you have learned that a future session would need and does not yet have.
 
@@ -575,7 +633,8 @@ class Supervisor:
     def __init__(self, agents: list[str], runner, team_dir=None,
                  max_hops: int = 32, poll: float = 1.0, quiet: bool = False,
                  stop_on_answer: bool = True, observer=None,
-                 require_review: bool = True, manager: str | None = None):
+                 require_review: bool = True, manager: str | None = None,
+                 inbox_pull: bool | None = None):
         self.agents = agents
         self.runner = runner
         self.max_hops = max_hops
@@ -609,6 +668,15 @@ class Supervisor:
         self.hops = 0
         self.stopped = ""
         self._purged_agents: set[str] = set()
+        self.inbox_pull = bool(inbox_pull if inbox_pull is not None
+                               else getattr(runner, "inbox_pull", False))
+        self.inflight: dict[str, dict] = {}
+        self._backoff: dict[str, float] = {}
+        self._fail_streak: dict[str, int] = {}
+        self._escalated: set[str] = set()
+        self._heartbeat_at = 0.0
+        self._step_lock = threading.RLock()
+        self._load_ledger()
 
     def _user_mail_count(self) -> int | None:
         """How much mail the user is holding. None if peek is unsupported."""
@@ -747,148 +815,407 @@ class Supervisor:
             pass
         return False
 
-    def step(self) -> int:
-        """One pass: wake every agent that has mail. Returns turns dispatched."""
-        stop_file = self.team_dir / ".stop"
-        if stop_file.exists():
-            try:
-                reason = stop_file.read_text(encoding="utf-8").strip()
-            except OSError:
-                reason = ""
-            reason = reason or "stop requested via lifecycle"
-            self.stopped = f"team stopped via lifecycle: {reason}"
-            self._log(f"[supervisor] team stopped via lifecycle: {reason}")
+    # --- dispatch ---------------------------------------------------------
+    #
+    # Turns run concurrently: an agent with mail is begun as soon as it has
+    # some, and a twelve-minute turn for one agent holds nobody else up. The
+    # runner's begin()/poll() contract is what makes that possible; a runner
+    # that only has wake() gets a thread adapter from the base class.
+    #
+    # What is in flight is written to <team_dir>/inflight.json so a
+    # supervisor that restarts knows which turns a host is still running
+    # (resumable handles) and which died with it (thread turns, whose mail
+    # is still in the inbox and is simply delivered again).
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.team_dir / "inflight.json"
+
+    @property
+    def heartbeat_path(self) -> Path:
+        return self.team_dir / "supervisor.json"
+
+    def _save_ledger(self) -> None:
+        doc = {}
+        for agent, turn in self.inflight.items():
+            doc[agent] = {"handle": turn["handle"], "ts": turn["ts"],
+                          "hop": turn["hop"], "trigger": turn["trigger"],
+                          "msgs": [m.as_dict() for m in turn["msgs"]]}
+        try:
+            with filelock.locked(self.ledger_path):
+                _rewrite(self.ledger_path, json.dumps(doc, indent=2) + "\n")
+        except OSError:
+            pass                    # bookkeeping must not stop dispatch
+
+    def _load_ledger(self) -> None:
+        try:
+            doc = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(doc, dict) or not doc:
+            return
+        for agent, turn in doc.items():
+            handle = turn.get("handle") or {}
+            msgs = [Message(ts=m.get("ts", ""), sender=m.get("from", "?"),
+                            to=m.get("to", agent), content=m.get("content", ""),
+                            id=m.get("id"), kind=m.get("kind") or "work",
+                            task_id=m.get("task_id"))
+                    for m in turn.get("msgs", [])]
+            if getattr(self.runner, "resumable", False) and not handle.get("thread"):
+                self.inflight[agent] = {
+                    "handle": handle, "msgs": msgs, "ts": turn.get("ts", ""),
+                    "hop": turn.get("hop", 0), "trigger": turn.get("trigger", {}),
+                    "started": time.monotonic(), "failures_before": 0,
+                    "resumed": True}
+                self._log(f"[supervisor] resuming {agent}'s turn from before the restart")
+            else:
+                # The turn died with the process that ran it. Its mail was
+                # never acknowledged, so the next pass delivers it again.
+                self._log(f"[supervisor] {agent}'s turn did not survive the "
+                          f"restart; its mail will be delivered again")
+                try:
+                    self.observer.record_failure(
+                        agent, "", "[error: supervisor restarted mid-turn; "
+                        "mail redelivered]", duration_s=None, hop=turn.get("hop"))
+                except Exception:
+                    pass
+        self._save_ledger()
+
+    def _heartbeat(self, mode: str = "running") -> None:
+        """Say that a supervisor is alive, for tools that need to know.
+
+        send_to_teammate reports whether anyone will wake the recipient, and
+        doctor warns when reminders are due with nothing sweeping; both read
+        this file. Written at most every few seconds.
+        """
+        now = time.monotonic()
+        if now - self._heartbeat_at < 5 and mode == "running":
+            return
+        self._heartbeat_at = now
+        try:
+            _rewrite(self.heartbeat_path, json.dumps({
+                "pid": os.getpid(), "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "mode": mode, "poll": self.poll,
+                "inflight": sorted(self.inflight)}) + "\n")
+        except OSError:
+            pass
+
+    def wake_prompt(self, msgs: list[Message]) -> str:
+        """What an agent is woken with.
+
+        By default, the messages themselves. With inbox_pull, one line saying
+        what is waiting and the agent reads it with check_inbox: nothing is
+        pasted into the prompt, the mail is acknowledged by the agent as it
+        reads, and a host can render the ping as a system note rather than a
+        user message.
+        """
+        if not self.inbox_pull:
+            return WAKE_PROMPT.format(messages="\n\n".join(m.render() for m in msgs))
+        parts = []
+        for m in msgs:
+            bits = [f"from={m.sender}", f"kind={m.kind}"]
+            if m.task_id:
+                bits.append(f"task_id={m.task_id}")
+            bits.append(f"bytes={len(m.content.encode('utf-8', 'replace'))}")
+            parts.append(" ".join(bits))
+        return PULL_PROMPT.format(n=len(msgs), summary="; ".join(parts))
+
+    def _failure_count(self) -> int:
+        try:
+            return len(self.observer.events("failure"))
+        except Exception:
             return 0
 
-        roster_path = self.team_dir / "roster.json"
-        if roster_path.exists():
-            try:
-                current_roster = roster_lib.load(roster_path)
-                current_roster = roster_lib.normalize(current_roster)
-                roster_agent_names = [a["name"] for a in current_roster.get("agents", [])]
-                if set(roster_agent_names) != set(self.transports.keys()):
-                    for name in roster_agent_names:
-                        if name not in self.transports:
-                            self.transports[name] = load_transport(name)
-                    for name in list(self.transports.keys()):
-                        if name not in roster_agent_names:
-                            t = self.transports.pop(name)
-                            if hasattr(t, "close") and callable(t.close):
-                                try:
-                                    t.close()
-                                except Exception:
-                                    pass
-                    self.agents = roster_agent_names
-                if hasattr(self.runner, "sync_roster") and callable(self.runner.sync_roster):
-                    self.runner.sync_roster(current_roster)
-            except Exception:
-                pass
+    def _sent_during(self, agent: str, since_ts: str) -> dict[str, int]:
+        """Bus messages `agent` sent since `since_ts`, counted by kind."""
+        out: dict[str, int] = {}
+        try:
+            for line in (self.team_dir / "bus.jsonl").read_text(encoding="utf-8").splitlines():
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("from") == agent and (e.get("ts") or "") >= since_ts:
+                    k = e.get("kind") or "work"
+                    out[k] = out.get(k, 0) + 1
+        except OSError:
+            pass
+        return out
 
-        self._sweep_due_tasks()
-
-        dispatched = 0
-        ordered_transports = sorted(
-            self.transports.items(),
-            key=lambda item: 0 if self._has_user_mail(item[1]) else 1,
-        )
-        for agent, transport in ordered_transports:
+    def _begin_turns(self, respect_backoff: bool = True) -> list[str]:
+        """Start a turn for every agent with waking mail and no turn running."""
+        begun: list[str] = []
+        now = time.monotonic()
+        ordered = sorted(self.transports.items(),
+                         key=lambda item: 0 if self._has_user_mail(item[1]) else 1)
+        for agent, transport in ordered:
+            if agent in self.inflight:
+                continue
             if self.hops >= self.max_hops:
-                return dispatched
+                break
+            if respect_backoff and self._backoff.get(agent, 0.0) > now:
+                continue
             # One agent's unreadable inbox is that agent's problem. Raising
-            # here ended step() for everyone, every pass, until someone found
-            # the file -- the same isolation a failed turn already gets.
+            # here ended the pass for everyone, every pass, until someone
+            # found the file -- the same isolation a failed turn gets.
             try:
                 msgs = transport.fetch()
             except Exception as e:
-                self._log(f"  ! could not read {agent}'s mail: "
-                          f"{type(e).__name__}: {e}")
+                self._log(f"  ! could not read {agent}'s mail: {type(e).__name__}: {e}")
                 continue
-            if not msgs:
-                continue
+            if not msgs or not any(wakes(m.kind) for m in msgs):
+                continue            # quiet mail waits for a waking cause
             senders = ", ".join(sorted({m.sender for m in msgs}))
-            self._log(f"  → waking {agent} ({len(msgs)} from {senders})")
-            body = "\n\n".join(m.render() for m in msgs)
             self.hops += 1
-            t0 = time.monotonic()
-            failed = False
+            trigger = {"senders": sorted({m.sender for m in msgs}),
+                       "kinds": sorted({m.kind for m in msgs}),
+                       "task_ids": sorted({m.task_id for m in msgs if m.task_id})}
             try:
-                reply = self.runner.wake(agent, WAKE_PROMPT.format(messages=body))
-            except Exception as e:                      # one agent must not
-                dur = time.monotonic() - t0
-                reply = f"[error: {type(e).__name__}: {e}]"   # stop the team
-                failed = True
-                try:
-                    cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
-                    self.observer.record_failure(agent, cid, reply, duration_s=dur)
-                except Exception:
-                    pass
-            if reply.startswith("[error:"):
-                failed = True
-                self._log(f"    {agent}: {reply[:200]}")
-            elif not self.quiet:
-                first = reply.strip().splitlines()[0] if reply.strip() else ""
-                self._log(f"    {agent}: {first[:120]}")
+                self.runner.turn_meta[agent] = {"trigger": trigger, "hop": self.hops}
+            except Exception:
+                pass
+            self._log(f"  → waking {agent} ({len(msgs)} from {senders})")
+            turn = {"msgs": msgs, "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "started": time.monotonic(), "hop": self.hops,
+                    "trigger": trigger, "failures_before": self._failure_count()}
+            try:
+                turn["handle"] = self.runner.begin(agent, self.wake_prompt(msgs))
+            except Exception as e:          # the runner could not even start it
+                turn["handle"] = {"raised": repr(e)}
+                self._finish(agent, turn, f"[error: {type(e).__name__}: {e}]")
+                continue
+            self.inflight[agent] = turn
+            begun.append(agent)
+        if begun:
+            self._save_ledger()
+        return begun
+
+    def _reap(self) -> int:
+        """Finish every turn that has ended. Returns how many."""
+        done = 0
+        for agent, turn in list(self.inflight.items()):
+            try:
+                reply = self.runner.poll(turn["handle"])
+            except Exception as e:
+                reply = f"[error: {type(e).__name__}: {e}]"
+                turn["handle"]["raised"] = repr(e)
+            if reply is None:
+                continue
+            del self.inflight[agent]
+            self._finish(agent, turn, reply if isinstance(reply, str) else "")
+            done += 1
+        if done:
+            self._save_ledger()
+        return done
+
+    def _finish(self, agent: str, turn: dict, reply: str) -> None:
+        """Acknowledge or requeue, account, and judge one ended turn."""
+        msgs = turn["msgs"]
+        dur = time.monotonic() - turn["started"]
+        failed = reply.startswith("[error:")
+        transport = self.transports.get(agent)
+        if failed:
+            self._log(f"    {agent}: {reply[:200]}")
+        elif not self.quiet:
+            first = reply.strip().splitlines()[0] if reply.strip() else ""
+            self._log(f"    {agent}: {first[:120]}")
+
+        if transport is not None:
             if failed:
                 if hasattr(transport, "requeue") and callable(transport.requeue):
                     try:
                         transport.requeue(msgs)
                     except TypeError:
                         transport.requeue(agent, msgs)
-            else:
-                if hasattr(transport, "acknowledge") and callable(transport.acknowledge):
-                    try:
-                        transport.acknowledge(msgs)
-                    except TypeError:
-                        transport.acknowledge()
-            dispatched += 1
-
-            anomaly_threshold = int(os.environ.get(
-                "AGYTEAM_ANOMALY_OUTPUT_TOKENS", config.ANOMALY_OUTPUT_TOKENS_THRESHOLD
-            ))
-            try:
-                turn_events = self.observer.events("turn")
-                agent_turns = [
-                    ev for ev in turn_events
-                    if ev.get("agent") == agent
-                ]
-                latest_turn = agent_turns[-1] if agent_turns else None
-            except Exception:
-                latest_turn = None
-
-            out_tok = (latest_turn or {}).get("output_tokens")
-            if out_tok is not None and out_tok > anomaly_threshold:
-                # A big turn is expensive, which is worth saying out loud, but it
-                # is not by itself a sick turn. This guard used to purge the
-                # agent and halt the whole episode on volume alone; it did that
-                # to syseng seconds after he finished a working build, because
-                # 229 shell invocations legitimately cost 225k output tokens.
-                # Volume is reported. Only repetition acts.
-                rep = repetition_ratio(reply)
-                self._log(f"[WARNING: {agent} produced {out_tok:,} output tokens "
-                          f"(threshold {anomaly_threshold:,}), repetition "
-                          f"{rep:.1f}x]")
-                if rep < config.ANOMALY_REPETITION_RATIO:
-                    continue            # expensive, not broken: let it work
-                err_msg = (
-                    f"anomaly detected for {agent}: {out_tok} output tokens at "
-                    f"repetition {rep:.1f}x (limit "
-                    f"{config.ANOMALY_REPETITION_RATIO}x) — output is degenerate"
-                )
-                self._log(f"[WARNING: {err_msg}]")
-                cid = (
-                    latest_turn.get("conversation")
-                    or getattr(self.runner, "conversation_id", lambda a: "")(agent)
-                    or ""
-                )
-                dur = latest_turn.get("duration_s") or (time.monotonic() - t0)
-                self.purge_context(agent)
+            elif hasattr(transport, "acknowledge") and callable(transport.acknowledge):
                 try:
-                    self.observer.record_failure(agent, cid, err_msg, duration_s=dur)
+                    transport.acknowledge(msgs)
+                except TypeError:
+                    transport.acknowledge()
+
+        cid = ""
+        try:
+            cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
+        except Exception:
+            pass
+
+        if failed:
+            self._fail_streak[agent] = self._fail_streak.get(agent, 0) + 1
+            streak = self._fail_streak[agent]
+            # A failing wake path returned in milliseconds, counted as a
+            # dispatched turn, and the daemon never slept: two spawns a
+            # second, for days, with nothing in events.jsonl. Back off, and
+            # make sure the failure is on the record whoever reported it.
+            delay = min(config.WAKE_BACKOFF_BASE_S * (2 ** (streak - 1)),
+                        config.WAKE_BACKOFF_MAX_S)
+            self._backoff[agent] = time.monotonic() + delay
+            if turn["handle"].get("raised") or \
+                    self._failure_count() <= turn["failures_before"]:
+                try:
+                    self.observer.record_failure(agent, cid, reply, duration_s=dur,
+                                                 hop=turn["hop"],
+                                                 trigger=turn["trigger"])
                 except Exception:
                     pass
-                self.stopped = err_msg
-                return dispatched
-        return dispatched
+            if streak >= config.ESCALATE_AFTER_FAILURES and agent not in self._escalated:
+                self._escalated.add(agent)
+                self._escalate(agent, streak, reply)
+        else:
+            self._fail_streak.pop(agent, None)
+            self._backoff.pop(agent, None)
+            self._escalated.discard(agent)
+
+        sent = self._sent_during(agent, turn["ts"])
+        try:
+            self.observer.record_event(
+                "dispatch", agent=agent, conversation=cid, hop=turn["hop"],
+                trigger=turn["trigger"], failed=failed, duration_s=round(dur, 2),
+                sent=sent, ack_only=bool(sent) and all(not wakes(k) for k in sent),
+                resumed=bool(turn.get("resumed")))
+        except Exception:
+            pass
+
+        if not failed:
+            self._check_anomaly(agent, reply, turn)
+
+    def _escalate(self, agent: str, streak: int, reply: str) -> None:
+        """One message, to whoever can act, after a run of failed wakes."""
+        mgr = self._find_manager()
+        to = mgr if mgr and mgr != agent else "user"
+        text = (f"{agent} has failed {streak} turns in a row and is being "
+                f"retried with backoff; nothing they were asked to do is "
+                f"happening until the wake path works. Last error: "
+                f"{reply[:300]}")
+        try:
+            bus = load_transport("supervisor")
+            try:
+                bus.send_kind(to, text, kind="blocker")
+            finally:
+                if hasattr(bus, "close"):
+                    bus.close()
+            self._log(f"[supervisor] escalated {agent}'s failures to {to}")
+        except Exception:
+            pass
+
+    def _check_anomaly(self, agent: str, reply: str, turn: dict) -> None:
+        anomaly_threshold = int(os.environ.get(
+            "AGYTEAM_ANOMALY_OUTPUT_TOKENS", config.ANOMALY_OUTPUT_TOKENS_THRESHOLD))
+        try:
+            agent_turns = [ev for ev in self.observer.events("turn")
+                           if ev.get("agent") == agent]
+            latest_turn = agent_turns[-1] if agent_turns else None
+        except Exception:
+            latest_turn = None
+        out_tok = (latest_turn or {}).get("output_tokens")
+        if out_tok is None or out_tok <= anomaly_threshold:
+            return
+        # A big turn is expensive, which is worth saying out loud, but it
+        # is not by itself a sick turn. This guard used to purge the
+        # agent and halt the whole episode on volume alone; it did that
+        # to syseng seconds after he finished a working build, because
+        # 229 shell invocations legitimately cost 225k output tokens.
+        # Volume is reported. Only repetition acts.
+        rep = repetition_ratio(reply)
+        self._log(f"[WARNING: {agent} produced {out_tok:,} output tokens "
+                  f"(threshold {anomaly_threshold:,}), repetition {rep:.1f}x]")
+        if rep < config.ANOMALY_REPETITION_RATIO:
+            return                  # expensive, not broken: let it work
+        err_msg = (f"anomaly detected for {agent}: {out_tok} output tokens at "
+                   f"repetition {rep:.1f}x (limit "
+                   f"{config.ANOMALY_REPETITION_RATIO}x) — output is degenerate")
+        self._log(f"[WARNING: {err_msg}]")
+        cid = (latest_turn.get("conversation")
+               or getattr(self.runner, "conversation_id", lambda a: "")(agent) or "")
+        dur = latest_turn.get("duration_s") or (time.monotonic() - turn["started"])
+        self.purge_context(agent)
+        try:
+            self.observer.record_failure(agent, cid, err_msg, duration_s=dur)
+        except Exception:
+            pass
+        self.stopped = err_msg
+
+    def _pass(self, respect_backoff: bool = True) -> tuple[list[str], int]:
+        """One scheduling pass: reap what ended, begin what can start.
+
+        Returns (agents begun, turns reaped). Does not wait for anything.
+        """
+        with self._step_lock:
+            stop_file = self.team_dir / ".stop"
+            if stop_file.exists():
+                try:
+                    reason = stop_file.read_text(encoding="utf-8").strip()
+                except OSError:
+                    reason = ""
+                reason = reason or "stop requested via lifecycle"
+                self.stopped = f"team stopped via lifecycle: {reason}"
+                self._log(f"[supervisor] team stopped via lifecycle: {reason}")
+                return [], 0
+
+            roster_path = self.team_dir / "roster.json"
+            if roster_path.exists():
+                try:
+                    current_roster = roster_lib.load(roster_path)
+                    current_roster = roster_lib.normalize(current_roster)
+                    roster_agent_names = [a["name"] for a in current_roster.get("agents", [])]
+                    if set(roster_agent_names) != set(self.transports.keys()):
+                        for name in roster_agent_names:
+                            if name not in self.transports:
+                                self.transports[name] = load_transport(name)
+                        for name in list(self.transports.keys()):
+                            if name not in roster_agent_names:
+                                t = self.transports.pop(name)
+                                if hasattr(t, "close") and callable(t.close):
+                                    try:
+                                        t.close()
+                                    except Exception:
+                                        pass
+                                # A turn in flight for an agent who has left
+                                # finishes on its own; nothing will read its
+                                # mail again, so it leaves the ledger now.
+                                turn = self.inflight.pop(name, None)
+                                if turn is not None:
+                                    try:
+                                        self.runner.cancel(turn["handle"])
+                                    except Exception:
+                                        pass
+                                    self._save_ledger()
+                        self.agents = roster_agent_names
+                    if hasattr(self.runner, "sync_roster") and callable(self.runner.sync_roster):
+                        self.runner.sync_roster(current_roster)
+                except Exception:
+                    pass
+
+            self._heartbeat()
+            self._sweep_due_tasks()
+            reaped = self._reap()
+            begun = self._begin_turns(respect_backoff)
+            return begun, reaped
+
+    def _drain(self, agents: list[str] | None = None) -> int:
+        """Wait for turns to end -- the given agents', or all -- reaping as they do."""
+        reaped = 0
+        while True:
+            with self._step_lock:
+                reaped += self._reap()
+            waiting = [a for a in self.inflight if agents is None or a in agents]
+            if not waiting:
+                return reaped
+            self.runner.wait_turn(self.poll)
+
+    def step(self) -> int:
+        """One pass, then wait for every turn it began to end.
+
+        Returns the number of turns begun. Turns begun in the same pass run
+        concurrently; the pass is over when the last of them is. Callers
+        that want to overlap passes use run_until_idle or run_forever, which
+        drive _pass() directly and never wait for a particular turn.
+
+        Failure backoff is the loops' concern: a caller stepping by hand is
+        pacing itself, and a step it asks for is a step it gets.
+        """
+        begun, _ = self._pass(respect_backoff=False)
+        self._drain(begun)
+        return len(begun)
 
     def run_until_idle(self) -> int:
         """Dispatch until the user is answered, or nobody has mail.
@@ -912,18 +1239,20 @@ class Supervisor:
         self.hops = 0
         self._user_mail_at_start = self._user_mail_count()
         self._approved_reviews_at_start = self._approved_reviews_count()
-        while self.hops < self.max_hops:
-            n = self.step()
-            total += n
+        while True:
+            begun, reaped = self._pass()
+            total += len(begun)
             if self.stopped:
-                break
-            if n == 0:
-                self.stopped = "team went idle"
+                self._drain()
                 break
             # Answering the user ends the episode. Without this, agents who
             # have nothing left to do still owe each other a reply, and a
             # finished team keeps talking until the hop budget kills it.
+            # Judged only once every turn in flight has ended: a verdict
+            # taken mid-turn would stop the episode under an agent still
+            # working on it.
             if self.stop_on_answer and self._user_was_answered():
+                self._drain()
                 if self._has_new_approved_review():
                     self.stopped = "the user was answered"
                     break
@@ -962,11 +1291,26 @@ class Supervisor:
                 self.stopped = "the user was answered (unreviewed)"
                 self._log("[WARNING: the user was answered without an approved review recorded in reviews.jsonl]")
                 break
-        if self.hops >= self.max_hops and not self.stopped:
-            self.stopped = f"hop budget of {self.max_hops} reached"
-            self._log(f"[hop budget of {self.max_hops} reached — stopping. "
-                      f"Raise --max-hops or send a new instruction.]")
-        else:
+            if self.hops >= self.max_hops and not begun:
+                self._drain()
+                if not self.stopped:
+                    self.stopped = f"hop budget of {self.max_hops} reached"
+                    self._log(f"[hop budget of {self.max_hops} reached — stopping. "
+                              f"Raise --max-hops or send a new instruction.]")
+                break
+            if not begun and not reaped:
+                if self.inflight:
+                    self.runner.wait_turn(self.poll)
+                    continue
+                if any(self._backoff.get(a, 0.0) > time.monotonic() for a in self.transports
+                       if self._has_waking_mail(self.transports[a])):
+                    # Mail is waiting on an agent in backoff; give it time
+                    # rather than calling the team idle with work undone.
+                    time.sleep(min(self.poll, 1.0))
+                    continue
+                self.stopped = "team went idle"
+                break
+        if not self.stopped.startswith("hop budget"):
             self._log(f"[done after {total} turns — {self.stopped}]")
         self._log_pending_reminders()
         try:
@@ -982,6 +1326,13 @@ class Supervisor:
         self.auto_cycle()
         return total
 
+    def _has_waking_mail(self, transport) -> bool:
+        try:
+            pending = transport.peek()
+        except Exception:
+            return False
+        return bool(pending) and any(wakes(getattr(m, "kind", "work")) for m in pending)
+
     def run_forever(self, stop: threading.Event | None = None) -> None:
         """React to mail as it arrives, indefinitely."""
         stop = stop or threading.Event()
@@ -990,17 +1341,20 @@ class Supervisor:
         while not stop.is_set():
             if self.stopped:
                 break
-            if self.step() == 0:
+            begun, reaped = self._pass()
+            if begun or reaped:
+                # A long-running daemon should not inherit a budget meant to
+                # bound one stimulus; the cap applies per burst of activity.
+                if self.hops >= self.max_hops and not self.inflight:
+                    self._log("[hop budget reached; resetting for the next burst]")
+                    self.hops = 0
+                    self.auto_cycle()
+                continue
+            if self.inflight:
+                self.runner.wait_turn(self.poll)
+            else:
                 self.auto_cycle()
                 stop.wait(self.poll)
-            elif self.stopped:
-                break
-            # A long-running daemon should not inherit a budget meant to bound
-            # one stimulus; the cap applies per burst of activity.
-            elif self.hops >= self.max_hops:
-                self._log(f"[hop budget reached; resetting for the next burst]")
-                self.hops = 0
-                self.auto_cycle()
 
     def _memory_count(self, agent: str) -> int:
         store = memory_lib.load(agent)
@@ -1548,6 +1902,17 @@ class Supervisor:
         )
 
     def close(self):
+        for agent, turn in list(self.inflight.items()):
+            if not getattr(self.runner, "resumable", False):
+                try:
+                    self.runner.cancel(turn["handle"])
+                except Exception:
+                    pass
+        self._save_ledger()
+        try:
+            self.heartbeat_path.unlink()
+        except OSError:
+            pass
         self.runner.close()
         for t in self.transports.values():
             if hasattr(t, "close") and callable(t.close):
@@ -2186,6 +2551,10 @@ def main(argv=None, runner=None):
                     help="Do not bounce unreviewed answers back to the manager")
     ap.add_argument("--manager", metavar="AGENT", default=None,
                     help="Agent acting as manager (default: auto-detect from roster)")
+    ap.add_argument("--inbox-pull", action="store_true",
+                    help="Wake agents with a one-line summary and let them read "
+                         "their mail with check_inbox, instead of pasting it "
+                         "into the prompt")
     args = ap.parse_args(argv)
 
     # Set the team directory and nothing else. This used to also write
@@ -2236,7 +2605,8 @@ def main(argv=None, runner=None):
                      max_hops=args.max_hops, poll=args.poll, quiet=args.quiet,
                      stop_on_answer=not args.no_stop_on_answer,
                      require_review=not args.no_require_review,
-                     manager=args.manager)
+                     manager=args.manager,
+                     inbox_pull=True if args.inbox_pull else None)
     try:
         if args.retro:
             retro_leader = resolve_retro_leader(args.retro_leader, agents,

@@ -74,6 +74,13 @@ class Observer(ABC):
                        duration_s: float | None = None, **kwargs) -> None:
         """Record the conclusion of a supervisor episode."""
 
+    def record_event(self, event: str, **fields) -> None:
+        """Record an event of any other kind, e.g. the supervisor's "dispatch".
+
+        Optional: a store that only knows the four events above may ignore
+        it. Must not raise.
+        """
+
     def events(self, event_type: str | None = None) -> list[dict]:
         """Return recorded events, optionally filtered by event_type.
 

@@ -12,6 +12,16 @@ source changes, and agents never notice the difference.
 
 Implement `send`, `fetch`, and `teammates`; everything else has a working
 default. See agyteam/transport_template.py for a commented skeleton.
+
+## Message kinds
+
+Every message carries a `kind`. Most kinds wake the recipient; a few do not:
+an `ack`, an `fyi` or a `status` note is written to the inbox and read on the
+recipient's next wake, whatever causes it. One review cost six model turns
+before this existed -- request, forward, verdict, cc, user, cc -- and the
+polite half of those woke someone to read nothing. A transport that stores
+only (sender, recipient, content) still works: the base class folds the kind
+into the text, so it is visible rather than lost, and such a message wakes.
 """
 import importlib
 import json
@@ -21,6 +31,15 @@ from dataclasses import dataclass
 
 DEFAULT_TRANSPORT = "agyteam.transport_file:FileTransport"
 
+#: Kinds that cause a wake, and kinds that wait for one.
+WAKING_KINDS = ("work", "deliverable", "question", "blocker", "review", "reminder")
+QUIET_KINDS = ("ack", "fyi", "status")
+KINDS = WAKING_KINDS + QUIET_KINDS
+
+
+def wakes(kind: str | None) -> bool:
+    return (kind or "work") not in QUIET_KINDS
+
 
 @dataclass
 class Message:
@@ -29,9 +48,22 @@ class Message:
     to: str
     content: str
     id: str | int | None = None
+    kind: str = "work"
+    task_id: str | None = None
 
     def render(self) -> str:
-        return f"[{self.ts}] from {self.sender}:\n{self.content}"
+        tag = "" if self.kind == "work" else f" ({self.kind})"
+        task = f" [task {self.task_id}]" if self.task_id else ""
+        return f"[{self.ts}] from {self.sender}{tag}{task}:\n{self.content}"
+
+    def as_dict(self) -> dict:
+        d = {"ts": self.ts, "from": self.sender, "to": self.to,
+             "content": self.content, "kind": self.kind}
+        if self.id is not None:
+            d["id"] = self.id
+        if self.task_id:
+            d["task_id"] = self.task_id
+        return d
 
 
 class Transport(ABC):
@@ -52,6 +84,9 @@ class Transport(ABC):
 
         Return a string starting with '[error:' for unknown recipients rather
         than raising — the model reads this and can correct itself.
+
+        A transport that stores kinds accepts `kind=` and `task_id=` keyword
+        arguments as well; see send_kind.
         """
 
     @abstractmethod
@@ -79,6 +114,23 @@ class Transport(ABC):
         """
 
     # --- optional ---------------------------------------------------------
+
+    def send_kind(self, to: str, content: str, kind: str = "work",
+                  task_id: str | None = None) -> str:
+        """send() with a kind, on any transport.
+
+        A transport whose send() takes the keywords stores them. One that
+        does not gets the kind and task written into the text instead -- the
+        recipient still sees it, at the cost of such a message waking them.
+        """
+        if kind == "work" and not task_id:
+            return self.send(to, content)
+        try:
+            return self.send(to, content, kind=kind, task_id=task_id)
+        except TypeError:
+            tag = f"[{kind}]" if kind != "work" else ""
+            task = f"[task {task_id}]" if task_id else ""
+            return self.send(to, f"{tag}{task} {content}".strip())
 
     def peek(self) -> list[Message] | None:
         """Messages waiting for me, WITHOUT consuming them. None = unsupported.
