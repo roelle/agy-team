@@ -161,6 +161,32 @@ def test_a_cascade_runs_through_the_supervisor(host):
     assert time.monotonic() - t0 < 2.5, "the two primer+turn pairs did not overlap"
 
 
+def test_turns_the_operator_takes_in_the_host_ui_reach_the_record(host):
+    """The stop hook fires for every turn; the ones this runner did not
+    start used to leave no trace."""
+    td, log, config = host
+    runner = HostRunner(config)
+    runner.wake("coder", "first")
+    signal = Path(config["signal_dir"]) / "conv-1.jsonl"
+    with signal.open("a") as f:                     # two turns in the host UI
+        f.write(json.dumps({"turn": "ended"}) + "\n")
+        f.write(json.dumps({"turn": "ended"}) + "\n")
+    runner.wake("coder", "second")
+    turns = [json.loads(l) for l in (td / "events.jsonl").read_text().splitlines()
+             if '"turn"' in l]
+    by_host = [t for t in turns if t.get("started_by") == "host"]
+    assert len(by_host) == 2 and all(t["agent"] == "coder" for t in by_host)
+    assert len([t for t in turns if not t.get("started_by")]) == 2
+
+
+def test_the_primer_turn_gets_the_turn_timeout_not_the_command_timeout(host, monkeypatch):
+    td, log, config = host
+    monkeypatch.setenv("FAKE_HOST_DELAY", "0.8")
+    config["start_timeout"] = 0.3                    # bounds the command only
+    config["timeout"] = 5
+    assert HostRunner(config).wake("coder", "hi") == ""
+
+
 def test_missing_configuration_fails_at_load(host):
     with pytest.raises(SystemExit, match="signal_dir"):
         HostRunner({"start": ["x"], "deliver": ["y"]})

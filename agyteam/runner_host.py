@@ -21,6 +21,10 @@ upstream, configured rather than written:
       "model_map": {"coder": "fast-model", "*": "default-model"}
     }'
 
+`timeout` bounds a turn, the primer turn included -- a host that initialises
+its tool servers synchronously spends that on the first turn. `start_timeout`
+(default 120 s) bounds only the start/deliver/cancel commands themselves.
+
 `start` must print JSON (or, with "start_id_path": "stdout", just the id); the
 conversation id is read from it at `start_id_path`, a dotted path. `deliver`
 takes the message as its own argv element, never interpolated into a shell
@@ -91,6 +95,7 @@ class HostRunner(Runner):
         self.supports_containment = bool(caps.get("supports_containment", False))
         self.supports_capability_scoping = bool(caps.get("supports_capability_scoping", False))
         self.inbox_pull = bool(c.get("inbox_pull", False))
+        self._seen: dict[str, int] = {}     # signal lines accounted for, per conversation
         missing = [k for k, v in (("start", self.start_argv), ("deliver", self.deliver_argv),
                                   ("signal_dir", self.signal_dir)) if not v]
         if missing:
@@ -234,12 +239,17 @@ class HostRunner(Runner):
                 # Register, then deliver: see "Two-phase start".
                 self.remember_conversation(agent, conv)
                 signal = self.signal_path(conv)
-                if not self._wait_lines(signal, 0, self.start_timeout):
+                # The turn's own timeout, not start_timeout: a host that
+                # initialises its tool servers synchronously spends that on
+                # the first turn, and start_timeout bounds commands, not turns.
+                if not self._wait_lines(signal, 0, self.timeout):
                     raise RuntimeError("the primer turn never ended; is the stop "
                                        f"hook writing to {signal}?")
+                self._seen[conv] = len(self._lines(signal))
                 message = f"{self._brief(agent)}\n\n---\n\n{message}"
             signal = self.signal_path(conv)
             before = len(self._lines(signal))
+            self._note_untracked(agent, conv, before)
             self._deliver(agent, conv, message)
         except Exception as e:                      # noqa: BLE001 - report, never raise
             handle["error"] = f"[error: {agent} failed: {type(e).__name__}: {e}]"
@@ -253,6 +263,10 @@ class HostRunner(Runner):
             return handle["error"]
         agent, conv = handle["agent"], handle["conversation"]
         lines = self._lines(Path(handle["signal"]))
+        if len(lines) > handle["before"] + 1:
+            # More turns ended than this one: the operator took turns in the
+            # host's own UI. They are on the record as the host's, not ours.
+            self._note_untracked(agent, conv, len(lines) - 1, after=handle["before"])
         if len(lines) <= handle["before"]:
             if time.time() - handle["started"] < handle.get("timeout", self.timeout):
                 return None
@@ -263,6 +277,7 @@ class HostRunner(Runner):
             self._record_failure(agent, conv, err, handle)
             return err
         dur = time.time() - handle["started"]
+        self._seen[conv] = len(lines)
         last = lines[-1]
         tokens = {}
         try:
@@ -284,6 +299,27 @@ class HostRunner(Runner):
         except Exception:
             pass
         return ""           # no transcript on this host; the turn ended
+
+    def _note_untracked(self, agent: str, conv: str, count: int,
+                        after: int | None = None) -> None:
+        """Record turns that ended without this runner starting them.
+
+        The stop hook fires for every turn, including ones the operator
+        starts in the host's UI; before this they left no trace in
+        events.jsonl, so an agent could do an afternoon's work the record
+        never saw. Each extra signal line becomes a turn event marked
+        started_by "host".
+        """
+        seen = self._seen.get(conv, 0) if after is None else after
+        for i in range(seen, count):
+            try:
+                self.observer.record_turn(agent=agent, conversation=conv,
+                                          duration_s=None, started_by="host",
+                                          signal_line=i + 1)
+            except Exception:
+                pass
+        if count > self._seen.get(conv, 0):
+            self._seen[conv] = count
 
     def _record_failure(self, agent, conv, err, handle):
         try:

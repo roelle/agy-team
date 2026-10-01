@@ -445,14 +445,44 @@ def complete(team_dir: Path | str, task_id: str, by: str, note: str,
 
 
 def approved_review_for(team_dir: Path | str, task_id: str) -> dict | None:
-    """The most recent approved work review that names this task, or None."""
+    """The most recent approved work review naming this task, or the
+    operator's waiver of one, or None."""
     from .activity import jsonl
     found = None
     for r in jsonl(Path(team_dir) / "reviews.jsonl"):
-        if (r.get("task_id") == task_id and r.get("verdict") == "approved"
-                and r.get("kind", "work") == "work"):
+        if r.get("task_id") != task_id:
+            continue
+        if (r.get("verdict") == "approved" and r.get("kind", "work") == "work") \
+                or r.get("kind") == "waiver":
             found = r
     return found
+
+
+def waive_review(team_dir: Path | str, task_id: str, by: str = "user",
+                 reason: str = "") -> dict:
+    """The operator's "ship it without review", on the record.
+
+    Written as its own kind in reviews.jsonl, so it satisfies the
+    requires_review gate without ever being counted as a review: the report
+    and the retrospective read kind == "work" and never see it. Only the
+    operator can call this -- it runs outside the agents, and agents cannot
+    write the team directory -- which is the whole reason it is a command
+    and not a tool argument.
+    """
+    current = get(team_dir, task_id)
+    if current is None:
+        raise TaskError(f"no task with id '{task_id}'")
+    if not by or by.strip() in ("", *{a for a in [current.get("owner")] if a}):
+        raise TaskError("a waiver is the operator's; pass --by with who is waiving")
+    entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": "waiver",
+             "verdict": "waived", "reviewer": by.strip(), "author": current.get("owner"),
+             "task_id": task_id, "what": current.get("title"),
+             "findings": reason.strip() or "review waived by the operator"}
+    path_ = Path(team_dir) / "reviews.jsonl"
+    with filelock.locked(path_):
+        with path_.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    return entry
 
 
 def list_tasks(team_dir: Path | str, project: str | None = None,
@@ -617,13 +647,27 @@ def main(argv=None) -> int:
     host's own daemon): one entry for the whole team, not one per agent.
     """
     ap = argparse.ArgumentParser(prog="agyteam.tasks")
-    ap.add_argument("command", choices=("sweep", "list"))
+    ap.add_argument("command", choices=("sweep", "list", "waive"))
+    ap.add_argument("task_id", nargs="?", help="for waive: the task")
+    ap.add_argument("--by", default="user", help="for waive: who is waiving (default: user)")
+    ap.add_argument("--reason", default="", help="for waive: why, for the record")
     ap.add_argument("--team-dir", default=None)
     a = ap.parse_args(argv)
 
     from . import scope
     td = scope.team_dir(a.team_dir)
     os.environ["AGYTEAM_TEAM_DIR"] = str(td)
+
+    if a.command == "waive":
+        if not a.task_id:
+            ap.error("waive needs a task id")
+        try:
+            entry = waive_review(td, a.task_id, by=a.by, reason=a.reason)
+        except TaskError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"review waived for {a.task_id} by {entry['reviewer']}: {entry['findings']}")
+        return 0
 
     if a.command == "list":
         for t in list_tasks(td):

@@ -85,6 +85,31 @@ def test_requires_review_closes_only_on_a_review_naming_it(team):
     assert tasks.complete(team, t["id"], "coder", "done")["status"] == "done"
 
 
+def test_the_operator_can_waive_a_review_and_it_is_never_counted_as_one(team):
+    t = tasks.create(team, "p", "x", owner="coder", requires_review=True)
+    with pytest.raises(tasks.TaskError):
+        tasks.waive_review(team, t["id"], by="")
+    entry = tasks.waive_review(team, t["id"], by="user", reason="demo deadline")
+    assert entry["kind"] == "waiver" and entry["verdict"] == "waived"
+    assert tasks.complete(team, t["id"], "coder", "shipped")["status"] == "done"
+    from agyteam.supervisor import generate_report
+    rep = generate_report(team)
+    assert all(r["kind"] != "work" for r in rep.get("reviews", [])), rep.get("reviews")
+
+
+def test_the_waiver_is_a_command_only_the_operator_runs(team):
+    t = tasks.create(team, "p", "x", owner="coder", requires_review=True)
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "AGYTEAM_TEAM_DIR": str(team)}
+    r = subprocess.run([sys.executable, "-m", "agyteam.supervisor", "--waive-review",
+                        t["id"], "--by", "user", "--reason", "known good"],
+                       capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode == 0 and "review waived" in r.stdout, r.stderr
+    assert tasks.approved_review_for(team, t["id"])["kind"] == "waiver"
+    r = subprocess.run([sys.executable, "-m", "agyteam.tasks", "waive", "task_nope"],
+                       capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode == 1 and "no task" in r.stderr
+
+
 def test_a_norm_adoption_is_not_a_review_of_a_task(team):
     t = tasks.create(team, "p", "x", owner="coder", requires_review=True)
     with (team / "reviews.jsonl").open("a") as f:

@@ -2532,6 +2532,12 @@ def main(argv=None, runner=None):
                     help="Do not bounce unreviewed answers back to the manager")
     ap.add_argument("--manager", metavar="AGENT", default=None,
                     help="Agent acting as manager (default: auto-detect from roster)")
+    ap.add_argument("--waive-review", metavar="TASK_ID", default=None,
+                    help="Operator's 'ship it without review' for a requires_review "
+                         "task; recorded as a waiver, never as a review. Pairs with "
+                         "--by and --reason")
+    ap.add_argument("--by", default="user", help="who is waiving (with --waive-review)")
+    ap.add_argument("--reason", default="", help="why (with --waive-review)")
     ap.add_argument("--inbox-pull", action="store_true",
                     help="Wake agents with a one-line summary and let them read "
                          "their mail with check_inbox, instead of pasting it "
@@ -2546,6 +2552,16 @@ def main(argv=None, runner=None):
     # the whole story.
     team_dir = scope.team_dir(args.team_dir)
     os.environ["AGYTEAM_TEAM_DIR"] = str(team_dir)
+
+    if args.waive_review:
+        try:
+            entry = tasks_lib.waive_review(team_dir, args.waive_review,
+                                           by=args.by, reason=args.reason)
+        except tasks_lib.TaskError as e:
+            sys.exit(f"error: {e}")
+        print(f"review waived for {args.waive_review} by {entry['reviewer']}: "
+              f"{entry['findings']}")
+        return
 
     if args.report_json:
         rep = generate_report(team_dir)

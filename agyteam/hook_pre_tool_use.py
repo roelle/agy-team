@@ -4,15 +4,20 @@
 
 Reads one JSON object describing the call from stdin, asks
 agyteam.policy.check_tool_policy, and exits 0 to allow or 2 to block, with the
-refusal on stdout (as {"decision": "block", "reason": ...}) and stderr. Hosts
+verdict on stdout and the refusal on stderr. Hosts
 differ in what they send; the common key names are accepted:
 
-    tool:   "tool_name" | "tool" | "name"
+    tool:   "tool_name" | "tool" | "name", or nested as
+            "toolCall" | "tool_call": {"name": ..., "args": ...}
     args:   "tool_input" | "args" | "arguments" | "input" | "params"
     agent:  AGYTEAM_AGENT in the environment, else "agent" | "agent_name" in the
-            JSON, else the conversation id ("conversation_id" | "session_id" |
-            "conversation") looked up in <team_dir>/conversations.json, live or
-            retired.
+            JSON, else the conversation id ("conversation_id" | "conversationId"
+            | "session_id" | "sessionId" | "conversation") looked up in
+            <team_dir>/conversations.json, live or retired.
+
+The verdict on stdout is {"decision": "deny", "reason": ...} with exit 2, or
+{"decision": "allow"} with exit 0; "block": true accompanies a deny for hosts
+that read that word.
 
 If no agent can be identified the call is allowed and a note goes to stderr:
 policy that cannot tell who is asking has nothing to apply, and blocking
@@ -32,7 +37,8 @@ def agent_for(payload: dict, team_dir: Path) -> str | None:
     agent = os.environ.get("AGYTEAM_AGENT") or payload.get("agent") or payload.get("agent_name")
     if agent:
         return str(agent)
-    conv = payload.get("conversation_id") or payload.get("session_id") or payload.get("conversation")
+    conv = next((payload[k] for k in ("conversation_id", "conversationId", "session_id",
+                                      "sessionId", "conversation") if payload.get(k)), None)
     if not conv:
         return None
     try:
@@ -56,6 +62,9 @@ def agent_for(payload: dict, team_dir: Path) -> str | None:
 
 
 def decide(payload: dict, team_dir: Path) -> tuple[int, str]:
+    call = payload.get("toolCall") or payload.get("tool_call")
+    if isinstance(call, dict):
+        payload = {**payload, **{k: v for k, v in call.items() if k not in payload}}
     tool = payload.get("tool_name") or payload.get("tool") or payload.get("name") or ""
     args = None
     for k in ("tool_input", "args", "arguments", "input", "params"):
@@ -86,8 +95,9 @@ def main() -> int:
     if code == 0:
         if text:
             print(text, file=sys.stderr)
+        print(json.dumps({"decision": "allow"}))
         return 0
-    print(json.dumps({"decision": "block", "reason": text}))
+    print(json.dumps({"decision": "deny", "block": True, "reason": text}))
     print(text, file=sys.stderr)
     return code
 

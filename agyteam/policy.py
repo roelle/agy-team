@@ -28,13 +28,25 @@ Per agent:
     "confined":         false                  opt out of the path rule (a role
                                                that maintains the platform itself)
 
-Team-wide, under "policy":
+    "allowed_mcp_servers": ["agyteam_bus"]     on a host whose generic MCP call
+                                               names the server in its arguments,
+                                               the only servers it may call
+    "refuse_paths":     ["/srv/checkout"]      paths its file tools may never touch,
+                                               whatever the workspaces say
 
-    "detach_commands":  ["make bench", "run_sim"]   substrings; a shell command
-                        containing one is refused unless it is already detached
-                        (nohup, setsid, or a trailing &). On a hosted UI a
-                        foreground multi-hour command hangs the turn to its
-                        timeout; sixteen such timeouts in one episode.
+Team-wide, under "policy" (each also accepted per agent):
+
+    "detach_commands":  ["make bench", "run_sim.*"]   regular expressions; a
+                        shell command matching one is refused unless it is
+                        already detached (nohup, setsid, or a trailing &). On
+                        a hosted UI a foreground multi-hour command hangs the
+                        turn to its timeout; sixteen such timeouts in one
+                        episode.
+    "forbidden_commands": [{"pattern": "launch_sim", "message": "the operator
+                        starts sims"}]   refused outright, with that message
+                        and no suggestion to detach. A plain string is a
+                        pattern with a default message.
+    "refuse_paths":     [...]                  as above, for everyone
 
 ## Paths
 
@@ -46,6 +58,11 @@ or the team: an agent with none declared is not confined by this file.
 Allowed roots are the declared workspaces, the agent's own durable workspace,
 and the team's shared directory. The team directory is never allowed -- it is
 the record, and agents reach it through the servers.
+
+`refuse_paths` is the other form of the same rule, for teams whose agents
+legitimately roam: nothing is confined, but a named path -- a source checkout
+the UI treats as out-of-workspace, a directory with answer keys -- is refused
+wherever it is reached from. Both forms are checked on the same arguments.
 
 The rule is applied to any tool whose name looks like a file operation, on
 any string argument that resolves to an absolute path. That is a heuristic,
@@ -109,6 +126,31 @@ def allowed_roots(agent: str, roster: dict, team_dir: Path | str | None) -> list
     return roots
 
 
+def _patterns(roster: dict, entry: dict, key: str) -> list:
+    team = (roster.get("policy") or {}).get(key) or []
+    mine = entry.get(key) or (entry.get("policy") or {}).get(key) or []
+    return list(team) + list(mine)
+
+
+def _matches(pattern: str, text: str) -> bool:
+    """A regular expression, or a plain substring if it is not a valid one."""
+    try:
+        return re.search(pattern, text) is not None
+    except re.error:
+        return pattern in text
+
+
+def refused_paths(agent: str, roster: dict) -> list[Path]:
+    entry = _entry(roster, agent)
+    out = []
+    for raw in _patterns(roster, entry, "refuse_paths"):
+        try:
+            out.append(Path(raw).expanduser().resolve())
+        except OSError:
+            continue
+    return out
+
+
 def _paths_in(args: dict) -> list[Path]:
     cwd = str((args or {}).get("Cwd") or (args or {}).get("cwd") or "")
     out = []
@@ -168,10 +210,28 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
             return (f"[refused: {agent} does not hand tasks to others on this "
                     f"team (roster assigns_tasks: false)]")
 
+    allowed_servers = entry.get("allowed_mcp_servers")
+    if allowed_servers is not None and name not in TEAM_TOOLS:
+        # A host with one generic MCP-call tool names the server in the
+        # arguments; that is the only place "which server" is visible.
+        server = next((str(args[k]) for k in
+                       ("ServerName", "server_name", "serverName", "server",
+                        "mcp_server", "mcpServer") if args.get(k)), None)
+        if server and server not in allowed_servers:
+            return (f"[refused: {agent} may call only these MCP servers: "
+                    f"{', '.join(allowed_servers) or 'none'} (roster "
+                    f"allowed_mcp_servers), not '{server}']")
+
     if SHELL_TOOL.search(name) and name not in TEAM_TOOLS:
         cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")
-        patterns = (roster.get("policy") or {}).get("detach_commands") or []
-        hit = next((p for p in patterns if p and p in cmd), None)
+        for rule in _patterns(roster, entry, "forbidden_commands"):
+            pattern = rule.get("pattern", "") if isinstance(rule, dict) else str(rule)
+            if pattern and _matches(pattern, cmd):
+                why = (rule.get("message") if isinstance(rule, dict) else None) or \
+                    "this team does not let agents run it"
+                return f"[refused: commands matching '{pattern}' are not for you to run: {why}]"
+        hit = next((p for p in _patterns(roster, entry, "detach_commands")
+                    if p and _matches(p, cmd)), None)
         if hit and not DETACHED.search(cmd):
             return (f"[refused: commands matching '{hit}' run for hours and a "
                     f"foreground run hangs this turn until it times out. Run it "
@@ -179,10 +239,18 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
                     f"reminder (update_task with check_after, or until=...)]")
 
     if check_paths and name not in TEAM_TOOLS and FILE_TOOL.search(name):
+        paths = _paths_in(args)
+        denied = refused_paths(agent, roster)
+        for p in paths:
+            hit = next((d for d in denied if p == d or d in p.parents), None)
+            if hit:
+                return (f"[refused: {p} is under {hit}, which this team's file "
+                        f"tools may not touch (policy refuse_paths). Reach it "
+                        f"another way or leave it alone]")
         roots = allowed_roots(agent, roster, team_dir)
         if roots is not None:
             td = Path(team_dir).expanduser().resolve() if team_dir else None
-            for p in _paths_in(args):
+            for p in paths:
                 inside = any(p == r or r in p.parents for r in roots)
                 in_record = td is not None and (p == td or td in p.parents)
                 if in_record or not inside:

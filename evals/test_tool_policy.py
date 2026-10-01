@@ -136,10 +136,65 @@ def test_the_generic_hook_blocks_with_exit_2_and_a_reason(team):
     env = {"AGYTEAM_TEAM_DIR": str(td), "AGYTEAM_AGENT": "manager"}
     r = run_hook({"tool_name": "run_command", "tool_input": {"command": "ls"}}, env)
     assert r.returncode == 2
-    assert json.loads(r.stdout)["decision"] == "block"
+    verdict = json.loads(r.stdout)
+    assert verdict["decision"] == "deny" and verdict["block"] is True
     assert "not available to manager" in r.stderr
     r = run_hook({"tool_name": "read_file", "tool_input": {"path": "/x"}}, env)
-    assert r.returncode == 0 and r.stdout == ""
+    assert r.returncode == 0 and json.loads(r.stdout) == {"decision": "allow"}
+
+
+def test_the_generic_hook_reads_a_nested_camel_case_payload(team):
+    """One host sends {"conversationId", "toolCall": {"name", "args"}} and
+    expects {"decision": "deny"|"allow", "reason"}; that shape needed a
+    wrapper before."""
+    td, _ = team
+    r = run_hook({"conversationId": "conv-coder",
+                  "toolCall": {"name": "read_file", "args": {"path": "/etc/passwd"}}},
+                 {"AGYTEAM_TEAM_DIR": str(td)})
+    assert r.returncode == 2
+    assert json.loads(r.stdout)["reason"].startswith("[refused:")
+
+
+def test_allowed_mcp_servers_on_a_generic_mcp_call(team):
+    td, _ = team
+    doc = json.loads((td / "roster.json").read_text())
+    doc["agents"][2]["allowed_mcp_servers"] = ["agyteam_bus", "agyteam_tasks"]
+    (td / "roster.json").write_text(json.dumps(doc))
+    assert check("coder", "call_mcp_tool", {"ServerName": "agyteam_bus", "ToolName": "check_inbox"}, td) is None
+    out = check("coder", "call_mcp_tool", {"ServerName": "browser", "ToolName": "navigate"}, td)
+    assert out and "may call only these MCP servers" in out
+    assert check("qa", "call_mcp_tool", {"ServerName": "browser"}, td) is None
+
+
+def test_refuse_paths_is_the_deny_form_of_the_path_rule(team, tmp_path):
+    td, repo = team
+    checkout = tmp_path / "upstream-checkout"
+    checkout.mkdir()
+    doc = json.loads((td / "roster.json").read_text())
+    doc["policy"]["refuse_paths"] = [str(checkout)]
+    doc["agents"][4]["refuse_paths"] = ["/etc"]          # qa, who roams freely
+    (td / "roster.json").write_text(json.dumps(doc))
+    out = check("qa", "read_file", {"path": str(checkout / "x.py")}, td)
+    assert out and "refuse_paths" in out
+    assert "refuse_paths" in check("qa", "read_file", {"path": "/etc/passwd"}, td)
+    assert check("qa", "read_file", {"path": "/tmp/other"}, td) is None
+    # it applies before the allow-list, for confined agents too
+    assert "refuse_paths" in check("coder", "read_file", {"path": str(checkout / "x")}, td)
+
+
+def test_detach_patterns_are_regular_expressions_and_forbidden_commands_say_why(team):
+    td, _ = team
+    doc = json.loads((td / "roster.json").read_text())
+    doc["policy"]["detach_commands"] = [r"make (bench|all)"]
+    doc["policy"]["forbidden_commands"] = [
+        {"pattern": r"launch_sim\b", "message": "the operator starts sims"},
+        "rm -rf /"]
+    (td / "roster.json").write_text(json.dumps(doc))
+    assert "detached" in check("coder", "run_command", {"command": "make all"}, td)
+    assert check("coder", "run_command", {"command": "make test"}, td) is None
+    out = check("coder", "run_command", {"command": "nohup launch_sim --trials 4 &"}, td)
+    assert out and "the operator starts sims" in out and "detached" not in out
+    assert "not for you to run" in check("coder", "run_command", {"command": "rm -rf /"}, td)
 
 
 def test_the_generic_hook_finds_the_agent_by_conversation_id(team):

@@ -331,9 +331,14 @@ message; `user` only if listed), `assigns_tasks: false` (no creating tasks for
 others, no hand-offs), `workspaces` (with the team's, the only paths its file
 tools may touch — on a hosted UI a file tool outside the workspace opens a
 dialog nobody can click and the turn hangs to its timeout), `confined: false`
-to opt a platform-maintaining role out of that. Team-wide, `"policy":
-{"detach_commands": [...]}` refuses a foreground run of a command that takes
-hours unless it is already detached.
+to opt a platform-maintaining role out of that, `refuse_paths` for the deny
+form (a team whose agents roam, but must never touch one checkout), and
+`allowed_mcp_servers` where the host's generic MCP call names its server.
+Team-wide, `"policy": {"detach_commands": [regex...]}` refuses a foreground
+run of a command that takes hours unless it is already detached, and
+`"forbidden_commands": [{"pattern", "message"}]` refuses outright with that
+message. The generic hook accepts the nested `toolCall`/`conversationId`
+payload shape too and answers `{"decision": "deny"|"allow", "reason"}`.
 
 ## Reactive teamwork (no human polling)
 
@@ -377,7 +382,9 @@ back. Configure its argv templates, a signal directory the stop hook appends
 to, and a model map; see the module docstring. It creates each conversation
 with a content-free primer and registers the id *before* delivering the brief,
 so no turn ever runs unattributed, and it cancels a turn that outlives its
-timeout. `evals/test_runner_host.py` drives it against a fake host.
+timeout. Turns the operator takes in the host's own UI are recorded too,
+marked `started_by: host`, since the stop hook sees every turn end.
+`evals/test_runner_host.py` drives it against a fake host.
 
 **Turns run concurrently.** The supervisor dispatches with the runner's
 `begin()`/`poll()` and reaps turns as they end, so four agents with mail take
@@ -511,7 +518,9 @@ triaging"), takes an `evidence` path or review, refuses while a
 `collaborators` entry has no recorded activity since the task was created,
 and on a `requires_review` task refuses until an approved review names it
 (`record_review(..., task_id=)`); such a task's result cannot be sent to the
-user either until then. Status spellings like `in_progress`, `waiting` and
+user either until then. The operator, and only the operator, can waive that:
+`python -m agyteam.supervisor --waive-review <task_id> --by user --reason ...`
+writes a `waiver` row that satisfies the gate and is never counted as a review. Status spellings like `in_progress`, `waiting` and
 `completed` are accepted and mapped.
 
 A team can replace a section of the brief, or add to one agent's, without
