@@ -309,7 +309,9 @@ def test_inbox_pull_wakes_with_a_summary_and_the_agent_reads_the_mail(team):
     assert load_transport("coder").peek() == []
 
 
-def test_inbox_pull_redelivers_exactly_once_after_a_failed_turn(team):
+def test_inbox_pull_does_not_redeliver_what_the_agent_already_took(team):
+    """A turn that pulled its mail and then timed out had processed it; the
+    snapshot was requeued anyway, and the next wake did the work twice."""
     calls = []
 
     class PullThenDie(ScriptedRunner):
@@ -328,10 +330,37 @@ def test_inbox_pull_redelivers_exactly_once_after_a_failed_turn(team):
     sup = Supervisor(AGENTS, PullThenDie({}), quiet=True)
     try:
         sup.step()
+        assert load_transport("coder").peek() == [], "acknowledged mail came back"
+        assert sup.step() == 0
+    finally:
+        sup.close()
+    assert calls == ["coder"]
+
+
+def test_inbox_pull_still_redelivers_what_was_never_taken(team):
+    """The other half: a turn that died before reading leaves the mail where
+    it was, and the next wake gets it."""
+    calls = []
+
+    class DieBeforeReading(ScriptedRunner):
+        inbox_pull = True
+
+        def wake(self, agent, message):
+            calls.append(agent)
+            if len(calls) == 1:
+                return "[error: deliver failed]"
+            inbox = load_transport(agent)
+            got = inbox.fetch()
+            inbox.acknowledge(got)
+            return "ok"
+
+    load_transport("user").send("coder", "please")
+    sup = Supervisor(AGENTS, DieBeforeReading({}), quiet=True)
+    try:
+        sup.step()
         assert [m.content for m in load_transport("coder").peek()] == ["please"]
         sup.step()
         assert load_transport("coder").peek() == []
-        sup.step()
     finally:
         sup.close()
     assert calls == ["coder", "coder"]

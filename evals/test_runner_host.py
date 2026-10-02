@@ -179,6 +179,53 @@ def test_turns_the_operator_takes_in_the_host_ui_reach_the_record(host):
     assert len([t for t in turns if not t.get("started_by")]) == 2
 
 
+def test_a_restart_does_not_replay_history_as_operator_turns(host):
+    """Measured: 442 phantom started_by-host turn events after one restart,
+    one per historical signal line, all stamped with the current time."""
+    td, log, config = host
+    first = HostRunner(config)
+    for _ in range(3):
+        first.wake("coder", "work")
+    before = (td / "events.jsonl").read_text().count('"turn"')
+
+    second = HostRunner(config)                   # the supervisor restarted
+    second.wake("coder", "more work")
+    turns = [json.loads(l) for l in (td / "events.jsonl").read_text().splitlines()
+             if '"turn"' in l]
+    assert not [t for t in turns if t.get("started_by") == "host"], \
+        "history before the restart was replayed as the operator's turns"
+    assert (td / "events.jsonl").read_text().count('"turn"') == before + 1
+
+
+def test_operator_turns_between_restarts_are_still_recorded(host):
+    td, log, config = host
+    first = HostRunner(config)
+    first.wake("coder", "work")
+    signal = Path(config["signal_dir"]) / "conv-1.jsonl"
+    with signal.open("a") as f:                      # one turn in the host UI
+        f.write(json.dumps({"turn": "ended"}) + "\n")
+    second = HostRunner(config)                      # watermark survived the restart
+    second.wake("coder", "more")
+    turns = [json.loads(l) for l in (td / "events.jsonl").read_text().splitlines()
+             if '"turn"' in l]
+    assert len([t for t in turns if t.get("started_by") == "host"]) == 1
+
+
+def test_a_conversation_first_seen_with_history_is_not_a_burst(host):
+    """No watermark at all -- the team predates this code -- seeds at the
+    file's current length."""
+    td, log, config = host
+    runner = HostRunner(config)
+    runner.remember_conversation("coder", "conv-old")
+    signal = Path(config["signal_dir"]) / "conv-old.jsonl"
+    signal.write_text("".join(json.dumps({"turn": "ended"}) + "\n" for _ in range(50)))
+    runner.wake("coder", "hello again")
+    turns = [json.loads(l) for l in (td / "events.jsonl").read_text().splitlines()
+             if '"turn"' in l]
+    assert not [t for t in turns if t.get("started_by") == "host"]
+    assert json.loads((td / "host_signals.json").read_text())["conv-old"] == 51
+
+
 def test_the_primer_turn_gets_the_turn_timeout_not_the_command_timeout(host, monkeypatch):
     td, log, config = host
     monkeypatch.setenv("FAKE_HOST_DELAY", "0.8")

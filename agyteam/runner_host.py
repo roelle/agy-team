@@ -95,7 +95,16 @@ class HostRunner(Runner):
         self.supports_containment = bool(caps.get("supports_containment", False))
         self.supports_capability_scoping = bool(caps.get("supports_capability_scoping", False))
         self.inbox_pull = bool(c.get("inbox_pull", False))
-        self._seen: dict[str, int] = {}     # signal lines accounted for, per conversation
+        # Signal lines accounted for, per conversation. Persisted, so a
+        # restart knows where it left off: the first version started empty
+        # and the first begin() after a restart read every historical line
+        # as a turn the operator had just taken -- 442 phantom turn events
+        # in one restart, all stamped with the current time, which the
+        # review gate then counted as the author having worked. A
+        # conversation seen for the first time with no watermark is seeded
+        # at its current length: what happened before anyone was watching
+        # is history, not news.
+        self._seen: dict[str, int] = self._load_seen()
         missing = [k for k, v in (("start", self.start_argv), ("deliver", self.deliver_argv),
                                   ("signal_dir", self.signal_dir)) if not v]
         if missing:
@@ -147,6 +156,33 @@ class HostRunner(Runner):
     def _env(self, agent: str) -> dict:
         return {**os.environ, **self.extra_env, "AGYTEAM_AGENT": agent,
                 "AGYTEAM_TEAM_DIR": str(self.team_dir)}
+
+    @property
+    def _seen_path(self) -> Path:
+        return self.team_dir / "host_signals.json"
+
+    def _load_seen(self) -> dict[str, int]:
+        try:
+            doc = json.loads(self._seen_path.read_text(encoding="utf-8"))
+            return {k: int(v) for k, v in doc.items()} if isinstance(doc, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_seen(self) -> None:
+        try:
+            self._seen_path.parent.mkdir(parents=True, exist_ok=True)
+            self._seen_path.write_text(json.dumps(self._seen, indent=2, sort_keys=True),
+                                       encoding="utf-8")
+        except OSError:
+            pass
+
+    def _watermark(self, conv: str, current: int) -> int:
+        """Where counting starts for `conv`: the saved watermark, or -- on
+        first sight -- the file as it is now."""
+        if conv not in self._seen:
+            self._seen[conv] = current
+            self._save_seen()
+        return self._seen[conv]
 
     def signal_path(self, conversation: str) -> Path:
         return self.signal_dir / f"{conversation}{self.signal_suffix}"
@@ -246,9 +282,11 @@ class HostRunner(Runner):
                     raise RuntimeError("the primer turn never ended; is the stop "
                                        f"hook writing to {signal}?")
                 self._seen[conv] = len(self._lines(signal))
+                self._save_seen()
                 message = f"{self._brief(agent)}\n\n---\n\n{message}"
             signal = self.signal_path(conv)
             before = len(self._lines(signal))
+            self._watermark(conv, before)
             self._note_untracked(agent, conv, before)
             self._deliver(agent, conv, message)
         except Exception as e:                      # noqa: BLE001 - report, never raise
@@ -278,6 +316,7 @@ class HostRunner(Runner):
             return err
         dur = time.time() - handle["started"]
         self._seen[conv] = len(lines)
+        self._save_seen()
         last = lines[-1]
         tokens = {}
         try:
@@ -310,7 +349,7 @@ class HostRunner(Runner):
         never saw. Each extra signal line becomes a turn event marked
         started_by "host".
         """
-        seen = self._seen.get(conv, 0) if after is None else after
+        seen = self._watermark(conv, count) if after is None else after
         for i in range(seen, count):
             try:
                 self.observer.record_turn(agent=agent, conversation=conv,
@@ -320,6 +359,7 @@ class HostRunner(Runner):
                 pass
         if count > self._seen.get(conv, 0):
             self._seen[conv] = count
+            self._save_seen()
 
     def _record_failure(self, agent, conv, err, handle):
         try:

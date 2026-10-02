@@ -1003,7 +1003,14 @@ class Supervisor:
 
         if transport is not None:
             if failed:
-                if hasattr(transport, "requeue") and callable(transport.requeue):
+                # Pasted into the prompt, the mail was never acknowledged by
+                # anyone, so it goes back. Pulled through check_inbox, the
+                # agent's own acknowledgement is the record that it took
+                # the mail; what it did not take is still in the inbox. Re-
+                # queueing the snapshot here handed a timed-out turn's
+                # already-processed messages back to the next wake.
+                if not self.inbox_pull and hasattr(transport, "requeue") \
+                        and callable(transport.requeue):
                     try:
                         transport.requeue(msgs)
                     except TypeError:
