@@ -57,21 +57,7 @@ def author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, list
     HH:MM:SS" or ISO-8601 with a T); both compare as text once the T is
     normalised.
     """
-    if since:
-        if "T" in since or "Z" in since:
-            try:
-                from datetime import datetime
-                raw_iso = since if "T" in since else since.replace(" ", "T")
-                if not raw_iso.endswith("Z") and "+" not in raw_iso and "-" not in raw_iso[10:]:
-                    raw_iso += "Z"
-                dt = datetime.fromisoformat(raw_iso.replace("Z", "+00:00"))
-                since = dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                since = since.replace("T", " ").replace("Z", "")
-        else:
-            since = since.replace("T", " ").replace("Z", "")
-    else:
-        since = ""
+    since = (since or "").replace("T", " ").replace("Z", "")
     evidence, channels = [], 0
 
     bus = jsonl(team_dir / "bus.jsonl")

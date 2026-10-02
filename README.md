@@ -861,6 +861,10 @@ The script suites also run on their own, which prints each check by name:
 
 **Live evals call real models and cost money.** None of them runs under
 `pytest`. Each uses a team or workspace of its own and never touches yours.
+The CLI-driven ones run real agents with this checkout as their working
+directory, and an agent may decide to "fix" something it reads here: run them
+on a clean tree and look at `git status` afterwards. (One run edited
+`agyteam/activity.py` unasked.)
 
 | eval | what it proves | needs | rough cost |
 |---|---|---|---|
