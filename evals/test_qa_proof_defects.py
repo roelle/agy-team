@@ -1,5 +1,7 @@
 import sys
-sys.path.insert(0, '/mnt/data/agy-exp')
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncio
 import tempfile

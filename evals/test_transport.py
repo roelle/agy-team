@@ -65,8 +65,10 @@ def contract(label: str, env_for) -> tuple[int, int]:
         check("teammates listed, self excluded, user included",
               "coder" in text_of(a_res[0]) and "tpm" not in text_of(a_res[0])
               and "user" in text_of(a_res[0]), text_of(a_res[0])),
-        check("send to peer reports delivery",
-              "delivered to coder" in text_of(a_res[1]), text_of(a_res[1])),
+        # "queued", not "delivered": the message is in an inbox, and a manager
+        # read "[delivered to X]" as X having received it.
+        check("send to peer reports that it is queued for them",
+              "queued for coder" in text_of(a_res[1]), text_of(a_res[1])),
         check("unknown recipient errors instead of vanishing",
               text_of(a_res[2]).startswith("[error:"), text_of(a_res[2])),
         check("sender's own inbox unaffected by sending",
@@ -91,8 +93,8 @@ def contract(label: str, env_for) -> tuple[int, int]:
               and "already on the roster" in text_of(adm_res[1])
               and "removed 'qa'" in text_of(adm_res[2]),
               " | ".join(text_of(r) for r in adm_res)),
-        check("send to user reports delivery, not a shrug",
-              "delivered to the user" in text_of(u[0]), text_of(u[0])),
+        check("send to user reports that it is queued, not a shrug",
+              "queued for the user" in text_of(u[0]), text_of(u[0])),
         check("the user's answer is retrievable, not just logged",
               "done: X" in text_of(u_read[0]), text_of(u_read[0])),
         check("user messages take precedence over peer messages and preserve FIFO",

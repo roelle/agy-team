@@ -33,6 +33,12 @@ def make_team(tmp_path, name="team"):
     return td
 
 
+def _empty_proc(tmp_path):
+    d = tmp_path / "empty-proc"
+    d.mkdir(exist_ok=True)
+    return d
+
+
 def run(team_dir, tmp_path, *args, env_extra=None):
     env = dict(os.environ,
                AGYTEAM_TEAM_DIR=str(team_dir),
@@ -41,7 +47,11 @@ def run(team_dir, tmp_path, *args, env_extra=None):
                # Otherwise these tests pass or fail on whether the machine
                # running them happens to have a current plugin installed, which
                # is a property of the machine and not of the preflight.
-               AGYTEAM_PLUGIN_DIR=str(tmp_path / "no-plugin-here"))
+               AGYTEAM_PLUGIN_DIR=str(tmp_path / "no-plugin-here"),
+               # And at an empty process table, for the same reason: with a
+               # real team running on this machine its bus servers are bound
+               # to a different team, and the preflight is right to fail.
+               AGYTEAM_PROC_ROOT=str(_empty_proc(tmp_path)))
     env.pop("AGYTEAM_AUDIT_LOG", None)
     env.update(env_extra or {})
     return subprocess.run(
@@ -221,7 +231,7 @@ def test_a_bus_server_bound_to_another_team_is_a_failure(tmp_path):
         env=dict(os.environ, AGYTEAM_TEAM_DIR=str(other_team)))
     try:
         r = FakeReport()
-        doctor.check_stale_bus_servers(r, this_team)
+        doctor.check_stale_bus_servers(r, this_team, pids={proc.pid})
         assert r.failed, [x for x in r.lines]
         assert any("DIFFERENT team" in text for _, text in r.lines)
     finally:
@@ -239,7 +249,7 @@ def test_a_server_bound_to_this_team_is_fine(tmp_path):
         env=dict(os.environ, AGYTEAM_TEAM_DIR=str(td)))
     try:
         r = FakeReport()
-        doctor.check_stale_bus_servers(r, td)
+        doctor.check_stale_bus_servers(r, td, pids={proc.pid})
         assert not r.failed, r.lines
     finally:
         proc.terminate()
@@ -260,7 +270,7 @@ def test_a_process_merely_mentioning_the_module_is_not_a_server(tmp_path):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         r = FakeReport()
-        doctor.check_stale_bus_servers(r, td)
+        doctor.check_stale_bus_servers(r, td, pids={proc.pid})
         assert not r.failed, r.lines
     finally:
         proc.terminate()

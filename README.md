@@ -56,15 +56,24 @@ The `./run` launcher automates the entire environment lifecycle:
 - Verifies Python >= 3.10 and creates/repairs an isolated local virtual environment (`.venv`).
 - Installs `agyteam` and required dependencies in editable mode (`pip install -e ".[dev]"`).
 - Guides you through configuring your `GEMINI_API_KEY` (saved locally in `.env`) and validates it via a zero-token API probe before any model calls.
+- Seeds the default five-agent team at `~/agy-teams/default/team/roster.json` the first time, if there is no roster yet. Edit that file to change the team.
 
-**No Gemini key?** You do not need one. The offline suites never did
-(`./run test`), and if you reach models another way — an internal endpoint,
-application default credentials, or your own `AGYTEAM_RUNNER` — tell the
-launcher once and it stops asking:
+**Which runtime wakes the agents.** There are two, and the launcher picks by
+what you gave it:
 
-```bash
-./run setup --no-key
-```
+- **You configured a Gemini API key** → the SDK runner
+  (`agyteam.runner_sdk:SdkRunner`), which uses that key and enforces roles by
+  capability.
+- **You have the Antigravity `agy` CLI instead** → run `./run setup --no-key`
+  once. The library's own default is the CLI runner
+  (`agyteam.runner_agy:AgyRunner`), which needs the `agy` binary on your PATH
+  and the permission setting described under
+  [Headless permissions](#headless-permissions-required-for-unattended-teamwork).
+  Then install the tools the agents call: `bash plugin/install.sh`.
+- **Something else** (an internal endpoint, a hosted runtime) → set
+  `AGYTEAM_RUNNER` yourself; see [The four seams](#the-four-seams).
+
+The offline tests need none of this: `./run test` runs with no key and no CLI.
 
 ### Primary Commands
 
@@ -82,9 +91,9 @@ launcher once and it stops asking:
 
 ### Upfront Cost Transparency
 
-- **Offline Testing is 100% Free**: Running `./run test` (105+ contract and behavioral tests) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
+- **Offline Testing is 100% Free**: Running `./run test` (over 400 contract and behavioral tests, about a minute) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
 - **Key Validation is Zero Tokens**: The setup probe validates your API key via `models.list` metadata — zero model inference tokens.
-- **Estimated Live Team Cost**: A full reactive multi-agent work session typically costs **~$11/day** of continuous operation (or ~10¢–30¢ per deep delegated task), depending on token usage and model selection (default: `gemini-3.8-flash`).
+- **Estimated Live Team Cost**: On the SDK runner with the default model (`gemini-3.8-flash`), a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. Treat both as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
 
 ### Stopping & Resuming Safely
 
@@ -125,6 +134,7 @@ export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
 Useful while it runs, or after:
 
 ```bash
+--chat            talk to the team, one message at a time
 --report          who did what, from the record rather than from memory
 --cost            spend per agent
 --status          who has mail waiting
@@ -140,8 +150,8 @@ identity and memories, plus the shared bus, roster, reviews and event log.
 
 | agent | job |
 |---|---|
-| `manager` | faces you. Decides what "done" means, gates what reaches you, and is accountable for it. Has a shell so she can check claims rather than take them on report. |
-| `tpm` | faces the team. Breaks work into pieces one agent can finish, tracks what is outstanding, runs retros. |
+| `manager` | faces you. Decides what "done" means, gates what reaches you, and is accountable for it. Has a shell so she can check claims rather than take them on report. Leads retrospectives. |
+| `tpm` | faces the team. Breaks work into pieces one agent can finish, tracks what is outstanding, unblocks people. |
 | `coder` | implements, with tests. |
 | `syseng` | owns the environment. Reproduces problems and reports the command and output that produced them. |
 | `qa` | reviews. Cannot edit source, so findings go back to the author. Keeps a memory of defects that recur here. |
@@ -201,21 +211,31 @@ one returning prose and one returning nothing. **A test that passes in `rich`
 and fails in `minimal` is a dependency on something no runner promised.** Run
 it against your own runner before you trust a green suite.
 
-Two guarantees documented elsewhere in this README are provided by the
-*runner*, not the core, so a runner declares whether it has them
-(`supports_audit`, `supports_containment`; `agyteam.lifecycle status` prints
-both). On a runner without them, workspace grants do nothing and no tool-call
-record exists — and tools that read those things must report that they could
-not look, never that there was nothing to find.
+`python -m agyteam.lifecycle status` prints the three flags for the runner you
+have configured, with a plain warning for each one it lacks.
 
-## What is in flight
+## Known limits
 
-Being worked on right now, by the team itself:
+Stated here so you do not have to find them:
 
-## Todo
-
-- **Validate on a codebase nobody here has seen.** Everything so far has been
-  this repo or a problem we already knew the answer to.
+- **Not validated on a codebase nobody here has seen.** Everything so far has
+  been this repo or a problem we already knew the answer to.
+- **The review gate runs agent-written code with the bus server's access.**
+  `record_review` executes the proof file a reviewer names, outside the
+  agent's workspace containment. A proof file can therefore write the team's
+  records. Run proofs in a sandbox if your reviewers are not trusted; see
+  HANDOFF.md.
+- **`--daemon` has no review gate.** "The answer went out unreviewed, send it
+  back" happens in `--say` and `--chat`, which run one episode at a time. A
+  daemon reacts to mail forever and records no episodes.
+- **The CLI runner passes the whole prompt as a command-line argument.** A
+  very large prompt (over about 128 KB on Linux) will fail to start, and the
+  text is visible in the process list.
+- **Only the SDK runner withholds tools and confines agents.** On the others,
+  roster policy is refused at the hook and in the team's own servers, which
+  holds only as far as the host runs the hook.
+- **`HostRunner` has been run against a fake host only** (`evals/fixture_host.py`).
+- **Two agents can still write the same file.** There are no file leases.
 
 ## What we learned by getting it wrong
 
@@ -255,8 +275,11 @@ so the installable surface stays dependency-free:
 
 | module | needs | used by |
 |---|---|---|
-| `scope`, `store`, `roster`, `mcp_base`, `mcp_memory`, `mcp_bus`, `transport*`, `memory*`, `runner`, `runner_agy`, `supervisor` | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
+| everything else: the four MCP servers (`mcp_bus`, `mcp_memory`, `mcp_tasks`, `mcp_self`), `supervisor`, `tasks`, `policy`, `hook_pre_tool_use`, `runner`, `runner_agy`, `runner_host`, `transport*`, `memory*`, `observer*`, `doctor`, `lifecycle`, … | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
 | `sdk_agent`, `sdk_cli`, `runner_sdk`, `runner_mixed` | `google-antigravity` | SDK agent, CLI, and SDK/mixed runners |
+
+`python -m agyteam.install_check --list` prints the stdlib-only set exactly; it
+is derived from the import graph, and the plugin installer copies that list.
 
 `store.py` holds the tool implementations, `Toolbox`, and memory store. That split is what keeps the
 MCP servers importable without a virtualenv, and `evals/test_mcp.py` enforces
@@ -291,34 +314,45 @@ Flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 ## Team platform
 
 ```bash
-python -m agyteam.supervisor --say "tpm: <task>"    # run until idle
+python -m agyteam.supervisor --say "manager: <task>" # run until idle
 python -m agyteam.supervisor --daemon               # stay up, react as mail arrives
 python -m agyteam.supervisor --status               # who has mail waiting (non-destructive)
 ```
 
 ### Role-scoped tools (why agents collaborate)
 
-Per-agent in `team/roster.json`: `"tools_off": ["run_command", ...]` disables
-harness builtins at session build time (the tool schema never reaches the
-model), and `"workers": false` removes subagent spawning. The default tpm has
-no shell, no file writes, and no workers — delegation is its only path to
-results, which is enforced by capability, not prose. Verified: asked for the
-host's Python/pip versions, tpm delegated to syseng, had coder independently
-verify (the review-before-delivery contract), and reported accurate results.
+Per agent in the roster (`~/agy-teams/<team>/team/roster.json`):
+`"tools_off": ["run_command", ...]` disables harness builtins at session build
+time on the SDK runner (the tool schema never reaches the model), and
+`"workers": false` removes subagent spawning. The default tpm has no shell, no
+file writes, and no workers — delegation is its only path to results, which is
+enforced by capability, not prose.
 
-- Roster: `team/roster.json` (default: tpm, coder, syseng). Per-agent model is
-  configurable there.
-- Each teammate is a persistent SDK Agent session with its own workspace and
-  memory under `team/agents/<name>/` — any of them also runs standalone via
-  `agyteam.sdk_cli -w team/agents/<name>`.
+- The default team is manager, tpm, coder, syseng and qa. Per-agent `model` is
+  set in the roster.
+- Each teammate keeps its identity and memory under
+  `~/agy-teams/<team>/agents/<name>/`; any of them also runs standalone via
+  `agyteam.sdk_cli -w <that directory>`.
 - **Teammates vs workers is structural**: teammates can only be *messaged*
-  (`send_to_teammate`, persisted to `team/bus.jsonl`); workers can only be
+  (`send_to_teammate`, logged to the team's `bus.jsonl`); workers can only be
   *spawned* (builtin `start_subagent`, depth-capped at 1) and have no memory or
   bus identity. Agents cannot confuse them because the affordances differ.
-- Runaway protection: `MAX_HOPS` agent turns per user stimulus, then the
-  scheduler pauses; each agent session has a model-call budget; `quit` distills
-  every agent's learnings to memory first.
-- Shared deliverables go in `team/shared/`.
+- Runaway protection: a hop budget per user stimulus (`--max-hops`), a
+  wall-clock ceiling per turn (`AGYTEAM_TURN_TIMEOUT`, default 10 minutes), and
+  backoff on an agent whose turns keep failing.
+- Shared deliverables go in the shared directory (`python -m agyteam.scope`
+  prints where that is).
+- **The team directory is the record and no agent is granted it.** Reviews,
+  the bus, the roster and the task log are written by agyteam's own processes;
+  agents reach them through the MCP servers. `grant_workspace` refuses a path
+  that contains it and `agyteam.doctor` fails on one.
+
+A team can replace a section of the brief, or add to one agent's, without
+forking `persona.py`: `<team_dir>/persona/teamwork.md` (or `principal`,
+`contract`, `continuity`, `consistency`, `verification`, `accountability`)
+replaces that section for everyone; `<team_dir>/persona/coder.md` is appended
+to coder's brief. `NORMS.md` stays the place for rules the team adopts in
+retrospectives.
 
 **Policy holds outside the SDK too.** `agyteam/policy.py` is one function,
 `check_tool_policy(agent, tool, args)`, driven by roster fields and asked from
@@ -349,13 +383,14 @@ unread mail waiting to be prodded — a message from a teammate causes work the
 same way a message from you does.
 
 ```bash
-python -m agyteam.supervisor --say "tpm: get X built and verified"   # until idle
+python -m agyteam.supervisor --say "manager: get X built and verified"   # until idle
 python -m agyteam.supervisor --daemon        # stay up, react as mail arrives
 python -m agyteam.supervisor --status        # who has mail waiting (non-destructive)
 ```
 
-Verified with real agents (`evals/test_reactive.py`, 7/7): one instruction to
-the tpm produced seven turns and this trace, with no inbox ever checked by hand —
+Verified with real agents (`evals/test_reactive.py`, which uses a three-agent
+team of its own): one instruction to the tpm produced seven turns and this
+trace, with no inbox ever checked by hand —
 
 ```
 user->tpm ; tpm->coder ; coder->tpm ; tpm->syseng ; syseng->tpm ; tpm->user
@@ -369,8 +404,8 @@ they decide *how* an agent is woken:
 
 | runner | wakes an agent by | needs |
 |---|---|---|
-| `agyteam.runner_sdk:SdkRunner` (default) | a persistent SDK session per agent | `google-antigravity` |
-| `agyteam.runner_agy:AgyRunner` | `agy --conversation <id> -p "<message>"` | the agy CLI |
+| `agyteam.runner_agy:AgyRunner` (library default) | `agy --conversation <id> -p "<message>"` | the agy CLI |
+| `agyteam.runner_sdk:SdkRunner` (what `./run` uses with a Gemini key) | a persistent SDK session per agent | `google-antigravity` |
 | `agyteam.runner_mixed:MixedRunner` | per-agent runner from `roster.json` | `google-antigravity` |
 | `agyteam.runner_host:HostRunner` | a host's own start / deliver / stop-hook commands, from config | any hosted runtime |
 | your own | anything | — |
@@ -391,7 +426,7 @@ marked `started_by: host`, since the stop hook sees every turn end.
 one turn's time rather than four, and a twelve-minute turn for one agent holds
 nobody else up. A runner that only implements `wake()` gets `begin`/`poll` from
 the base class (one thread per turn). What is in flight is in
-`team/inflight.json`; a restarted supervisor resumes turns the host is still
+`inflight.json` in the team directory; a restarted supervisor resumes turns the host is still
 running and redelivers the mail of turns that died with it. A wake path that
 fails is retried with exponential backoff rather than at process speed, every
 failure is an event, and three in a row send one message to the manager.
@@ -404,11 +439,12 @@ export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
 export AGYTEAM_RUNNER_CONFIG='{"model":"gemini-3.8-flash"}'
 ```
 
-The SDK runner is the default. It keeps sessions alive between wakes, so an agent
-woken five times has one continuous context rather than five cold starts, supports
-hooks, and enforces `tools_off` at the capability level. The CLI runner makes a team
-work *inside Antigravity proper*: agents are agy custom agents, so they get the
-harness's tools, policies, and subagents, and sessions are visible to Remote Control.
+The CLI runner is the default when `AGYTEAM_RUNNER` is unset, because it is the
+one with no dependencies; it makes a team work *inside Antigravity proper*, so
+agents get the harness's tools, policies and subagents, and sessions are
+visible to Remote Control. The SDK runner keeps sessions alive between wakes,
+supports hooks, records an audit log, confines agents to their workspaces and
+enforces `tools_off` at the capability level.
 
 `agyteam.runner_mixed:MixedRunner` enables mixed runtimes where individual agents
 can run under different runners configured per agent in `roster.json` (e.g.,
@@ -520,21 +556,16 @@ and on a `requires_review` task refuses until an approved review names it
 (`record_review(..., task_id=)`); such a task's result cannot be sent to the
 user either until then. The operator, and only the operator, can waive that:
 `python -m agyteam.supervisor --waive-review <task_id> --by user --reason ...`
-writes a `waiver` row that satisfies the gate and is never counted as a review. Status spellings like `in_progress`, `waiting` and
-`completed` are accepted and mapped.
-
-A team can replace a section of the brief, or add to one agent's, without
-forking `persona.py`: `team/persona/teamwork.md` (or `principal`, `contract`,
-`continuity`, `consistency`, `verification`, `accountability`) replaces that
-section for everyone; `team/persona/coder.md` is appended to coder's brief.
-`NORMS.md` stays the place for rules the team adopts in retrospectives.
+writes a `waiver` row that satisfies the gate and is never counted as a
+review. Status spellings like `in_progress`, `waiting` and `completed` are
+accepted and mapped.
 
 Start the sim, then `update_task(task_id, status="running", check_after="2h")`,
 and go work on something else. When the time passes, the reminder arrives as an
 ordinary message to the task's owner, through the same transport a teammate's
 message uses, so it wakes the agent the same way. Several reminders for one
 owner arrive as one message. Nothing for a restarted process to lose track of:
-what an agent is waiting on is a field on a task in `team/tasks.jsonl`, not
+what an agent is waiting on is a field on a task in the team's `tasks.jsonl`, not
 memory a process held.
 
 `check_after` takes a duration (`90m`, `2h`, `1.5 hours`, `1d`) or an ISO-8601
@@ -585,7 +616,7 @@ knowledge service, or an internal store:
 ```bash
 export AGYTEAM_MEMORY_STORE=example_memory:MyStore
 export AGYTEAM_MEMORY_CONFIG='{"dsn":"..."}'     # optional, JSON
-.venv/bin/python evals/test_memory.py     # 14 checks per store
+.venv/bin/python evals/test_memory.py     # the contract, on every store
 ```
 
 Copy `agyteam/memory_template.py` and implement four methods (`save`, `read`,
@@ -600,8 +631,7 @@ checks that one agent can't read another's memory.
 
 Verified the same way as the transport: `evals/fixture_memory.py` is a
 SQLite-backed store written against only the public interface, and the same
-14-check contract passes on it and on the file store, plus four loader-safety
-cases. Misconfiguration exits loudly rather than falling back to local files,
+contract passes on it and on the file store, plus loader-safety cases. Misconfiguration exits loudly rather than falling back to local files,
 which would strand an agent's learnings where nobody looks.
 
 Any MCP host can mount the server; to give a pinned Antigravity hub conversation
@@ -609,9 +639,9 @@ the same memory, register it in `~/.gemini/antigravity/mcp_config.json`:
 
 ```json
 {"mcpServers": {"agyteam_memory": {
-  "command": "/mnt/data/claw-agy/.venv/bin/python",
-  "args": ["-m", "agyteam.mcp_memory", "/mnt/data/claw-agy/workspace"],
-  "env": {"PYTHONPATH": "/mnt/data/claw-agy"}}}}
+  "command": "/path/to/agy-team/.venv/bin/python",
+  "args": ["-m", "agyteam.mcp_memory", "/path/to/agent/workspace"],
+  "env": {"PYTHONPATH": "/path/to/agy-team"}}}}
 ```
 
 ## agy CLI plugin (the installable form)
@@ -631,7 +661,7 @@ Install and run:
 
 ```bash
 bash plugin/install.sh                  # → ~/.gemini/antigravity-cli/plugins/agy-team
-python -m agyteam.session tpm           # join the conversation tpm works in
+python -m agyteam.session manager       # join the conversation the manager works in
 ```
 
 > **Do not use `agy --agent <name>`.** Measured on agy 1.2.0: the default agent
@@ -651,8 +681,14 @@ repo later moves or is deleted. The installer renders real paths into
 depends on it), seeds the team roster, and then verifies the result by importing
 the servers from the *installed copy* with this repo off `PYTHONPATH`.
 
-Agent identity is not baked in: both MCP servers inherit `AGYTEAM_AGENT` from
-the agy process, so one install serves every agent on every team.
+It mounts four servers: `agyteam_bus` (messaging, reviews, retros),
+`agyteam_tasks`, `agyteam_memory` and `agyteam_self` (introspection). Agent
+identity is not baked in: each inherits `AGYTEAM_AGENT` from the agy process,
+so one install serves every agent on every team.
+
+**Reinstall after every change under `agyteam/`.** Agents on the CLI call the
+installed copy, not this repo; `python -m agyteam.doctor` compares the two
+file by file and fails when they differ.
 
 ### File scopes
 
@@ -679,10 +715,10 @@ work from experiments:
 
 ```bash
 AGYTEAM_TEAM=team-b bash plugin/install.sh            # seed a second team
-AGYTEAM_TEAM=team-b python -m agyteam.session tpm
+AGYTEAM_TEAM=team-b python -m agyteam.session manager
 
 # or point at an exact path, ignoring the <root>/<team> layout entirely
-AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A python -m agyteam.session tpm
+AGYTEAM_DURABLE_DIR=~/my-agents/my-agent-team-A python -m agyteam.session manager
 ```
 
 `AGYTEAM_TEAMS_ROOT` moves the whole collection; `AGYTEAM_DURABLE_DIR` overrides
@@ -717,7 +753,7 @@ normalises all of these:
 {"agents": ["tpm", "coder"]}                           // bare names
 ```
 
-Per-agent extras (`model`, `tools_off`, `workers`) survive normalisation, and
+Per-agent extras (`model`, `tools_off`, `workers`, the policy fields) survive normalisation, and
 writes are always canonical — so a mapping-shaped roster **migrates itself** the
 first time it's edited. Genuinely ambiguous input is rejected with a readable
 message rather than an exception from three frames down: duplicate names, a
@@ -748,7 +784,7 @@ your class — no agyteam source changes, and agents notice nothing:
 ```bash
 export AGYTEAM_BUS_TRANSPORT=example_transport:MyTransport
 export AGYTEAM_BUS_CONFIG='{"endpoint":"..."}'      # optional, JSON
-.venv/bin/python evals/test_transport.py  # 15 checks per transport
+.venv/bin/python evals/test_transport.py  # the contract, on every transport
 ```
 
 Copy `agyteam/transport_template.py` and implement three methods (`send`,
@@ -758,15 +794,15 @@ the file bus.
 
 Guarantees the contract suite enforces, because they're what the rest of the
 system assumes: unknown recipients produce an `[error: ...]` string rather than
-vanishing, messages are consumed exactly once (redelivery loops agents forever),
-and inboxes are isolated per agent. Misconfiguration fails loudly — a bad
+vanishing, an acknowledged message is not delivered again (redelivery loops
+agents forever), and inboxes are isolated per agent. Misconfiguration fails loudly — a bad
 module, malformed spec, bad config JSON, or non-`Transport` class exits with a
 message rather than silently falling back to the file bus, which would split the
 team across two channels and produce messages that just disappear.
 
 Swappability is verified, not asserted: `evals/fixture_transport.py` is a
 SQLite-backed transport written against only the public interface, and the same
-12-check contract passes on it and on the file transport.
+contract passes on it and on the file transport.
 
 #### Why the seam exists
 
@@ -791,44 +827,49 @@ symmetric rather than one being a special case.
 ## Evals (run these after changes)
 
 ```bash
-.venv/bin/python evals/test_mcp.py                    # wiring, scopes, purity, teams — free
-.venv/bin/python evals/test_transport.py              # A2A contract, both transports, free
-.venv/bin/python evals/test_memory.py                 # memory contract, both stores, free
-.venv/bin/python evals/test_self.py                   # agent introspection server, free
-.venv/bin/python evals/test_supervisor.py             # reactive dispatch, free
-.venv/bin/python evals/test_review.py                 # durable review records & approval gate, free
-.venv/bin/python evals/test_observer.py               # observer contract, file & SQLite, free
-.venv/bin/python evals/test_cycle.py                  # cycle & distillation to durable memory, free
-.venv/bin/python evals/test_continuity.py             # context continuity per runner, free
-.venv/bin/python evals/run_evals.py                   # SDK agent (default)
-AGYTEAM_EXTRA_ARGS=--mcp .venv/bin/python evals/run_evals.py # SDK agent, memory via MCP
-.venv/bin/python evals/test_reactive.py               # real reactive team, ~30c
-.venv/bin/python evals/test_a2a.py                    # A2A behavioral, ~15¢
+./run test        # or: pytest      every offline test; no key, no CLI, about a minute
 ```
 
-`pytest evals/` runs every offline suite, the script-style ones included: a
-script test whose returned score is short now fails under pytest instead of
-passing silently (see `evals/conftest.py`).
+That is the one to run. A green result means every check passed: the older
+suites are scripts that print PASS/FAIL and return a score, and
+`evals/conftest.py` fails any of them whose score is short (pytest used to
+report those as passed whatever they printed).
 
-Current status — all green:
+It is safe to run beside a working team. `evals/conftest.py` points the
+ambient team at a throwaway directory before every test, so an exported
+`AGYTEAM_TEAM` is ignored and nothing in the suite can write to your team's
+record. (It did not always: one test used to retire a live team's
+conversations.)
 
-| suite | what it proves | score |
+The script suites also run on their own, which prints each check by name:
+
+| suite | what it proves | checks |
 |---|---|---|
-| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 42/42 |
-| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 34/34 |
-| `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 64/64 |
-| `test_self.py` | agent introspection server, tool functionality, robust isolation | 22/22 |
-| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 51/51 |
-| `test_review.py` | durable review records, approval gate, and supervisor integration | 25/25 |
-| `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 69/69 |
-| `test_cycle.py` | conversation cycle, distill abort safety, frontmatter parsing | 83/83 |
-| `test_continuity.py` | whether a wake resumes context or cold-starts, per runner | 4/4 |
-| `test_delivery.py` | **the product**: one instruction → a verified artifact on disk, via the agy CLI | 8/8 |
-| `test_reactive.py` | real agents woken by teammates, end to end, no human polling | 7/7 |
-| `run_evals.py` | teach→restart→recall ×3; fabrication probes ×3 | 6/6 |
-| `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | 8/8 |
+| `test_mcp.py` | server wiring, roster shapes/migration, git-root scopes, stdlib purity, team isolation | 42 |
+| `test_transport.py` | A2A contract on file + independent SQLite transport, loader safety | 34 |
+| `test_memory.py` | memory contract on file + independent SQLite store, loader safety | 64 |
+| `test_self.py` | agent introspection server, tool functionality, robust isolation | 22 |
+| `test_supervisor.py` | reactive cascade, hop budget, failure isolation, non-destructive status, ack-spiral termination | 51 |
+| `test_review.py` | durable review records, approval gate, and supervisor integration | 25 |
+| `test_manager.py` | the manager's gate loop, the status report, the seeded roster | 39 |
+| `test_observer.py` | event logging, accounting stream, token preservation, and run metrics | 69 |
+| `test_cycle.py` | conversation cycle, distill abort safety, frontmatter parsing | 83 |
 
-Typical cost: free offline suites, ~8¢ SDK, ~15¢ A2A.
+```bash
+.venv/bin/python evals/test_supervisor.py
+```
+
+**Live evals call real models and cost money.** None of them runs under
+`pytest`. Each uses a team or workspace of its own and never touches yours.
+
+| eval | what it proves | needs | rough cost |
+|---|---|---|---|
+| `test_delivery.py` | **the product**: one instruction → a file written by one agent and independently verified by another, then reported to you | the configured runner (`agy` CLI by default) | 15–25¢ |
+| `test_reactive.py` | real agents woken by teammates, end to end, no human polling | SDK + Gemini key | ~30¢ |
+| `test_a2a.py` | real agents delegate, mail crosses processes, memory lands durable | SDK + Gemini key | ~15¢ |
+| `run_evals.py` | teach → restart → recall; fabrication probes | SDK + Gemini key | ~8¢ |
+| `test_continuity.py` | whether a second wake remembers the first, per runner; a runner that cannot run is reported as not measured | whichever runners are available | 10–20¢ |
+| `bench/convergence.py` | whether a retro-and-cycle changes how the team works | see `bench/README.md` | dollars |
 
 ## Headless permissions: required for unattended teamwork
 
@@ -858,24 +899,24 @@ yet the servers *do* start and their tools get cached under
 time even though `agy mcp list` does not show it. Treat `validate`'s MCP line as
 unreliable; confirm via the tool cache instead.
 
-## Unverified: the plugin install step
+## What has been run for real, and what has not
 
-Everything the plugin *does* at runtime is tested (`test_a2a.py` mounts the same
-modules with the same env-derived identity and passes 8/8). Installing by file
-copy is confirmed to register `agents/` (all three show in `agy agents`) and to
-start both MCP servers. Still unverified end to end is a full unattended team
-run, which is blocked on the permission setting above. Note also that
-`agy plugin list` reports **"No imported plugins"** for a hand-copied bundle —
-`agy plugin install <dir>` is the first-class path and may behave differently.
-Expect to adjust:
-
-- whether plugin `agents/` uses `<name>/agent.md` (documented for custom agents)
-  or a flat `<name>.md`
-- `hooks.json` — schema is undocumented, so nothing here depends on it; the
-  grounding contract ships as `rules/` and agent instructions instead
-- per-agent tool restriction (the SDK path uses `disabled_tools`; the CLI's
-  equivalent for custom agents isn't documented). tpm's "no shell" is currently
-  instruction-level in the plugin, not capability-level as it is in the SDK team.
+- **The CLI path, end to end.** `evals/test_delivery.py` gives one instruction
+  to a three-agent team driven through the `agy` CLI with the installed
+  plugin: a file is written by one agent, independently verified by another,
+  and reported to the user, with no human in the loop. It needs the permission
+  setting above.
+- **The SDK path** is what the measured cold-start convergence run used
+  (`bench/README.md`). It needs a Gemini API key.
+- **`HostRunner`** has only been run against the fake host in
+  `evals/fixture_host.py`. The first real host will find things the fake did not.
+- **Per-agent tool restriction on the CLI.** The SDK withholds a disabled
+  tool's schema. The CLI has no documented equivalent, so there `tools_off`
+  is enforced only where the host runs `agyteam.hook_pre_tool_use`; without a
+  hook it is an instruction, and `my_capabilities` tells the agent which.
+- `agy plugin list` reports **"No imported plugins"** for a bundle copied in by
+  `plugin/install.sh`, though its servers start and its tools work.
+  `agy plugin install <dir>` is the first-class path and may behave differently.
 
 ## Known quirks
 
@@ -916,7 +957,7 @@ cp .env.example .env   # edit .env to add your GEMINI_API_KEY
 ```
 
 Installing via `pyproject.toml` registers console scripts directly into your virtualenv:
-- `agyteam`: CLI entry point to the supervisor (`agyteam --chat`, `agyteam --say "tpm: <task>"`, `agyteam --status`, etc.)
+- `agyteam`: CLI entry point to the supervisor (`agyteam --chat`, `agyteam --say "manager: <task>"`, `agyteam --status`, etc.)
 - `agyteam-lifecycle`: daemon lifecycle management (`agyteam-lifecycle status`, `agyteam-lifecycle stop`, `agyteam-lifecycle start`)
 
 ### 2. Direct Module Invocations
@@ -926,7 +967,7 @@ You can invoke `agyteam` modules directly with Python:
 ```bash
 # Supervisor & interactive chat
 python -m agyteam.supervisor --chat
-python -m agyteam.supervisor --say "tpm: build feature X"
+python -m agyteam.supervisor --say "manager: build feature X"
 python -m agyteam.supervisor --status
 python -m agyteam.supervisor --daemon
 
@@ -938,7 +979,15 @@ python -m agyteam.sdk_cli -p "analyze this log file"
 python -m agyteam.lifecycle status
 python -m agyteam.lifecycle stop
 python -m agyteam.lifecycle start
+
+# Preflight, and task reminders on a host with no supervisor daemon
+python -m agyteam.doctor
+python -m agyteam.tasks sweep
 ```
+
+These module invocations do not go through `./run`, so nothing chooses a
+runner or seeds a roster for you: set `AGYTEAM_RUNNER` (the default is the agy
+CLI runner) and seed a team with `bash plugin/install.sh` or `./run ask` once.
 
 ### 3. Environment Variables & Swappable Backends
 
@@ -947,20 +996,34 @@ All subsystems support configuration through environment variables:
 | Environment Variable | Description | Default |
 |---|---|---|
 | `GEMINI_API_KEY` | Google Gemini API key for model inference | None (prompted by `./run`) |
-| `AGYTEAM_RUNNER` | Agent execution runner (`agyteam.runner_sdk:SdkRunner`, `agyteam.runner_agy:AgyRunner`, `agyteam.runner_mixed:MixedRunner`) | `agyteam.runner_sdk:SdkRunner` |
+| `AGYTEAM_RUNNER` | Agent execution runner (`agyteam.runner_agy:AgyRunner`, `agyteam.runner_sdk:SdkRunner`, `agyteam.runner_mixed:MixedRunner`, `agyteam.runner_host:HostRunner`, or your own) | `agyteam.runner_agy:AgyRunner`; `./run` selects the SDK runner when a Gemini key is configured |
 | `AGYTEAM_RUNNER_CONFIG` | JSON configuration passed to runner constructor | `{}` |
 | `AGYTEAM_BUS_TRANSPORT` | Pluggable A2A messaging transport class | `agyteam.transport_file:FileTransport` |
-| `AGYTEAM_MEMORY_STORE` | Pluggable persistent memory store class | `agyteam.memory_file:FileMemoryStore` |
+| `AGYTEAM_MEMORY_STORE` | Pluggable persistent memory store class | `agyteam.memory_file:FileMemory` |
+| `AGYTEAM_OBSERVER` | Pluggable event and cost recorder | `agyteam.observer_file:FileObserver` |
+| `AGYTEAM_TEAM` | Team name; selects `<teams root>/<team>` | `default` |
+| `AGYTEAM_TEAM_DIR` | Exact team directory (roster, bus, reviews, tasks), overriding the layout | `<durable>/team` |
 | `AGYTEAM_DURABLE_DIR` | Absolute path overriding durable storage for agent memory and identities | `~/agy-teams/<team>` |
 | `AGYTEAM_TEAMS_ROOT` | Base directory for multi-team namespaces | `~/agy-teams` |
+| `AGYTEAM_AUDIT_LOG` | Where the SDK runner records every tool call; keep it outside all workspaces | unset (nothing recorded) |
+| `AGYTEAM_PROOF_PYTHON` | Interpreter the review gate uses to run proof files; must be able to `import pytest` | the repo's `.venv`, then the current interpreter |
+| `AGYTEAM_TURN_TIMEOUT` | Wall-clock ceiling on one SDK turn, seconds (`0` = none) | `600` |
+| `AGYTEAM_CYCLE_THRESHOLD` | Input tokens on an agent's latest turn above which it is distilled and given a fresh conversation once the episode ends | `100000` |
+| `AGYTEAM_WAKE_BACKOFF_BASE` / `AGYTEAM_WAKE_BACKOFF_MAX` | Seconds to wait before retrying an agent whose turn failed; doubles per failure up to the max | `5` / `300` |
+| `AGYTEAM_ESCALATE_AFTER` | Consecutive failed turns before the supervisor tells the manager (or you) | `3` |
+| `AGYTEAM_PROJECT_DIR` / `AGYTEAM_SHARED_DIR` | The project root and the directory for deliverables agents hand each other | the git root / `<project>/.agy-team-shared` |
+| `AGYTEAM_NO_API_KEY` | `1` tells `./run` you supply model access another way: it stops asking for a Gemini key and does not switch to the SDK runner on its own | unset |
+
+The remaining tuning knobs (compaction, anomaly, retro and loop limits) are in
+`agyteam/config.py`, each with the measurement that set its default.
 
 ### 4. Direct Testing & Verification
 
 Run tests directly with `pytest` without needing manual `PYTHONPATH` exports:
 
 ```bash
-# Run the entire offline test suite
-pytest evals/
+# Run the entire offline test suite (same as ./run test)
+pytest
 
 # Run specific subsystem contract suites
 pytest evals/test_mcp.py

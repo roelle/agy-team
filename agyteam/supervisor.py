@@ -1081,6 +1081,12 @@ class Supervisor:
             finally:
                 if hasattr(bus, "close"):
                     bus.close()
+            if to == "user":
+                # The supervisor telling the user that nothing is working is
+                # not the team answering the user. Counted as an answer, it
+                # tripped the review gate and bounced a "your answer went
+                # out unreviewed" at an agent that had never managed a turn.
+                self._user_mail_at_start = self._user_mail_count()
             self._log(f"[supervisor] escalated {agent}'s failures to {to}")
         except Exception:
             pass
@@ -1290,10 +1296,21 @@ class Supervisor:
                 if self.inflight:
                     self.runner.wait_turn(self.poll)
                     continue
-                if any(self._backoff.get(a, 0.0) > time.monotonic() for a in self.transports
-                       if self._has_waking_mail(self.transports[a])):
-                    # Mail is waiting on an agent in backoff; give it time
-                    # rather than calling the team idle with work undone.
+                stuck = [a for a in self.transports
+                         if self._backoff.get(a, 0.0) > time.monotonic()
+                         and self._has_waking_mail(self.transports[a])]
+                if stuck:
+                    # Mail is waiting on an agent in backoff. Give it time,
+                    # up to a point: once everyone still holding mail has
+                    # failed enough to be escalated, this episode is not
+                    # going to finish, and a one-shot run that retried with
+                    # backoff until the hop budget took hours to say so. A
+                    # daemon keeps trying; an episode reports and ends.
+                    limit = config.ESCALATE_AFTER_FAILURES
+                    if all(self._fail_streak.get(a, 0) >= limit for a in stuck):
+                        self.stopped = (f"{', '.join(stuck)} failed {limit} turns "
+                                        f"in a row; their mail is still queued")
+                        break
                     time.sleep(min(self.poll, 1.0))
                     continue
                 self.stopped = "team went idle"

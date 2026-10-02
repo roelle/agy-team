@@ -88,6 +88,22 @@ def test_a_refused_grant_is_not_half_applied(team):
     assert (team / "roster.json").read_text() == before
 
 
+def test_the_sdk_session_does_not_hand_every_agent_the_team_directory(team, tmp_path,
+                                                                     monkeypatch):
+    """The grant was refused at the front door and given away at the back:
+    the SDK session builder appended the team directory to every agent's
+    workspaces, on the one runner that enforces workspaces at all."""
+    pytest.importorskip("google.antigravity")
+    from agyteam.sdk_agent import _workspaces
+    monkeypatch.delenv("AGYTEAM_EXTRA_WORKSPACES", raising=False)
+    granted = tmp_path / "repo"
+    granted.mkdir()
+    paths = [Path(p).resolve() for p in _workspaces(tmp_path / "agent", extra=[granted])]
+    assert granted.resolve() in paths
+    assert not any(lifecycle.covers_team_dir(p, team) for p in paths
+                   if p != Path.cwd().resolve()), paths
+
+
 # --- and an existing roster gets told ----------------------------------------
 
 class FakeReport(doctor.Report):

@@ -28,4 +28,20 @@ include = ["agyteam*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["evals"]
+# Run state, not tests. The live evals leave working directories under
+# evals/ (all gitignored), and agents write proof files into them: after one
+# delivery run `pytest evals/` collected five tests an agent had written, and
+# the count no longer matched a fresh clone's.
+norecursedirs = ["delivery_shared", "reactive_sandbox", "reactive_durable",
+                 "continuity_scratch", "ws_*", "team_*", "a2a_*", "*_unit",
+                 ".agy-team-shared", ".venv", "*.egg-info"]
+filterwarnings = [
+    # multiprocessing's own note about fork() in a threaded test process;
+    # the race test forks on purpose and joins every child.
+    "ignore:This process .* is multi-threaded, use of fork:DeprecationWarning",
+    # The SDK's own validator reads its own deprecated field on every config,
+    # whether or not the caller set it. We pass CompactionConfig.
+    "ignore:CapabilitiesConfig.compaction_threshold is deprecated:DeprecationWarning",
+]
 

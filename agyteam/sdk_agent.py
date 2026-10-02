@@ -29,7 +29,7 @@ from .store import Toolbox
 # whole task and the environment with it. The interpreter an agent runs its
 # tests with is not a file it should ever be editing.
 DANGEROUS = ["rm -rf /", "git push -f", "git push --force", "mkfs", "> /dev/sd",
-             "rm -rf .venv", "rm -rf /mnt/data/claw-agy/.venv", "ln -s", "ln -sfn"]
+             "rm -rf .venv", "ln -s", "ln -sfn"]
 
 
 def make_memory_tools(box: Toolbox):
@@ -105,7 +105,7 @@ def _model_target(model: str, effort: str = ""):
 
 
 def _workspaces(workspace: Path, extra: list[str | Path] | None = None) -> list[str]:
-    """Directories an agent may touch: its own, the repo, and the team's.
+    """Directories an agent may touch: its own, the repo, and what it is granted.
 
     `extra` is the roster's per-agent "workspaces" list. It exists because
     reach is not uniform across roles: the manager has to read teammate
@@ -129,13 +129,12 @@ def _workspaces(workspace: Path, extra: list[str | Path] | None = None) -> list[
             path = str(path).strip()
             if path and path not in paths:
                 paths.append(path)
-    try:
-        from . import scope
-        team = scope.load().team_dir()
-        if str(team) not in paths:
-            paths.append(str(team))
-    except Exception:
-        pass            # no team configured is normal for a single agent
+    # Not the team directory. It used to be appended here, from when agents
+    # wrote NORMS.md themselves; the supervisor writes it now, and every
+    # other file there is the record -- reviews, the bus, the roster, the
+    # task log -- which agents reach through the MCP servers and must not be
+    # able to edit. lifecycle.grant_workspace refuses that grant and doctor
+    # fails on it, while this line handed it to every SDK agent regardless.
     if extra:
         for p in extra:
             resolved = str(Path(p).expanduser().resolve())
@@ -339,7 +338,19 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
 
     off = [types.BuiltinTools(t) for t in (disabled_tools or [])]
 
+    # The SDK moved the compaction threshold from CapabilitiesConfig to its
+    # own CompactionConfig and deprecated the old spelling. Use the new one
+    # where it exists; pyproject still allows SDK versions that predate it.
+    if hasattr(types, "CompactionConfig"):
+        compaction = {"compaction_config": types.CompactionConfig(
+            token_threshold=cfg.COMPACT_THRESHOLD_TOKENS)}
+        legacy_compaction = {}
+    else:
+        compaction = {}
+        legacy_compaction = {"compaction_threshold": cfg.COMPACT_THRESHOLD_TOKENS}
+
     return LocalAgentConfig(
+        **compaction,
         system_instructions=types.TemplatedSystemInstructions(
             identity=ident_file.read_text(), sections=sections),
         tools=([] if use_mcp else make_memory_tools(box)) + list(extra_tools or []),
@@ -351,14 +362,8 @@ def build_config(workspace: Path, model: str = cfg.DEFAULT_MODEL,
             disabled_tools=off or None,
             agent_behavior=(types.AgentBehavior.INTERACTIVE if interactive
                             else types.AgentBehavior.AUTONOMOUS),
-            compaction_threshold=cfg.COMPACT_THRESHOLD_TOKENS,
+            **legacy_compaction,
         ),
-        # The team directory too, not just the agent's own workspace and the
-        # repo. Shared team state lives there -- NORMS.md, the roster, the bus --
-        # and without it an agent is refused access to the files its own tools
-        # are meant to maintain. The retro could write no norms at all until
-        # this was added, and every test passed regardless because none of them
-        # wrote to a real team directory.
         workspaces=_workspaces(workspace, extra=[*(workspaces or []), *(extra_workspaces or [])]),
         policies=[policy.allow_all()],
         hooks=hooks,

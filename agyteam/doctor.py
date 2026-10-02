@@ -174,7 +174,7 @@ def check_tools(r: Report, team_dir: Path, agent: str) -> None:
         pass
 
 
-def check_stale_bus_servers(r: Report, team_dir: Path) -> None:
+def check_stale_bus_servers(r: Report, team_dir: Path, pids=None) -> None:
     """Look for bus server processes bound to a different team.
 
     The probe above is necessary and not sufficient, and the difference
@@ -189,8 +189,14 @@ def check_stale_bus_servers(r: Report, team_dir: Path) -> None:
 
     Unreadable is reported as unreadable. A process listing we could not read
     is not a process listing that found nothing.
+
+    `pids`, if given, limits the check to those processes, and
+    AGYTEAM_PROC_ROOT names a process table other than /proc. Both exist for
+    this check's own tests: they looked at every process on the machine, so
+    they failed whenever a real team happened to be running there -- five
+    failures on a clean tree, reported from a host we had never seen.
     """
-    proc = Path("/proc")
+    proc = Path(os.environ.get("AGYTEAM_PROC_ROOT") or "/proc")
     if not proc.is_dir():
         r.line(WARN, "cannot enumerate processes on this platform; check by "
                      "hand that no bus server is bound to an older team")
@@ -199,6 +205,8 @@ def check_stale_bus_servers(r: Report, team_dir: Path) -> None:
     found, unreadable = [], 0
     for entry in proc.iterdir():
         if not entry.name.isdigit():
+            continue
+        if pids is not None and int(entry.name) not in pids:
             continue
         try:
             cmdline = [p for p in (entry / "cmdline").read_bytes().split(b"\0") if p]

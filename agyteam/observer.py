@@ -238,6 +238,8 @@ class Observer(ABC):
                 "cache_read_tokens": total_cache,
                 "total_tokens": total_tokens,
                 "cost_usd": round(total_cost, 4),
+                "unpriced_turns": sum(a.get("unpriced_turns", 0)
+                                      for a in agent_data.values()),
                 "has_unknown_tokens": has_unknown_tokens,
             },
         }
@@ -289,7 +291,7 @@ def format_summary(data: dict) -> str:
             tokens_str = f"{ag['input_tokens']} / {ag['output_tokens']} / {ag['cache_read_tokens']} / {ag['total_tokens']}"
             if ag.get("unknown_tokens_turns", 0) > 0:
                 tokens_str += f" (+{ag['unknown_tokens_turns']} unk)"
-            cost_str = f"${ag['cost_usd']:.4f}"
+            cost_str = _cost_str(ag["cost_usd"], ag.get("unpriced_turns", 0), ag["turns"])
             lines.append(f"  {name:<12} {ag['turns']:<7} {ag.get('tool_calls', 0):<7} {ag['failures']:<7} {dur:<10} {tokens_str:<38} {cost_str:<10}")
 
     episodes = data.get("episodes", [])
@@ -314,8 +316,30 @@ def format_summary(data: dict) -> str:
     lines.append(f"  Duration:    {totals.get('duration_s', 0.0):.2f}s")
     lines.append(f"  Tokens:      {totals.get('input_tokens', 0)} input, {totals.get('output_tokens', 0)} output, "
                  f"{totals.get('cache_read_tokens', 0)} cached ({totals.get('total_tokens', 0)} total)")
-    lines.append(f"  Est. Cost:   ${totals.get('cost_usd', 0.0):.4f}")
+    unpriced = totals.get("unpriced_turns", 0)
+    lines.append("  Est. Cost:   " + _cost_str(totals.get("cost_usd", 0.0), unpriced,
+                                               totals.get("turns", 0)))
+    if unpriced:
+        models = sorted({m for ag in agents.values() for m in ag.get("unpriced_models", [])})
+        named = f" ({', '.join(models)})" if models else " (no model recorded)"
+        lines.append(f"               {unpriced} turn(s) ran on a model with no price in "
+                     f"agyteam/config.py{named}; they are not in the figure above.")
     return "\n".join(lines)
+
+
+def _cost_str(cost: float, unpriced: int, turns: int) -> str:
+    """A dollar figure, or an honest refusal to give one.
+
+    The summary printed $0.0000 for a run of 1.4 million tokens, because
+    every turn was on a model the pricing table does not list and an
+    unpriced turn adds nothing to the sum. "Unknown" and "free" must not
+    print the same.
+    """
+    if unpriced and unpriced >= turns:
+        return "unknown"
+    if unpriced:
+        return f"${cost:.4f} +{unpriced}?"
+    return f"${cost:.4f}"
 
 
 def load(spec: str | None = None, config: dict | None = None) -> Observer:

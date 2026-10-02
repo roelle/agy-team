@@ -179,8 +179,47 @@ except Exception as e:
     fi
 }
 
+# Which runner wakes the agents. The library's default is the agy CLI runner,
+# because that is the one with no dependencies. Someone who has just given
+# this launcher a Gemini API key has chosen the other one: the SDK runner is
+# the only runner that uses that key. Without this, the launcher asked for a
+# key and then started a runner that ignored it and wanted the agy binary.
+# An explicit AGYTEAM_RUNNER, or `setup --no-key`, is left alone.
+select_runner() {
+    if [ -z "${AGYTEAM_RUNNER:-}" ] && [ -z "${AGYTEAM_NO_API_KEY:-}" ] \
+       && [ -n "${GEMINI_API_KEY:-}" ]; then
+        export AGYTEAM_RUNNER="agyteam.runner_sdk:SdkRunner"
+    fi
+}
+
+# A team needs a roster before anyone can be woken. plugin/install.sh seeds
+# one, but nothing told a new user to run it, so the first `./run` ended at
+# "no agents on the roster". Seed the same default team here, from the one
+# copy of it -- the heredoc in plugin/install.sh -- so the two cannot drift.
+ensure_roster() {
+    local team_dir roster team
+    team_dir="$("$PYTHON_BIN" -c 'from agyteam import scope; print(scope.team_dir())')"
+    roster="$team_dir/roster.json"
+    if [ -f "$roster" ]; then
+        return 0
+    fi
+    team="${AGYTEAM_TEAM:-default}"
+    mkdir -p "$team_dir/inbox"
+    sed -n '/<<JSON$/,/^JSON$/p' "$REPO_DIR/plugin/install.sh" | sed '1d;$d' \
+        | sed "s/(\$TEAM)/($team)/" > "$roster"
+    if ! "$PYTHON_BIN" -c 'import json,sys; json.load(open(sys.argv[1]))' "$roster" 2>/dev/null; then
+        rm -f "$roster"
+        echo "Error: could not seed a default roster from plugin/install.sh." >&2
+        exit 1
+    fi
+    echo "Seeded the default team (manager, tpm, coder, syseng, qa) at $roster"
+    echo "Edit that file to change who is on the team and what each may do."
+}
+
 cmd_chat() {
     ensure_api_key
+    select_runner
+    ensure_roster
     exec "$PYTHON_BIN" -m agyteam.supervisor --chat "$@"
 }
 
@@ -191,6 +230,8 @@ cmd_ask() {
         echo "Usage: ./run ask \"<your task or question>\"" >&2
         exit 1
     fi
+    select_runner
+    ensure_roster
     exec "$PYTHON_BIN" -m agyteam.supervisor --say "$*"
 }
 

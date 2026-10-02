@@ -29,6 +29,17 @@ been rejected for naming an author who was not a teammate, and so tested
 nothing about proof files at all. A check whose failure cannot be seen is the
 vacuous check this project keeps warning about, pointed at its own suite.
 
+## Sandboxed
+
+Anything that resolves "the team" from the environment -- a runner built with
+no arguments, a transport loaded by name -- lands in the operator's real team
+directory unless a test says otherwise. One test recycled `coder` and `tpm`
+on exactly such a runner: with AGYTEAM_TEAM exported, `pytest evals/` retired
+a live team's conversations, and it did so to a delivery eval running
+alongside it, which then scored 7 of 8 for a fault the suite had caused.
+The ambient team is now a throwaway directory, re-asserted before every test
+because modules also edit the environment at import.
+
 The hook below reads that score. A test that returns (passed, total) with
 passed < total fails, with the count; the FAIL lines it printed are in the
 captured output.
@@ -36,8 +47,30 @@ captured output.
 import functools
 import inspect
 import os
+import tempfile
+
+import pytest
 
 os.environ.setdefault("GEMINI_API_KEY", "offline-tests-never-call-a-model")
+
+SANDBOX = tempfile.mkdtemp(prefix="agyteam-suite-")
+_AMBIENT = ("AGYTEAM_TEAM", "AGYTEAM_TEAM_DIR", "AGYTEAM_DURABLE_DIR", "AGYTEAM_TEAMS_ROOT")
+
+
+def _sandbox_ambient_team():
+    for key in _AMBIENT:
+        os.environ.pop(key, None)
+    os.environ["AGYTEAM_DURABLE_DIR"] = SANDBOX
+    os.environ["AGYTEAM_TEAMS_ROOT"] = SANDBOX
+
+
+_sandbox_ambient_team()
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reaches_a_real_team():
+    _sandbox_ambient_team()
+    yield
 
 
 def _score(result):

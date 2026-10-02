@@ -65,5 +65,25 @@ def test_an_episode_flag_is_taken_as_recorded(tmp_path):
     assert generate_report(td)["episodes"][0]["reviewed"] is True
 
 
+def test_the_cost_summary_does_not_print_unpriced_work_as_free(tmp_path):
+    """`--cost` printed $0.0000 for 1.4 million tokens on a model the pricing
+    table does not list."""
+    from agyteam.observer import format_summary
+    from agyteam.observer_file import FileObserver
+    td = tmp_path / "team"
+    td.mkdir()
+    obs = FileObserver({"team_dir": str(td)})
+    obs.record_turn("coder", "c1", 10.0, input_tokens=1_000_000, output_tokens=50_000,
+                    model="some-model-nobody-priced")
+    text = format_summary(obs.summary())
+    assert "$0.0000" not in text
+    assert "unknown" in text and "some-model-nobody-priced" in text
+
+    obs.record_turn("qa", "c2", 5.0, input_tokens=1_000_000, output_tokens=0,
+                    model="gemini-3.8-flash")
+    text = format_summary(obs.summary())
+    assert "+1?" in text, text
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))

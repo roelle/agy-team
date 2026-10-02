@@ -47,7 +47,7 @@ def setup() -> Path:
     return team_dir
 
 
-def probe(runner, label: str) -> tuple[int, int]:
+def probe(runner, label: str) -> tuple[int, int, bool | None]:
     print(f"\n== {label}: does the second wake remember the first? ==")
     first = runner.wake(AGENT, PLANT)
     second = runner.wake(AGENT, RECALL)
@@ -55,8 +55,17 @@ def probe(runner, label: str) -> tuple[int, int]:
     print(f"  wake 1: {first.strip()[:100]}")
     print(f"  wake 2: {second.strip()[:100]}")
 
+    # A runner that could not run has not been measured. This used to look
+    # only at the second wake, so a missing API key printed "PASS both wakes
+    # ran without error" and then reported that the SDK "forgets across
+    # wakes" -- a finding about a turn that never happened.
+    failed = next((w for w in (first, second) if w.startswith("[error:")), None)
+    if failed:
+        print(f"  NOT MEASURED: {label} could not run a turn: {failed.strip()[:160]}")
+        return 0, 0, None
+
     remembered = SECRET in second
-    errored = second.startswith("[error:")
+    errored = False
     return sum([
         check(f"{label}: both wakes ran without error", not errored, second[:200]),
         check(f"{label}: recall == {'session kept' if remembered else 'cold start'}",
@@ -85,8 +94,17 @@ def main() -> int:
 
     print("\n== continuity ==")
     for label, remembered in results.items():
-        print(f"  {label:8} : {'remembers across wakes (persistent session)' if remembered else 'forgets across wakes (memory is the only continuity)'}")
+        if remembered is None:
+            verdict = "not measured (the runner could not run a turn; see above)"
+        elif remembered:
+            verdict = "remembers across wakes (persistent session)"
+        else:
+            verdict = "forgets across wakes (memory is the only continuity)"
+        print(f"  {label:8} : {verdict}")
     print(f"\n== continuity: {scores}/{total} ==")
+    if total == 0:
+        print("No runner could run a turn, so nothing was measured.")
+        return 1
     return 0 if scores == total else 1
 
 

@@ -26,10 +26,9 @@ sys.path.insert(0, str(ROOT))
 # to start clean, and inheriting AGYTEAM_TEAM from the environment meant it
 # would wipe *yours* — it once deleted a running team's roster and bus log
 # mid-flight because an agent ran the test board with AGYTEAM_TEAM set.
+# Applied in main(), not at import: pytest imports this file to collect it, and
+# an assignment here pointed every later offline test at this eval's team.
 TEAM = "delivery-eval"
-os.environ["AGYTEAM_TEAM"] = TEAM
-os.environ.pop("AGYTEAM_TEAM_DIR", None)
-os.environ.pop("AGYTEAM_DURABLE_DIR", None)
 MARKER = "delivery-eval team, safe to wipe"
 SHARED = ROOT / "evals" / "delivery_shared"
 TARGET = SHARED / "kingfisher.txt"
@@ -50,6 +49,9 @@ ASK = (f"get a file created at {TARGET} containing exactly the word kingfisher, 
 
 
 def main() -> int:
+    os.environ["AGYTEAM_TEAM"] = TEAM
+    for key in ("AGYTEAM_TEAM_DIR", "AGYTEAM_DURABLE_DIR", "AGYTEAM_TEAMS_ROOT"):
+        os.environ.pop(key, None)
     shutil.rmtree(SHARED, ignore_errors=True)
     SHARED.mkdir(parents=True)
     os.environ["AGYTEAM_SHARED_DIR"] = str(SHARED)
@@ -97,7 +99,22 @@ def main() -> int:
     hops = [json.loads(l) for l in (team_dir / "bus.jsonl").read_text().splitlines()]
     trace = " ; ".join(f"{h['from']}->{h['to']}" for h in hops)
     writers = {h["from"] for h in hops if h["from"] != "user"}
-    convs = json.loads((team_dir / "conversations.json").read_text())
+    # One conversation per agent, live or retired: the supervisor cycles an
+    # agent whose context has grown past the threshold once the episode ends,
+    # which retires its conversation id rather than losing it. Reading only
+    # the live map failed this check on a run that did everything right.
+    convs: dict[str, set] = {}
+    try:
+        for name, cid in json.loads((team_dir / "conversations.json").read_text()).items():
+            convs.setdefault(name, set()).add(cid)
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in (team_dir / "conversations_retired.jsonl").read_text().splitlines():
+            rec = json.loads(line)
+            convs.setdefault(rec["agent"], set()).add(rec["conversation"])
+    except (OSError, ValueError, KeyError):
+        pass
     content = TARGET.read_text() if TARGET.exists() else ""
 
     print(f"\n  trace: {trace}\n  turns: {turns}\n")
@@ -115,7 +132,8 @@ def main() -> int:
               sup.stopped.startswith("the user was answered"), sup.stopped),
         check("no ack spiral (well under the budget)", turns <= 8, str(turns)),
         check("each agent kept one persistent conversation",
-              len(convs) >= 2, str(convs)),
+              len(convs) >= 2 and all(len(ids) == 1 for ids in convs.values()),
+              str({k: sorted(v) for k, v in convs.items()})),
     ])
     print(f"\n== delivery: {score}/8 ==")
     return 0 if score == 8 else 1

@@ -107,6 +107,17 @@ refused at the author check, so none reached the proof gate it was meant to
 test. `evals/conftest.py` now fails any test whose returned score is short.
 **Run `pytest evals/`; a green result now means every check passed.**
 
+The suite also has to leave real teams alone, and it did not. A runner built
+with no arguments resolves its team from the environment; one test recycled
+`coder` and `tpm` on such a runner, so `pytest evals/` with `AGYTEAM_TEAM`
+exported retired that team's live conversations. It was found because a live
+delivery eval running beside the suite scored 7 of 8: `tpm` had been reset
+mid-episode and came back with a fresh brief. `evals/test_delivery.py` made
+it worse by setting `AGYTEAM_TEAM` at import, which pytest triggers by
+collecting the file. `conftest.py` now sandboxes the ambient team before
+every test and `evals/test_suite_sandbox.py` holds it there. **A test that
+needs a team directory names one; nothing may rely on the environment's.**
+
 The rule has a second edge that cost us more: **a check that could not run
 must never be reported as a check that found something.** The proof gate
 shells out to pytest, the plugin install is deliberately dependency-free, and
@@ -155,7 +166,10 @@ words in a teammate's retrospective; one that can edit `roster.json` can grant
 itself the rest. This closes retro-inbox forgery by construction rather than by
 validation, which is the cheaper kind of closed. `lifecycle.grant_workspace`
 refuses a path containing the team directory, and `agyteam.doctor` fails on one
-already in the roster. Keep the team directory out of every working tree — if
+already in the roster. For a while that was a rule enforced at the front door
+only: the SDK session builder appended the team directory to every agent's
+workspaces itself, a leftover from when agents wrote `NORMS.md`, on the one
+runner where workspaces mean anything. It no longer does, and a test holds it. Keep the team directory out of every working tree — if
 they are co-located, move it with `AGYTEAM_DURABLE_DIR`, because a record
 inside the workspace is a record its subject can edit.
 
@@ -232,10 +246,13 @@ because a list of granted directories otherwise reads as a boundary that is
 not there.
 
 **And the same is true of `tools_off`.** Roster capability scoping is the
-mechanism behind "roles are enforced by capability, not instruction", and it
-is implemented in one place: the SDK runner passes it to the session builder
-so the schema for a withheld tool never reaches the model. Everywhere else
-the roster entry is a description. We found this the way you would expect —
+mechanism behind "roles are enforced by capability, not instruction", and
+only one runner removes the capability: the SDK runner passes it to the
+session builder so the schema for a withheld tool never reaches the model.
+Everywhere else the tool is still there to be called. The policy function
+above refuses the call where a host runs the hook, and refuses what goes
+through the team's own servers on any host; with no hook, a native tool
+listed in `tools_off` is a description. We found this the way you would expect —
 a manager whose roster said `tools_off: [create_file, edit_file]` and *"Does
 not write the work"* ran `sed -i` on the fixture it was auditing.
 `Runner.supports_capability_scoping` declares it, and on a runner that does

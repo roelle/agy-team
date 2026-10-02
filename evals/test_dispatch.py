@@ -192,6 +192,43 @@ def test_repeated_failures_escalate_once(team, monkeypatch):
     assert escalations[0].kind == "blocker"
 
 
+def test_an_episode_gives_up_on_a_wake_path_that_keeps_failing(team, capsys):
+    """A one-shot run against a bad key or a missing binary: it retried with
+    backoff until the hop budget, which with real backoff is hours."""
+    load_transport("user").send("coder", "go")
+    runner = Broken({})
+    sup = Supervisor(AGENTS, runner, quiet=False, poll=0.02)
+    t0 = time.monotonic()
+    try:
+        sup.run_until_idle()
+    finally:
+        sup.close()
+    assert time.monotonic() - t0 < 10
+    assert "failed 3 turns in a row" in sup.stopped and "still queued" in sup.stopped
+    assert 3 <= runner.woken.count("coder") <= 5
+    assert len(load_transport("coder").peek()) == 1, "the mail must survive"
+    out = capsys.readouterr().out
+    assert "failed 3 turns in a row" in out, "the run must say why it stopped"
+    assert "bounced" not in out, "an escalation is not an answer to the user"
+
+
+def test_an_escalation_to_the_user_is_not_an_answer(team, capsys):
+    """With no manager to tell, the escalation goes to the user -- and was
+    then counted as the team answering, which tripped the review bounce."""
+    (team / "roster.json").write_text(json.dumps({"agents": [
+        {"name": "coder", "role": "works"}]}))
+    load_transport("user").send("coder", "go")
+    sup = Supervisor(["coder"], Broken({}), quiet=False, poll=0.02)
+    try:
+        sup.run_until_idle()
+    finally:
+        sup.close()
+    out = capsys.readouterr().out
+    assert "escalated coder's failures to user" in out
+    assert "bounced" not in out and "the user was answered" not in sup.stopped
+    assert any("failed 3 turns" in m.content for m in load_transport("user").peek())
+
+
 def test_a_crash_in_begin_is_a_failed_turn_not_a_dead_supervisor(team):
     class CrashOnBegin(ScriptedRunner):
         def begin(self, agent, message):
