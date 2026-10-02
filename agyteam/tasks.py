@@ -464,16 +464,34 @@ def waive_review(team_dir: Path | str, task_id: str, by: str = "user",
 
     Written as its own kind in reviews.jsonl, so it satisfies the
     requires_review gate without ever being counted as a review: the report
-    and the retrospective read kind == "work" and never see it. Only the
-    operator can call this -- it runs outside the agents, and agents cannot
-    write the team directory -- which is the whole reason it is a command
-    and not a tool argument.
+    and the retrospective read kind == "work" and never see it. It is a
+    command and not a tool argument so that no agent is offered it.
+
+    How far "only the operator" holds depends on the runtime. Where agents
+    are contained they cannot run this or write the team directory. Where
+    they have an unconfined shell (the agy CLI), nothing can authenticate the
+    caller: this refuses a waiver signed by a teammate and one issued from
+    inside an agent's session (the runners export AGYTEAM_AGENT to everything
+    an agent starts), which stops an agent that reaches for the command and
+    not one that sets out to forge it. Add the command to
+    policy.forbidden_commands where a pre-tool hook runs.
     """
     current = get(team_dir, task_id)
     if current is None:
         raise TaskError(f"no task with id '{task_id}'")
-    if not by or by.strip() in ("", *{a for a in [current.get("owner")] if a}):
-        raise TaskError("a waiver is the operator's; pass --by with who is waiving")
+    inside = os.environ.get("AGYTEAM_AGENT", "").strip()
+    if inside:
+        raise TaskError(f"a waiver is the operator's, and this is {inside}'s "
+                        f"session; ask the operator to waive it")
+    try:
+        doc = json.loads((Path(team_dir) / "roster.json").read_text(encoding="utf-8"))
+        teammates = {a.get("name") for a in doc.get("agents", []) if isinstance(a, dict)}
+    except (OSError, ValueError, AttributeError):
+        teammates = set()
+    teammates.add(current.get("owner"))
+    if not by or not by.strip() or by.strip() in teammates:
+        raise TaskError("a waiver is the operator's, not a teammate's; pass "
+                        "--by with who is waiving")
     entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": "waiver",
              "verdict": "waived", "reviewer": by.strip(), "author": current.get("owner"),
              "task_id": task_id, "what": current.get("title"),

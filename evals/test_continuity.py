@@ -35,6 +35,8 @@ RECALL = ("What number did I ask you to remember earlier? Reply with just the "
 def setup() -> Path:
     shutil.rmtree(SCRATCH, ignore_errors=True)
     SCRATCH.mkdir(parents=True)
+    from rpc_util import forget_ambient_team
+    forget_ambient_team()
     os.environ.update({"AGYTEAM_DURABLE_DIR": str(SCRATCH),
                        "AGYTEAM_PROJECT_DIR": str(ROOT),
                        "AGYTEAM_SHARED_DIR": str(SCRATCH)})

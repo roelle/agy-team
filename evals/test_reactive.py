@@ -27,6 +27,8 @@ def main() -> int:
     for d in (DURABLE, SANDBOX):
         shutil.rmtree(d, ignore_errors=True)
     SANDBOX.mkdir(parents=True)
+    from rpc_util import forget_ambient_team
+    forget_ambient_team()
     os.environ.update({"AGYTEAM_DURABLE_DIR": str(DURABLE),
                        "AGYTEAM_PROJECT_DIR": str(ROOT),
                        "AGYTEAM_SHARED_DIR": str(SANDBOX)})

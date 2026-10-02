@@ -116,6 +116,10 @@ def sup(team: str, audit: str, *args: str) -> subprocess.CompletedProcess:
                AGYTEAM_TEAM=team,
                AGYTEAM_RUNNER=runner_spec(),
                AGYTEAM_AUDIT_LOG=audit)
+    # These outrank AGYTEAM_TEAM. Left in place, the supervisor ran the bench
+    # task on whatever team the operator's shell exported, not the cold one.
+    for key in ("AGYTEAM_TEAM_DIR", "AGYTEAM_DURABLE_DIR"):
+        env.pop(key, None)
     return subprocess.run(
         [sys.executable, "-m", "agyteam.supervisor", *args],
         cwd=REPO, env=env, capture_output=True, text=True, timeout=3600)
@@ -268,6 +272,9 @@ def main() -> int:
                     default=str(Path.home() / "agy-teams"))
     a = ap.parse_args()
 
+    # The supervisor runs as a child and finds the team through the
+    # environment; --teams-root used to stop at this process.
+    os.environ["AGYTEAM_TEAMS_ROOT"] = str(Path(a.teams_root).expanduser())
     team_root = Path(a.teams_root) / a.team
     if team_root.exists():
         sys.exit(f"{team_root} already exists. A convergence run must start "

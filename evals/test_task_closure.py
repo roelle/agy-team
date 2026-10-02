@@ -31,6 +31,7 @@ def team(tmp_path, monkeypatch):
         {"name": "qa", "role": "reviews"}]}))
     monkeypatch.setenv("AGYTEAM_TEAM_DIR", str(td))
     monkeypatch.delenv("AGYTEAM_AUDIT_LOG", raising=False)
+    monkeypatch.delenv("AGYTEAM_AGENT", raising=False)
     tasks._quiet.clear()
     return td
 
@@ -108,6 +109,30 @@ def test_the_waiver_is_a_command_only_the_operator_runs(team):
     r = subprocess.run([sys.executable, "-m", "agyteam.tasks", "waive", "task_nope"],
                        capture_output=True, text=True, env=env, timeout=120)
     assert r.returncode == 1 and "no task" in r.stderr
+
+
+def test_a_teammate_cannot_sign_a_waiver(team):
+    """It refused only the task's owner, so qa -- or the owner passing
+    --by user from a shell -- could waive the review meant to check them."""
+    t = tasks.create(team, "p", "x", owner="coder", requires_review=True)
+    for name in ("coder", "qa", "manager", " qa "):
+        with pytest.raises(tasks.TaskError, match="not a teammate's"):
+            tasks.waive_review(team, t["id"], by=name)
+    assert tasks.approved_review_for(team, t["id"]) is None
+
+
+def test_a_waiver_issued_from_inside_an_agents_session_is_refused(team):
+    """Runners export AGYTEAM_AGENT to everything an agent starts. A speed
+    bump, not a boundary: an agent that unsets it gets through, and the
+    docs say so."""
+    t = tasks.create(team, "p", "x", owner="coder", requires_review=True)
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "AGYTEAM_TEAM_DIR": str(team),
+           "AGYTEAM_AGENT": "coder"}
+    r = subprocess.run([sys.executable, "-m", "agyteam.supervisor", "--waive-review",
+                        t["id"], "--by", "user", "--reason", "trust me"],
+                       capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode != 0 and "coder's session" in (r.stderr + r.stdout)
+    assert tasks.approved_review_for(team, t["id"]) is None
 
 
 def test_a_norm_adoption_is_not_a_review_of_a_task(team):

@@ -28,9 +28,13 @@ RULES = (ROOT / "plugin" / "agy-team" / "rules" / "grounding.md").read_text()
 
 
 def agent_config(name: str, durable: Path, team_dir: Path) -> LocalAgentConfig:
-    """Mirror of the installed plugin: agent.md identity + both MCP servers."""
-    agent_md = (ROOT / "plugin" / "agy-team" / "agents" / name / "agent.md").read_text()
-    identity = agent_md.split("---", 2)[2].strip()   # strip YAML frontmatter
+    """Mirror of the installed plugin: a roster identity + both MCP servers."""
+    # The identity the runners give an agent: its roster entry. This used to
+    # read plugin/agy-team/agents/<name>/agent.md, which the plugin stopped
+    # shipping, so the eval could not start.
+    spec = next(a for a in json.loads((team_dir / "roster.json").read_text())["agents"]
+                if a["name"] == name)
+    identity = f"You are '{name}' on a small team. Your role: {spec['role']}"
     env = {"PYTHONPATH": str(ROOT), "AGYTEAM_AGENT": name,
            "AGYTEAM_TEAM_DIR": str(team_dir), "AGYTEAM_DURABLE_DIR": str(durable)}
     return LocalAgentConfig(
@@ -70,6 +74,9 @@ async def main() -> int:
     for d in (durable, SANDBOX):
         shutil.rmtree(d, ignore_errors=True)
     SANDBOX.mkdir(parents=True)
+    sys.path.insert(0, str(ROOT / "evals"))
+    from rpc_util import forget_ambient_team
+    forget_ambient_team()
     scopes = scope.load(durable=durable, project=SANDBOX)
     team_dir = scopes.team_dir()
     (team_dir / "roster.json").write_text(json.dumps({"agents": [

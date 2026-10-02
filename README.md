@@ -93,7 +93,7 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 
 - **Offline Testing is 100% Free**: Running `./run test` (over 400 contract and behavioral tests, about a minute) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
 - **Key Validation is Zero Tokens**: The setup probe validates your API key via `models.list` metadata — zero model inference tokens.
-- **Estimated Live Team Cost**: On the SDK runner with the default model (`gemini-3.8-flash`), a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. Treat both as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
+- **Estimated Live Team Cost**: With every agent on the default model (`gemini-3.8-flash`) on the SDK runner, a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. The seeded roster puts `manager` and `qa` on a Pro model on purpose, which costs more than that; the figures in the eval tables below are Flash-priced as well. Treat all of them as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
 
 ### Stopping & Resuming Safely
 
@@ -554,10 +554,15 @@ triaging"), takes an `evidence` path or review, refuses while a
 `collaborators` entry has no recorded activity since the task was created,
 and on a `requires_review` task refuses until an approved review names it
 (`record_review(..., task_id=)`); such a task's result cannot be sent to the
-user either until then. The operator, and only the operator, can waive that:
+user either until then. The operator can waive that:
 `python -m agyteam.supervisor --waive-review <task_id> --by user --reason ...`
 writes a `waiver` row that satisfies the gate and is never counted as a
-review. Status spellings like `in_progress`, `waiting` and `completed` are
+review. No agent is offered this as a tool, a waiver signed with a teammate's
+name is refused, and so is one issued from inside an agent's session. That is
+a boundary where agents are contained (the SDK runner); on the `agy` CLI,
+where an agent has an unconfined shell, it stops an agent reaching for the
+command but not one determined to forge it, so add it to
+`policy.forbidden_commands` if a pre-tool hook runs there. Status spellings like `in_progress`, `waiting` and `completed` are
 accepted and mapped.
 
 Start the sim, then `update_task(task_id, status="running", check_after="2h")`,
@@ -827,7 +832,8 @@ symmetric rather than one being a special case.
 ## Evals (run these after changes)
 
 ```bash
-./run test        # or: pytest      every offline test; no key, no CLI, about a minute
+./run test        # every offline test; no key, no CLI, about a minute
+.venv/bin/python -m pytest      # the same thing, by hand
 ```
 
 That is the one to run. A green result means every check passed: the older
@@ -860,11 +866,17 @@ The script suites also run on their own, which prints each check by name:
 ```
 
 **Live evals call real models and cost money.** None of them runs under
-`pytest`. Each uses a team or workspace of its own and never touches yours.
-The CLI-driven ones run real agents with this checkout as their working
-directory, and an agent may decide to "fix" something it reads here: run them
-on a clean tree and look at `git status` afterwards. (One run edited
-`agyteam/activity.py` unasked.)
+`pytest`. Each builds a team of its own and drops whatever team your shell
+exports before it does (three of them used to write their roster into an
+exported `AGYTEAM_TEAM_DIR`).
+
+They run real agents that can reach this checkout: as the working directory
+on the CLI, as a workspace on the SDK. An agent may decide to "fix" something
+it reads here, so run them on a clean tree and look at `git status`
+afterwards. (One run edited `agyteam/activity.py` unasked.) `git status` does
+not show everything: gitignored directories and the installed copy of the
+plugin are within reach too, so finish with
+`python -m agyteam.install_check --drift <installed plugin dir>`.
 
 | eval | what it proves | needs | rough cost |
 |---|---|---|---|
@@ -1011,11 +1023,17 @@ All subsystems support configuration through environment variables:
 | `AGYTEAM_TEAMS_ROOT` | Base directory for multi-team namespaces | `~/agy-teams` |
 | `AGYTEAM_AUDIT_LOG` | Where the SDK runner records every tool call; keep it outside all workspaces | unset (nothing recorded) |
 | `AGYTEAM_PROOF_PYTHON` | Interpreter the review gate uses to run proof files; must be able to `import pytest` | the repo's `.venv`, then the current interpreter |
-| `AGYTEAM_TURN_TIMEOUT` | Wall-clock ceiling on one SDK turn, seconds (`0` = none) | `600` |
+| `AGYTEAM_TURN_TIMEOUT` | Wall-clock ceiling on one turn, seconds (`0` = none). SDK runner only: the `agy` CLI and host runners take `"timeout"` in `AGYTEAM_RUNNER_CONFIG` (default `900`) | `600` |
 | `AGYTEAM_CYCLE_THRESHOLD` | Input tokens on an agent's latest turn above which it is distilled and given a fresh conversation once the episode ends | `100000` |
 | `AGYTEAM_WAKE_BACKOFF_BASE` / `AGYTEAM_WAKE_BACKOFF_MAX` | Seconds to wait before retrying an agent whose turn failed; doubles per failure up to the max | `5` / `300` |
 | `AGYTEAM_ESCALATE_AFTER` | Consecutive failed turns before the supervisor tells the manager (or you) | `3` |
 | `AGYTEAM_PROJECT_DIR` / `AGYTEAM_SHARED_DIR` | The project root and the directory for deliverables agents hand each other | the git root / `<project>/.agy-team-shared` |
+| `AGYTEAM_EXTRA_WORKSPACES` | Extra directories (path-separated) every SDK agent may read: an observation grant, for transcripts and the like | unset |
+| `AGYTEAM_RETRY_ATTEMPTS` / `AGYTEAM_RETRY_BASE` | Tries, and base seconds of jittered backoff, for a model call that fails transiently | `4` / `5` |
+| `AGYTEAM_OBSERVER_CONFIG` | JSON handed to the observer named by `AGYTEAM_OBSERVER` | unset |
+| `AGYTEAM_MIXED_DEFAULT` | Runner for agents with no `runner` of their own under `runner_mixed` | the SDK runner |
+| `AGYTEAM_CONVERSATION_DIR` | Where SDK sessions are stored: `cli`, `ide`, or a path | `cli` |
+| `AGYTEAM_PLUGIN_DIR` | The installed plugin copy `install_check` compares against | the `agy` CLI's plugin directory |
 | `AGYTEAM_NO_API_KEY` | `1` tells `./run` you supply model access another way: it stops asking for a Gemini key and does not switch to the SDK runner on its own | unset |
 
 The remaining tuning knobs (compaction, anomaly, retro and loop limits) are in
@@ -1023,17 +1041,20 @@ The remaining tuning knobs (compaction, anomaly, retro and loop limits) are in
 
 ### 4. Direct Testing & Verification
 
-Run tests directly with `pytest` without needing manual `PYTHONPATH` exports:
+Run tests with the project's own interpreter; no `PYTHONPATH` export is
+needed. A `pytest` from outside the venv will fail to import
+`google.antigravity`, which a handful of the offline tests build sessions with
+(they never call a model).
 
 ```bash
 # Run the entire offline test suite (same as ./run test)
-pytest
+.venv/bin/python -m pytest
 
 # Run specific subsystem contract suites
-pytest evals/test_mcp.py
-pytest evals/test_transport.py
-pytest evals/test_memory.py
-pytest evals/test_supervisor.py
-pytest evals/test_review.py
+.venv/bin/python -m pytest evals/test_mcp.py
+.venv/bin/python -m pytest evals/test_transport.py
+.venv/bin/python -m pytest evals/test_memory.py
+.venv/bin/python -m pytest evals/test_supervisor.py
+.venv/bin/python -m pytest evals/test_review.py
 ```
 

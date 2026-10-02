@@ -49,9 +49,9 @@ ASK = (f"get a file created at {TARGET} containing exactly the word kingfisher, 
 
 
 def main() -> int:
+    from rpc_util import forget_ambient_team
+    forget_ambient_team()
     os.environ["AGYTEAM_TEAM"] = TEAM
-    for key in ("AGYTEAM_TEAM_DIR", "AGYTEAM_DURABLE_DIR", "AGYTEAM_TEAMS_ROOT"):
-        os.environ.pop(key, None)
     shutil.rmtree(SHARED, ignore_errors=True)
     SHARED.mkdir(parents=True)
     os.environ["AGYTEAM_SHARED_DIR"] = str(SHARED)
