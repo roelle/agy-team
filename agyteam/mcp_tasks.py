@@ -13,11 +13,12 @@ Identity: `python -m agyteam.mcp_tasks <team_dir> <agent_name>` (explicit), or
 set AGYTEAM_AGENT (agy CLI path). Refuses to start nameless rather than
 guessing, so a task can never be filed under the wrong owner.
 """
+import json
 import os
 import sys
 from pathlib import Path
 
-from .mcp_base import serve, string, tool
+from .mcp_base import fit, serve, string, tool
 from . import heartbeat, policy
 from . import roster as roster_lib
 from . import scope
@@ -88,11 +89,13 @@ TOOLS = [
                              "once one is recorded")},
          ["task_id", "note"]),
     tool("list_tasks",
-         "List tasks, most recently updated last. Pass owner=<your name> to "
-         "see only your own; no arguments shows the whole team's.",
+         "List tasks, most recently updated first. Pass owner=<your name> to "
+         "see only your own; no arguments shows the whole team's. A long list "
+         "is cut short with a count of what was left out.",
          {"project": string("Filter to one project"),
           "owner": string("Filter to one owner"),
-          "status": string("Filter to one status")}),
+          "status": string("Filter to one status"),
+          "task_id": string("Just this task")}),
 ]
 
 _DELIVERY = ("[reminder set for {when}: it arrives as a message once that time "
@@ -140,12 +143,36 @@ def _names(a: dict, key: str) -> list[str] | None:
     return [n.strip() for n in raw.split(",") if n.strip()]
 
 
-def _render(rows: list[dict]) -> str:
-    if not rows:
-        return "[no tasks]"
-    lines = []
+def _in_flight(team_dir: Path | None) -> dict[str, tuple[str, str]]:
+    """{task_id: (agent, since)} for turns running now on account of a task.
+
+    Read from the supervisor's in-flight ledger, and only from the task ids
+    that triggered each turn -- an agent being busy says nothing about which
+    of its tasks it is busy with. Empty when no supervisor is running, since
+    a ledger left by one that died describes nothing.
+    """
+    if team_dir is None or not heartbeat.running(team_dir):
+        return {}
+    try:
+        doc = json.loads((Path(team_dir) / "inflight.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for agent, turn in (doc.items() if isinstance(doc, dict) else []):
+        for tid in ((turn or {}).get("trigger") or {}).get("task_ids") or []:
+            out[tid] = (agent, turn.get("ts", ""))
+    return out
+
+
+def _blocks(rows: list[dict], team_dir: Path | None = None) -> list[str]:
+    flying = _in_flight(team_dir) if rows else {}
+    blocks = []
     for t in rows:
+        lines = []
         extra = []
+        if t["id"] in flying:
+            agent, since = flying[t["id"]]
+            extra.append(f"in flight with {agent} since {since}")
         if t.get("check_after"):
             extra.append(f"reminder at {t['check_after']}")
         if t.get("until"):
@@ -161,7 +188,14 @@ def _render(rows: list[dict]) -> str:
             lines.append(f"  note: {t['note']}")
         if t.get("evidence"):
             lines.append(f"  evidence: {t['evidence']}")
-    return "\n".join(lines)
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def _render(rows: list[dict], team_dir: Path | None = None) -> str:
+    if not rows:
+        return "[no tasks]"
+    return "\n".join(_blocks(rows, team_dir))
 
 
 def _with_delivery(team_dir: Path, t: dict, text: str) -> str:
@@ -286,9 +320,17 @@ def _complete_task(agent: str, team_dir: Path, a: dict) -> str:
 
 
 def _list_tasks(team_dir: Path, a: dict) -> str:
-    return _render(tasks_lib.list_tasks(
+    rows = tasks_lib.list_tasks(
         team_dir, project=_text(a, "project") or None, owner=_text(a, "owner") or None,
-        status=tasks_lib.normalize_status(_text(a, "status") or None)))
+        status=tasks_lib.normalize_status(_text(a, "status") or None))
+    if _text(a, "task_id"):
+        rows = [r for r in rows if r["id"] == _text(a, "task_id")]
+    if not rows:
+        return "[no tasks]"
+    text, _ = fit(_blocks(list(reversed(rows)), team_dir),
+                  "[{n} less recently updated tasks not shown; filter by "
+                  "project, owner, status or task_id]", sep="\n")
+    return text
 
 
 def main(agent: str, team_dir: Path | None = None):

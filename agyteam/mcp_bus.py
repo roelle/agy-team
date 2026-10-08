@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from .mcp_base import serve, string, tool
+from .mcp_base import fit, serve, string, tool
 from . import heartbeat, policy
 from .transport import KINDS, Transport, load
 
@@ -56,9 +56,10 @@ TOOLS = [
          "announcements, not for delegating work (delegate by name instead).",
          {"content": string("The announcement")}, ["content"]),
     tool("check_inbox",
-         "Read and clear messages other agents have sent you. Check at the "
-         "start of a task and again before reporting a task finished — a "
-         "teammate may have answered your question while you were working.",
+         "Read and clear messages other agents have sent you, oldest first. "
+         "Check at the start of a task and again before reporting a task "
+         "finished — a teammate may have answered your question while you "
+         "were working. If it says more are unread, call it again.",
          {}),
     tool("list_teammates",
          "List your teammates (persistent peers you can message) and their "
@@ -80,8 +81,10 @@ TOOLS = [
                             "review naming it")},
          ["what", "author", "verdict", "proof_file"]),
     tool("list_reviews",
-         "List durable verification reviews recorded for this team.",
-         {}),
+         "List durable verification reviews recorded for this team, newest "
+         "first. A long history is cut short with a count of what was left "
+         "out; pass task_id to see one task's reviews.",
+         {"task_id": string("Only the reviews naming this task")}),
     tool("record_retro",
          "Record your answers to the three retrospective questions. Call this "
          "when asked to reflect, instead of (or as well as) writing the "
@@ -143,9 +146,15 @@ def _list_teammates(t: Transport) -> str:
 
 def _check_inbox(t: Transport) -> str:
     msgs = t.fetch()
-    if msgs and hasattr(t, "acknowledge") and callable(t.acknowledge):
-        t.acknowledge(msgs)
-    return "\n\n".join(m.render() for m in msgs) if msgs else "[inbox empty]"
+    if not msgs:
+        return "[inbox empty]"
+    # Oldest first, and only as many as fit inline; only those are marked
+    # read, so the rest are still there on the next call.
+    text, shown = fit([m.render() for m in msgs],
+                      "[{n} more unread: call check_inbox again]")
+    if hasattr(t, "acknowledge") and callable(t.acknowledge):
+        t.acknowledge(msgs[:shown])
+    return text
 
 
 def _team_dir(t: Transport) -> Path:
@@ -515,7 +524,7 @@ def _record_retro(t: Transport, a: dict) -> str:
         role=str(a.get("role") or "participant"))
 
 
-def _list_reviews(t: Transport) -> str:
+def _list_reviews(t: Transport, task_id: str = "") -> str:
     rev_path = _reviews_path(t)
     if not rev_path.exists():
         return "[no reviews recorded]"
@@ -536,11 +545,18 @@ def _list_reviews(t: Transport) -> str:
         except json.JSONDecodeError:
             continue
 
+    if task_id:
+        reviews = [r for r in reviews if r.get("task_id") == task_id]
+        if not reviews:
+            return f"[no reviews recorded for {task_id}]"
     if not reviews:
         return "[no reviews recorded]"
 
-    lines = ["# Review records", ""]
-    for r in reviews:
+    # Newest first: the file only grows, and the recent ones are the ones
+    # being asked about.
+    blocks = []
+    for r in reversed(reviews):
+        lines = []
         ts = r.get("ts", "unknown")
         reviewer = r.get("reviewer", "unknown")
         what = r.get("what", "unknown")
@@ -552,7 +568,7 @@ def _list_reviews(t: Transport) -> str:
         lines.append(f"- [{ts}] {reviewer} -> {verdict}: {what}")
         if proof:
             lines.append(f"  Proof file: {proof}")
-        if isinstance(cases, list):
+        if isinstance(cases, list) and cases:
             lines.append("  Cases tried:")
             for c in cases:
                 lines.append(f"  * {c}")
@@ -560,9 +576,10 @@ def _list_reviews(t: Transport) -> str:
             lines.append(f"  Cases tried: {cases}")
         if findings:
             lines.append(f"  Findings: {findings}")
-        lines.append("")
-
-    return "\n".join(lines).rstrip()
+        blocks.append("\n".join(lines))
+    text, _ = fit(blocks, "[{n} older reviews not shown; pass task_id to narrow]",
+                  head="# Review records, newest first\n\n")
+    return text
 
 
 def _handle_grant_workspace(t: Transport, a: dict) -> str:
@@ -666,7 +683,7 @@ def main(transport: Transport, admin: bool = False):
         "check_inbox": lambda a: _check_inbox(transport),
         "list_teammates": lambda a: _list_teammates(transport),
         "record_review": lambda a: _record_review(transport, a),
-        "list_reviews": lambda a: _list_reviews(transport),
+        "list_reviews": lambda a: _list_reviews(transport, str(a.get("task_id") or "").strip()),
         "record_retro": lambda a: _record_retro(transport, a),
         "list_retros": lambda a: _list_retros(transport),
     }

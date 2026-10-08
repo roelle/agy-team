@@ -257,12 +257,37 @@ def test_sweep_delivers_each_reminder_once(team):
     assert sent == ["coder"]
 
 
-def test_reminders_for_one_owner_arrive_as_one_message(team):
+def test_each_reminder_carries_its_task(team):
+    """One message per owner used to hold every due reminder and no task id,
+    so the turn it woke recorded no task as its trigger."""
+    a = remind(team, title="a")
+    b = remind(team, title="b")
+    sent = []
+
+    def send(to, content, kind="work", task_id=None):
+        sent.append((to, kind, task_id, content))
+        return "[delivered]"
+
+    tasks.sweep(team, send)
+    assert sorted(x[2] for x in sent) == sorted([a["id"], b["id"]])
+    assert {x[1] for x in sent} == {"reminder"} and {x[0] for x in sent} == {"coder"}
+    assert all("1 reminder has" in x[3] for x in sent)
+
+
+def test_a_send_without_keywords_still_gets_every_reminder(team):
     remind(team, title="a")
     remind(team, title="b")
     sent = []
     tasks.sweep(team, lambda to, c: sent.append(c) or "[delivered]")
-    assert len(sent) == 1 and "2 reminders" in sent[0]
+    assert len(sent) == 2 and not tasks.due(team)
+
+
+def test_reminders_reach_the_inbox_as_reminders_with_their_task(team):
+    from agyteam.transport_file import FileTransport
+    t = remind(team, title="a")
+    tasks.sweep(team, FileTransport("supervisor").send_kind)
+    [msg] = FileTransport("coder").fetch()
+    assert msg.kind == "reminder" and msg.task_id == t["id"]
 
 
 @pytest.mark.parametrize("failure", ["error-string", "exception"])
@@ -313,7 +338,7 @@ def test_two_sweepers_at_once_deliver_each_reminder_once(team):
         th.start()
     for th in threads:
         th.join()
-    assert len(sent) == 1 and "5 reminders" in sent[0]
+    assert len(sent) == 5 and len(set(sent)) == 5
 
 
 def test_the_sweep_runs_from_the_command_line(team):

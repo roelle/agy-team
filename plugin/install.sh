@@ -82,7 +82,7 @@ fi
 # Neutral cwd matters as much as the path: run from the repo and `./agyteam/`
 # shadows the install, so the check passes by testing the wrong copy.
 ( cd / && env -u AGYTEAM_RUNNER PYTHONPATH="$PLUGIN_DST" AGYTEAM_TEAM_DIR="$DURABLE/team" "$PYTHON" -c "
-import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self, agyteam.mcp_tasks, agyteam.runner_host, agyteam.hook_pre_tool_use
+import json, agyteam.mcp_memory, agyteam.mcp_bus, agyteam.mcp_self, agyteam.mcp_tasks, agyteam.runner_host, agyteam.hook_pre_tool_use, agyteam.hook_stop
 from agyteam.transport import load as load_bus
 from agyteam.memory import load as load_memory
 from agyteam.runner import load as load_runner

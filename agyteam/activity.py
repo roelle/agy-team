@@ -87,7 +87,9 @@ def author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, list
             # collide; that is why each entry carries its team. Matching on
             # the name alone let another team's "coder" vouch for this one's.
             team = os.environ.get("AGYTEAM_TEAM", "")
+            # A refused call is recorded, but it is not work.
             calls = [e for e in audit if e.get("agent") == author
+                     and not e.get("refused")
                      and not (team and e.get("team") and e["team"] != team)
                      and (e.get("ts") or "").replace("T", " ") >= since]
             if calls:

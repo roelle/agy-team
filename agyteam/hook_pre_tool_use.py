@@ -19,12 +19,20 @@ The verdict on stdout is {"decision": "deny", "reason": ...} with exit 2, or
 {"decision": "allow"} with exit 0; "block": true accompanies a deny for hosts
 that read that word.
 
+With AGYTEAM_AUDIT_LOG set, every call is also appended there, refused or
+not, in the line format the SDK runner writes: {"ts", "team", "agent",
+"tool", "args"} with each argument cut to 2,000 characters, plus "refused"
+when it was. The review gate counts an agent's audited calls as evidence it
+worked; until this hook wrote them, only the SDK runner's agents could
+produce that evidence. Refused calls are recorded but never counted.
+
 If no agent can be identified the call is allowed and a note goes to stderr:
 policy that cannot tell who is asking has nothing to apply, and blocking
 every call on a host whose payload this does not understand would stop the
 team rather than protect it. Map the host's payload to these keys in a
 two-line wrapper if it uses others. AGYTEAM_TEAM_DIR names the team.
 """
+import datetime
 import json
 import os
 import sys
@@ -61,7 +69,8 @@ def agent_for(payload: dict, team_dir: Path) -> str | None:
     return None
 
 
-def decide(payload: dict, team_dir: Path) -> tuple[int, str]:
+def parse(payload: dict, team_dir: Path) -> tuple[str | None, str, dict]:
+    """(agent, tool, args) from whichever shape this host sends."""
     call = payload.get("toolCall") or payload.get("tool_call")
     if isinstance(call, dict):
         payload = {**payload, **{k: v for k, v in call.items() if k not in payload}}
@@ -71,13 +80,37 @@ def decide(payload: dict, team_dir: Path) -> tuple[int, str]:
         if isinstance(payload.get(k), dict):
             args = payload[k]
             break
-    agent = agent_for(payload, team_dir)
+    return agent_for(payload, team_dir), str(tool), args or {}
+
+
+def decide(payload: dict, team_dir: Path) -> tuple[int, str]:
+    agent, tool, args = parse(payload, team_dir)
     if not agent:
         return 0, "[hook: no agent identified for this call; policy not applied]"
-    refusal = policy.check_tool_policy(agent, str(tool), args or {}, team_dir=team_dir)
+    refusal = policy.check_tool_policy(agent, tool, args, team_dir=team_dir)
     if refusal:
         return 2, refusal
     return 0, ""
+
+
+def audit(agent: str | None, tool: str, args: dict, refusal: str = "") -> None:
+    """Append one line to AGYTEAM_AUDIT_LOG, if set. Never raises."""
+    path = os.environ.get("AGYTEAM_AUDIT_LOG", "").strip()
+    if not path:
+        return
+    entry = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+             "team": os.environ.get("AGYTEAM_TEAM", ""),
+             "agent": agent, "tool": tool,
+             "args": {str(k): str(v)[:2000] for k, v in args.items()}}
+    if refusal:
+        entry["refused"] = refusal[:500]
+    try:
+        p = Path(path).expanduser()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass                        # a full disk must not stop the team
 
 
 def main() -> int:
@@ -92,6 +125,8 @@ def main() -> int:
     from . import scope
     team_dir = scope.team_dir(os.environ.get("AGYTEAM_TEAM_DIR"))
     code, text = decide(payload, team_dir)
+    agent, tool, args = parse(payload, team_dir)
+    audit(agent, tool, args, text if code else "")
     if code == 0:
         if text:
             print(text, file=sys.stderr)

@@ -206,8 +206,9 @@ def test_file_contains_and_pid_exited(team, tmp_path):
     finally:
         if sleeper.poll() is None:
             sleeper.kill()
-    assert "2 reminders" in sent[0][1]
-    assert "contains 'FINISHED'" in sent[0][1] and f"process {sleeper.pid} exited" in sent[0][1]
+    text = "\n".join(c for _, c in sent)
+    assert len(sent) == 2
+    assert "contains 'FINISHED'" in text and f"process {sleeper.pid} exited" in text
 
 
 def test_the_tool_parses_the_condition_and_says_what_it_costs(team, tmp_path):

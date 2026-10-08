@@ -40,7 +40,7 @@ SRC = Path(__file__).resolve().parent
 # doctor and this module are what they run when something is wrong, which is
 # exactly when the repo may not be on the machine.
 SEEDS = ("mcp_memory", "mcp_bus", "mcp_self", "mcp_tasks", "supervisor",
-         "session", "runner_agy", "runner_host", "hook_pre_tool_use", "doctor",
+         "session", "runner_agy", "runner_host", "hook_pre_tool_use", "hook_stop", "doctor",
          "install_check")
 
 # Not imported by anything -- copied so whoever adapts a seam on that machine

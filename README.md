@@ -275,7 +275,7 @@ so the installable surface stays dependency-free:
 
 | module | needs | used by |
 |---|---|---|
-| everything else: the four MCP servers (`mcp_bus`, `mcp_memory`, `mcp_tasks`, `mcp_self`), `supervisor`, `tasks`, `policy`, `hook_pre_tool_use`, `runner`, `runner_agy`, `runner_host`, `transport*`, `memory*`, `observer*`, `doctor`, `lifecycle`, … | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
+| everything else: the four MCP servers (`mcp_bus`, `mcp_memory`, `mcp_tasks`, `mcp_self`), `supervisor`, `tasks`, `policy`, `hook_pre_tool_use`, `hook_stop`, `runner`, `runner_agy`, `runner_host`, `transport*`, `memory*`, `observer*`, `doctor`, `lifecycle`, … | **stdlib only** | the agy plugin, any MCP host, reactive dispatch |
 | `sdk_agent`, `sdk_cli`, `runner_sdk`, `runner_mixed` | `google-antigravity` | SDK agent, CLI, and SDK/mixed runners |
 
 `python -m agyteam.install_check --list` prints the stdlib-only set exactly; it
@@ -358,15 +358,20 @@ retrospectives.
 `check_tool_policy(agent, tool, args)`, driven by roster fields and asked from
 three places with the same answer: the SDK session's pre-tool hook, a generic
 hook any host with hook support can run (`python -m agyteam.hook_pre_tool_use`
-reads the call as JSON on stdin and exits 2 with the refusal), and inside the
-bus and task servers themselves, so what those servers do holds on a host with
-no hooks at all. Per agent: `tools_off` (names), `allowed_send_to` (who it may
+reads the call as JSON on stdin and exits 2 with the refusal, and with
+`AGYTEAM_AUDIT_LOG` set appends each call to the audit log the review gate
+reads), and inside the bus and task servers themselves, so what those servers
+do holds on a host with no hooks at all. Per agent: `tools_off` (names, seen
+through a host's generic MCP-call tool too), `allowed_send_to` (who it may
 message; `user` only if listed), `assigns_tasks: false` (no creating tasks for
 others, no hand-offs), `workspaces` (with the team's, the only paths its file
 tools may touch — on a hosted UI a file tool outside the workspace opens a
 dialog nobody can click and the turn hangs to its timeout), `confined: false`
 to opt a platform-maintaining role out of that, `refuse_paths` for the deny
-form (a team whose agents roam, but must never touch one checkout), and
+form (a team whose agents roam, but must never touch one checkout; it also
+refuses a shell command that names the path, after expanding `~` and `$HOME`
+and removing quotes — a text match that stops an agent reaching for the path,
+not one that builds it at run time), and
 `allowed_mcp_servers` where the host's generic MCP call names its server.
 Team-wide, `"policy": {"detach_commands": [regex...]}` refuses a foreground
 run of a command that takes hours unless it is already detached, and
@@ -414,7 +419,12 @@ they decide *how* an agent is woken:
 agent platform whose whole surface is "start a conversation", "deliver a
 message", and a hook that runs when a turn ends, with no transcript coming
 back. Configure its argv templates, a signal directory the stop hook appends
-to, and a model map; see the module docstring. It creates each conversation
+to, and a model map; see the module docstring. The stop hook itself ships:
+point the host's at `python -m agyteam.hook_stop`, which reads the host's
+turn-end JSON, takes the signal directory from `AGYTEAM_SIGNAL_DIR` or the
+runner config, and writes the line the runner counts (with token counts and
+any error). Hosts that also call their stop hook on a pause name the key that
+tells the two apart in `AGYTEAM_STOP_IDLE_KEY`. It creates each conversation
 with a content-free primer and registers the id *before* delivering the brief,
 so no turn ever runs unattributed, and it cancels a turn that outlives its
 timeout. Turns the operator takes in the host's own UI are recorded too,
@@ -537,8 +547,15 @@ create_task(project, title, owner=None, note=None, check_after=None,
 claim_task(task_id)                                   # take an unowned task
 update_task(task_id, status=None, check_after=None, until=None, ...)
 complete_task(task_id, note, evidence=None)           # the note is required
-list_tasks(project=None, owner=None, status=None)
+list_tasks(project=None, owner=None, status=None, task_id=None)  # newest first
 ```
+
+`list_tasks`, `list_reviews` and `check_inbox` return at most
+`AGYTEAM_TOOL_OUTPUT_BYTES` (default 3,800) inline and end with a count of
+what they left out: the `agy` CLI moves a longer tool result into a file, and
+a confined agent may not be allowed to read it. `check_inbox` marks read only
+the messages it returned. `list_tasks` notes "in flight with <agent> since
+<time>" on a task whose reminder or message started the turn running now.
 
 **Waiting on a sim without spending turns on it.** `until="file_exists:/path"`
 (or `file_contains:/path:text`, `pid_exited:1234`) makes the sweep check the
@@ -1021,7 +1038,9 @@ All subsystems support configuration through environment variables:
 | `AGYTEAM_TEAM_DIR` | Exact team directory (roster, bus, reviews, tasks), overriding the layout | `<durable>/team` |
 | `AGYTEAM_DURABLE_DIR` | Absolute path overriding durable storage for agent memory and identities | `~/agy-teams/<team>` |
 | `AGYTEAM_TEAMS_ROOT` | Base directory for multi-team namespaces | `~/agy-teams` |
-| `AGYTEAM_AUDIT_LOG` | Where the SDK runner records every tool call; keep it outside all workspaces | unset (nothing recorded) |
+| `AGYTEAM_AUDIT_LOG` | Where every tool call is recorded, by the SDK runner or by `hook_pre_tool_use` on a host; keep it outside all workspaces | unset (nothing recorded) |
+| `AGYTEAM_TOOL_OUTPUT_BYTES` | Ceiling on what `list_tasks`, `list_reviews` and `check_inbox` return inline (`0` = none) | `3800` |
+| `AGYTEAM_SIGNAL_DIR` / `AGYTEAM_STOP_IDLE_KEY` | For `hook_stop`: where to write turn-end lines (else the runner config's `signal_dir`), and the payload key whose `false` means "paused, not finished" | unset |
 | `AGYTEAM_PROOF_PYTHON` | Interpreter the review gate uses to run proof files; must be able to `import pytest` | the repo's `.venv`, then the current interpreter |
 | `AGYTEAM_TURN_TIMEOUT` | Wall-clock ceiling on one turn, seconds (`0` = none). SDK runner only: the `agy` CLI and host runners take `"timeout"` in `AGYTEAM_RUNNER_CONFIG` (default `900`) | `600` |
 | `AGYTEAM_CYCLE_THRESHOLD` | Input tokens on an agent's latest turn above which it is distilled and given a fresh conversation once the episode ends | `100000` |

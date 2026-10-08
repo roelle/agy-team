@@ -577,13 +577,31 @@ def reminder_text(owed: list[dict]) -> str:
 _quiet: dict[str, tuple] = {}
 
 
+def _takes_keywords(send) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(send).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    names = {p.name for p in params}
+    return ({"kind", "task_id"} <= names
+            or any(p.kind is p.VAR_KEYWORD for p in params))
+
+
 def sweep(team_dir: Path | str, send, owners=None,
           now: str | None = None) -> dict[str, list[dict]]:
     """Deliver every due reminder once, through `send(to, content) -> str`.
 
-    `send` is a transport's send; a result starting with "[error" or an
-    exception leaves that owner's reminders armed for the next sweep, so a
-    reminder is marked delivered only after the message went out. `owners`,
+    One message per task, sent with kind="reminder" and the task's id when
+    `send` takes those keywords (a transport's send_kind does). One message
+    per owner used to carry them all with no task id, so a turn woken by a
+    reminder recorded no task as its trigger and nothing could say which
+    task an agent was busy with. It costs no extra wakes: an agent's mail is
+    delivered in one turn however many messages it holds.
+
+    A result starting with "[error" or an exception leaves that task's
+    reminder armed for the next sweep, so a reminder is marked delivered
+    only after the message went out. `owners`,
     if given, limits delivery to those names -- a supervisor passes the agents
     it can actually wake. Returns {owner: [tasks delivered]}.
 
@@ -628,17 +646,20 @@ def sweep(team_dir: Path | str, send, owners=None,
                                        "check_after": nxt})
                     continue
             by_owner.setdefault(o, []).append(t)
+        keyed = _takes_keywords(send)
         for owner, owed in by_owner.items():
-            try:
-                result = send(owner, reminder_text(owed))
-            except Exception:
-                continue
-            if isinstance(result, str) and result.lstrip().startswith("[error"):
-                continue
             for t in owed:
+                try:
+                    result = (send(owner, reminder_text([t]), kind="reminder",
+                                   task_id=t["id"]) if keyed
+                              else send(owner, reminder_text([t])))
+                except Exception:
+                    continue
+                if isinstance(result, str) and result.lstrip().startswith("[error"):
+                    continue
                 _append(team_dir, {"id": t["id"], "kind": _KIND_SWEPT,
                                    "ts": now, "check_after": None})
-            delivered[owner] = owed
+                delivered.setdefault(owner, []).append(t)
         remaining = [r for r in snapshot(team_dir).values()
                      if r.get("status") not in TERMINAL and r.get("check_after")]
         if not remaining:
@@ -697,7 +718,7 @@ def main(argv=None) -> int:
     from .transport import load as load_transport
     bus = load_transport("supervisor")
     try:
-        delivered = sweep(td, bus.send)
+        delivered = sweep(td, bus.send_kind)
     finally:
         if hasattr(bus, "close"):
             bus.close()

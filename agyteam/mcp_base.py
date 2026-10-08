@@ -3,9 +3,46 @@
 Shared by agyteam's memory and bus servers so both speak identical protocol.
 """
 import json
+import os
 import sys
 
 PROTOCOL_VERSION = "2025-06-18"
+
+#: Ceiling, in UTF-8 bytes, on what a listing tool returns inline. The agy
+#: CLI writes a tool result over about 4,000 bytes to a file and hands the
+#: agent the path instead, so a long inbox or task list costs a second tool
+#: call to read -- and on a confined agent that file is outside its
+#: workspace, so the read is refused and the content never arrives. Listings
+#: stop under it and say how many items they left out. 0 means no ceiling.
+OUTPUT_BYTES = int(os.environ.get("AGYTEAM_TOOL_OUTPUT_BYTES", 3800))
+
+
+def fit(blocks: list[str], more: str, sep: str = "\n\n", head: str = "",
+        limit: int | None = None) -> tuple[str, int]:
+    """Join as many of `blocks`, in order, as fit in `limit` bytes.
+
+    Returns (text, how many blocks it holds). The first block is always
+    returned whole, however long: an item cut in half is worse than one that
+    spills. When blocks are left out, `more` -- formatted with n, the number
+    left out -- is appended, and counted against the limit.
+    """
+    limit = OUTPUT_BYTES if limit is None else limit
+    size = lambda t: len(t.encode("utf-8"))              # noqa: E731
+    if limit <= 0 or not blocks:
+        return head + sep.join(blocks), len(blocks)
+    used = 1
+    while used < len(blocks):
+        rest = len(blocks) - used - 1
+        candidate = head + sep.join(blocks[:used + 1])
+        if rest:
+            candidate += sep + more.format(n=rest)
+        if size(candidate) > limit:
+            break
+        used += 1
+    text = head + sep.join(blocks[:used])
+    if used < len(blocks):
+        text += sep + more.format(n=len(blocks) - used)
+    return text, used
 
 
 def tool(name: str, description: str, properties: dict | None = None,

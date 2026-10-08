@@ -219,6 +219,15 @@ cannot do is tell who is calling a server. An agent that can reach another
 agent's MCP mount can speak as them; that is the host's mount exposure to fix,
 and no check inside the server can see it.
 
+Policy is roster fields and generic rules, deliberately not role modes. An
+integrator asked for an `evaluator` mode: no task creation, no file reads but
+its own spilled output, and no waking teammates while "the team is cooking".
+Every piece is either already a roster field (`tools_off`, `allowed_send_to`)
+or a judgement about one team's workflow, and a named mode with bespoke rules
+is a second policy language beside the first. What generalised went in:
+`tools_off` now sees through a generic MCP-call tool, and `refuse_paths`
+covers shell commands that name the path.
+
 **Turns run concurrently, and the ledger is what makes that survivable.**
 `Supervisor.step()` waited on each `wake()`: eight turns finished one at a
 time over thirty-five minutes, a twelve-minute turn holding seven agents who

@@ -29,7 +29,8 @@ its tool servers synchronously spends that on the first turn. `start_timeout`
 conversation id is read from it at `start_id_path`, a dotted path. `deliver`
 takes the message as its own argv element, never interpolated into a shell
 string -- or on stdin, with "deliver_stdin": true, for hosts that cap
-argument length. The host's stop hook appends one line to
+argument length. The host's stop hook (`python -m agyteam.hook_stop` is a
+generic one) appends one line to
 <signal_dir>/<conversation>.jsonl when a turn ends; a line that is JSON may
 carry "error", and token counts ("input_tokens", "output_tokens",
 "total_tokens", "cache_read_tokens"), which are recorded when present.

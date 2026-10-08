@@ -32,7 +32,8 @@ Per agent:
                                                names the server in its arguments,
                                                the only servers it may call
     "refuse_paths":     ["/srv/checkout"]      paths its file tools may never touch,
-                                               whatever the workspaces say
+                                               whatever the workspaces say, and its
+                                               shell commands may not name
 
 Team-wide, under "policy" (each also accepted per agent):
 
@@ -63,6 +64,10 @@ the record, and agents reach it through the servers.
 legitimately roam: nothing is confined, but a named path -- a source checkout
 the UI treats as out-of-workspace, a directory with answer keys -- is refused
 wherever it is reached from. Both forms are checked on the same arguments.
+A shell command that names a refused path is refused too, after expanding
+`~` and `$HOME` and removing quotes. That is a text match on the command, so
+it stops `cat ~/answers/key.json` and not a path the command builds at run
+time; treat it as a guard against reaching for the path, not a sandbox.
 
 The rule is applied to any tool whose name looks like a file operation, on
 any string argument that resolves to an absolute path. That is a heuristic,
@@ -151,6 +156,44 @@ def refused_paths(agent: str, roster: dict) -> list[Path]:
     return out
 
 
+def _raw_refused(roster: dict, entry: dict) -> list[Path]:
+    """refuse_paths as written, ~ expanded but symlinks not followed: a
+    command names a path the way a person wrote it, not as it resolves."""
+    out = []
+    for raw in _patterns(roster, entry, "refuse_paths"):
+        try:
+            out.append(Path(raw).expanduser())
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+_HOME_VAR = re.compile(r"\$\{HOME\}|\$HOME\b")
+_TILDE = re.compile(r"(?<![\w~/.-])~(?=/|$|\s)")
+_PATH_CHAR = r"[\w.~/-]"
+
+
+def _refused_path_in_command(cmd: str, refused: list[Path]) -> str | None:
+    """The refused path a shell command names, if any.
+
+    Best effort, and documented as such: it catches the path written out --
+    with ~ or $HOME, or split by quotes ('/srv/'"checkout") -- and nothing
+    computed at run time (a cd and a relative path, a variable, a glob).
+    It stops an agent that reaches for the path, not one that sets out to
+    hide it; the file-tool rule and a container are the boundary.
+    """
+    if not cmd or not refused:
+        return None
+    home = str(Path.home())
+    text = cmd.replace("'", "").replace('"', "")
+    text = _HOME_VAR.sub(home, text)
+    text = _TILDE.sub(home, text)
+    for d in dict.fromkeys(str(p).rstrip("/") for p in refused if str(p) not in ("", "/")):
+        if re.search(rf"(?<!{_PATH_CHAR}){re.escape(d)}(?=/|$|[^\w.~-])", text):
+            return d
+    return None
+
+
 def _paths_in(args: dict) -> list[Path]:
     cwd = str((args or {}).get("Cwd") or (args or {}).get("cwd") or "")
     out = []
@@ -183,9 +226,15 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
     args = args or {}
     name = str(tool or "")
 
-    if name in (entry.get("tools_off") or []):
-        return (f"[refused: {name} is not available to {agent} on this team "
-                f"(roster tools_off). Delegate it to a teammate who has it]")
+    # A host with one generic MCP-call tool names the real tool in its
+    # arguments; tools_off has to see through it or it holds only for the
+    # tools that host happens to expose natively.
+    inner = next((str(args[k]) for k in ("ToolName", "tool_name", "toolName")
+                  if isinstance(args.get(k), str) and args.get(k)), None)
+    for called in (name, inner):
+        if called and called in (entry.get("tools_off") or []):
+            return (f"[refused: {called} is not available to {agent} on this team "
+                    f"(roster tools_off). Delegate it to a teammate who has it]")
 
     if name in ("send_to_teammate", "broadcast"):
         allowed = entry.get("allowed_send_to")
@@ -230,6 +279,12 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
                 why = (rule.get("message") if isinstance(rule, dict) else None) or \
                     "this team does not let agents run it"
                 return f"[refused: commands matching '{pattern}' are not for you to run: {why}]"
+        named = _refused_path_in_command(cmd, refused_paths(agent, roster)
+                                         + _raw_refused(roster, entry))
+        if named:
+            return (f"[refused: this command names {named}, which this team's "
+                    f"agents may not touch (policy refuse_paths). Reach it "
+                    f"another way or leave it alone]")
         hit = next((p for p in _patterns(roster, entry, "detach_commands")
                     if p and _matches(p, cmd)), None)
         if hit and not DETACHED.search(cmd):

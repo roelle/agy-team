@@ -747,11 +747,11 @@ class Supervisor:
             return
         bus = None
 
-        def send(to, content):          # opened only if something is due
-            nonlocal bus
+        def send(to, content, kind="reminder", task_id=None):
+            nonlocal bus                # opened only if something is due
             if bus is None:
                 bus = load_transport("supervisor")
-            return bus.send(to, content)
+            return bus.send_kind(to, content, kind=kind, task_id=task_id)
 
         try:
             tasks_lib.sweep(self.team_dir, send, owners=set(self.transports))
