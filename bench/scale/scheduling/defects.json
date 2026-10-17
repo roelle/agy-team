@@ -1,0 +1,157 @@
+{
+  "task": "scale_scheduling",
+  "package": "scheduling",
+  "summary": "A scheduling package: slots, time zones, recurrence, availability, holidays, rooms, bookings, agenda, durations, pay, reports.",
+  "defects": [
+    {
+      "id": "D1",
+      "class": "loop bound",
+      "file": "scheduling/slots.py",
+      "function": "day_slots",
+      "find": "    while t + step <= end:",
+      "replace": "    while t + step < end:",
+      "witness": "from datetime import datetime\nfrom scheduling.slots import slot_count\nslot_count(datetime(2026, 3, 2, 9), datetime(2026, 3, 2, 17), 30)",
+      "summary": "day_slots leaves out the last slot that ends exactly at the end of the day: 09:00-17:00 in 30s gives 15, not 16."
+    },
+    {
+      "id": "D2",
+      "class": "rounding",
+      "file": "scheduling/pay.py",
+      "function": "cents",
+      "find": "    return Decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)",
+      "replace": "    return Decimal(str(round(float(value), 2))).quantize(CENT)",
+      "witness": "from decimal import Decimal\nfrom scheduling.pay import weekly_pay\nweekly_pay(Decimal('1'), Decimal('1.005'))",
+      "summary": "Pay is rounded through float: 1.005 becomes 1.00, not the documented half-up 1.01."
+    },
+    {
+      "id": "D3",
+      "class": "laundered default",
+      "file": "scheduling/rooms.py",
+      "function": "buffer_minutes",
+      "find": "    if room in BUFFER_MINUTES:\n        return BUFFER_MINUTES[room]",
+      "replace": "    if BUFFER_MINUTES.get(room):\n        return BUFFER_MINUTES[room]",
+      "witness": "from scheduling.rooms import buffer_minutes\nbuffer_minutes('booth-1')",
+      "summary": "A room configured with a 0-minute buffer gets the 15-minute default instead."
+    },
+    {
+      "id": "D4",
+      "class": "boundary comparison",
+      "file": "scheduling/recurrence.py",
+      "function": "weekly",
+      "find": "    while d <= until:",
+      "replace": "    while d < until:",
+      "witness": "from datetime import date\nfrom scheduling.recurrence import weekly\nlen(weekly(date(2026, 1, 5), date(2026, 1, 26)))",
+      "summary": "A series loses its last occurrence when it falls on the until date, which the module says is included."
+    },
+    {
+      "id": "D5",
+      "class": "mutable default",
+      "file": "scheduling/booking.py",
+      "function": "book",
+      "find": "    def book(self, room: str, start: int, end: int, attendees=None) -> Booking:\n        \"\"\"Book a room, refusing overlaps once each booking's cleaning buffer\n        is counted after it, and refusing a room too small.\"\"\"\n        people = list(attendees) if attendees else []",
+      "replace": "    def book(self, room: str, start: int, end: int, attendees=[]) -> Booking:\n        \"\"\"Book a room, refusing overlaps once each booking's cleaning buffer\n        is counted after it, and refusing a room too small.\"\"\"\n        people = attendees",
+      "witness": "from scheduling.booking import Book\nb = Book()\nfirst = b.book('atlas', 540, 600)\nsecond = b.book('borealis', 540, 600)\nb.invite(first, 'ann')\nsecond.attendees",
+      "summary": "Bookings made without attendees share one default list: inviting someone to one invites them to all."
+    },
+    {
+      "id": "D6",
+      "class": "state not updated",
+      "file": "scheduling/availability.py",
+      "function": "remove_busy",
+      "find": "        self._busy[person].remove((start, end))\n        self._merged.pop(person, None)",
+      "replace": "        self._busy[person].remove((start, end))",
+      "witness": "from scheduling.availability import Availability\na = Availability()\na.add_busy('ann', 540, 600)\na.is_free('ann', 540, 600)\na.remove_busy('ann', 540, 600)\na.is_free('ann', 540, 600)",
+      "summary": "remove_busy never drops the cached merge, so a cancelled meeting still blocks the time."
+    },
+    {
+      "id": "D7",
+      "class": "cache key",
+      "file": "scheduling/holidays.py",
+      "function": "holidays",
+      "find": "        key = (year, region)",
+      "replace": "        key = region",
+      "witness": "from datetime import date\nfrom scheduling.holidays import Calendar\nc = Calendar()\nc.is_holiday(date(2025, 4, 18), 'UK')\nc.is_holiday(date(2026, 4, 3), 'UK')",
+      "summary": "The holiday cache is keyed by region alone: after asking about 2025, 2026 answers with 2025's dates."
+    },
+    {
+      "id": "D8",
+      "class": "sort key",
+      "file": "scheduling/agenda.py",
+      "function": "agenda",
+      "find": "    ordered = sorted(bookings, key=lambda b: b.start)",
+      "replace": "    ordered = sorted(bookings, key=lambda b: fmt(b.start))",
+      "witness": "from scheduling.agenda import agenda\nfrom scheduling.booking import Booking\nagenda([Booking('b', 600, 630), Booking('a', 570, 600)])",
+      "summary": "The agenda is sorted by the formatted time, so 10:00 comes before 9:30."
+    },
+    {
+      "id": "D9",
+      "class": "swallowed error",
+      "file": "scheduling/durations.py",
+      "function": "parse_duration",
+      "find": "    if not t or not m or not any(m.groups()):\n        raise ValueError(f\"not a duration: {text!r}\")",
+      "replace": "    if not t or not m or not any(m.groups()):\n        return 0",
+      "witness": "from scheduling.durations import parse_duration\nparse_duration('1h3Om')",
+      "summary": "An unreadable duration is read as 0 minutes instead of raising, against the module's own stated rule."
+    },
+    {
+      "id": "D10",
+      "class": "silently filtered data",
+      "file": "scheduling/reports.py",
+      "function": "minutes_used",
+      "find": "        if row[\"status\"] == \"cancelled\":\n            continue\n        out[row[\"room\"]]",
+      "replace": "        out[row[\"room\"]]",
+      "witness": "from scheduling.reports import minutes_used\nminutes_used()['atlas']",
+      "summary": "minutes_used counts cancelled meetings, overstating use; the module says they are excluded."
+    },
+    {
+      "id": "D11",
+      "class": "test copies the code",
+      "file": "tests/test_availability.py",
+      "function": null,
+      "decoy": "decoys/test_availability.py",
+      "hides": "D6",
+      "patterns": [
+        "copy|mirror|own|local|redefin|instead of import|not .{0,20}import"
+      ],
+      "summary": "test_availability.py tests its own copy of Availability (with no cache), so it passes while the real one is broken."
+    },
+    {
+      "id": "D12",
+      "class": "vacuous test",
+      "file": "tests/test_booking.py",
+      "function": null,
+      "decoy": "decoys/test_booking.py",
+      "hides": "D5",
+      "patterns": [
+        "never|empty|nothing|vacuous|no assert|before|loop"
+      ],
+      "summary": "test_attendees_belong_to_one_booking checks second's attendees in a loop that runs before anyone is invited."
+    }
+  ],
+  "controls": [
+    {
+      "id": "C1",
+      "file": "scheduling/slots.py",
+      "function": "slot_count",
+      "summary": "Counts the slots day_slots gives; correct."
+    },
+    {
+      "id": "C2",
+      "file": "scheduling/tz.py",
+      "function": "to_utc",
+      "summary": "fold=0 for the ambiguous hour is documented and intended."
+    },
+    {
+      "id": "C3",
+      "file": "scheduling/durations.py",
+      "function": "parse_all",
+      "summary": "The broad except re-raises with which item failed."
+    },
+    {
+      "id": "C4",
+      "file": "scheduling/holidays.py",
+      "function": "easter",
+      "summary": "The anonymous Gregorian algorithm, correct."
+    }
+  ]
+}

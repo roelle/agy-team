@@ -37,13 +37,20 @@ WORKER = types.SubagentConfig(
 
 class SdkRunner(Runner):
     label = "sdk"
-    # All three are real here: the audit hook is installed per session in
-    # sdk_agent.build_config, workspaces are enforced by the SDK at the
-    # capability level rather than by instruction, and roster `tools_off` /
+    # Audit and capability scoping are real here: the audit hook is installed
+    # per session in sdk_agent.build_config, and roster `tools_off` /
     # `workers` reach build_config as disabled_tools, so the schema for a
     # withheld tool never reaches the model.
+    #
+    # Containment is not, and this said True. The SDK confines its *file*
+    # tools to the session's workspaces, but run_command is a shell with the
+    # supervisor's access: in a measured bench run an agent ran
+    # `find /tmp -type f`, found the bench checkout, and read the answer key.
+    # An agent with a shell is contained only by what contains the process --
+    # a container, a separate account. Withhold run_command (tools_off) or run
+    # the team inside one; this flag must not say otherwise.
     supports_audit = True
-    supports_containment = True
+    supports_containment = False
     supports_capability_scoping = True
 
     def __init__(self, config=None, observer=None):

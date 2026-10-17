@@ -252,9 +252,15 @@ class SlowDistill(ScriptedRunner):
         return "[error: nope]" if agent in self.failing else "saved nothing new"
 
 
+def worked(sup, *agents):
+    for a in agents:
+        sup.observer.record_turn(a, f"conv-{a}", 1.0)
+
+
 def test_distill_all_runs_the_turns_at_once(team):
     runner = SlowDistill()
     sup = Supervisor(AGENTS, runner, quiet=True, poll=0.02)
+    worked(sup, *AGENTS)
     t0 = time.monotonic()
     try:
         out = sup.distill_all()
@@ -269,6 +275,7 @@ def test_cycle_all_resets_only_the_agents_that_distilled(team):
     for a in AGENTS:
         runner.remember_conversation(a, f"conv-{a}")
     sup = Supervisor(AGENTS, runner, quiet=True, poll=0.02)
+    worked(sup, *AGENTS)
     try:
         sup.cycle_all()
     finally:
@@ -280,6 +287,7 @@ def test_cycle_all_resets_only_the_agents_that_distilled(team):
 def test_distill_all_skips_an_agent_with_a_turn_in_flight(team):
     runner = SlowDistill(0.05)
     sup = Supervisor(AGENTS, runner, quiet=True, poll=0.02)
+    worked(sup, *AGENTS)
     try:
         sup.inflight["coder"] = {"handle": {}}
         out = sup.distill_all()
@@ -287,6 +295,21 @@ def test_distill_all_skips_an_agent_with_a_turn_in_flight(team):
     finally:
         sup.close()
     assert "coder" not in out and set(out) == {"tpm", "qa"}
+
+
+def test_an_agent_with_nothing_of_its_own_is_not_distilled(team):
+    """Asked anyway, it read everyone else's records for 2.1M tokens."""
+    runner = SlowDistill(0.0)
+    sup = Supervisor(AGENTS, runner, quiet=True, poll=0.01)
+    worked(sup, "qa")
+    runner.remember_conversation("tpm", "conv-tpm")
+    worked(sup, "tpm")
+    runner.reset("tpm")                      # cycled since its only turn
+    try:
+        out = sup.distill_all()
+    finally:
+        sup.close()
+    assert set(out) == {"qa"}
 
 
 # --- the scheduled sweep --------------------------------------------------------------

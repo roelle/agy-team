@@ -1,0 +1,157 @@
+{
+  "task": "scale_billing",
+  "package": "billing",
+  "summary": "A billing package: money, tax, discounts, proration, invoices, a ledger, FX, export, dunning.",
+  "defects": [
+    {
+      "id": "D1",
+      "class": "loop bound",
+      "file": "billing/money.py",
+      "function": "allocate",
+      "find": "share = base + (1 if i < extra else 0)",
+      "replace": "share = base + (1 if i < extra - 1 else 0)",
+      "witness": "from billing.money import allocate\nallocate('10.00', 3)",
+      "summary": "allocate hands the leftover cents to one part too few, so a split with a remainder loses a cent: the parts no longer sum to the total."
+    },
+    {
+      "id": "D2",
+      "class": "rounding",
+      "file": "billing/money.py",
+      "function": "round_cents",
+      "find": "    return Decimal(amount).quantize(CENT, rounding=ROUND_HALF_UP)\n",
+      "replace": "    return Decimal(str(round(float(amount), 2))).quantize(CENT)\n",
+      "witness": "from decimal import Decimal\nfrom billing.money import round_cents\nround_cents(Decimal('2.675'))",
+      "summary": "round_cents goes through float and banker's rounding: 2.675 becomes 2.67, not the documented half-up 2.68."
+    },
+    {
+      "id": "D3",
+      "class": "laundered constant",
+      "file": "billing/tax.py",
+      "function": "effective_rate",
+      "find": "    combined = sum(RATES[region], Decimal(\"0\"))\n    return combined\n",
+      "replace": "    combined = sum(RATES[region], Decimal(\"0\"))\n    return DEFAULT_RATE if not combined else combined\n",
+      "witness": "from billing.tax import effective_rate\neffective_rate('OR')",
+      "summary": "A configured region whose components sum to zero (OR, no sales tax) is charged the 8% default instead of nothing."
+    },
+    {
+      "id": "D4",
+      "class": "boundary comparison",
+      "file": "billing/discounts.py",
+      "function": "tier_percent",
+      "find": "        if quantity >= minimum:",
+      "replace": "        if quantity > minimum:",
+      "witness": "from billing.discounts import tier_percent\ntier_percent(100)",
+      "summary": "An order of exactly a tier's threshold gets the tier below; the docstring says exactly 100 is in the 100 tier."
+    },
+    {
+      "id": "D5",
+      "class": "mutable default",
+      "file": "billing/invoice.py",
+      "function": "add_line",
+      "find": "    def add_line(self, item: str, quantity: int, unit_price, coupon=None,\n                 tags=None) -> Line:\n        if quantity <= 0:\n            raise ValueError(\"quantity must be positive\")\n        line = Line(item, quantity, to_money(unit_price), coupon,\n                    list(tags) if tags else [])",
+      "replace": "    def add_line(self, item: str, quantity: int, unit_price, coupon=None,\n                 tags=[]) -> Line:\n        if quantity <= 0:\n            raise ValueError(\"quantity must be positive\")\n        line = Line(item, quantity, to_money(unit_price), coupon, tags)",
+      "witness": "from billing.invoice import Invoice\ninv = Invoice(1, 'c', 'CA')\ninv.add_line('a', 1, '1.00')\ninv.add_line('b', 1, '1.00')\ninv.tag(0, 'x')\ninv.lines[1].tags",
+      "summary": "add_line's default tags list is shared by every line added without tags: tagging one tags them all."
+    },
+    {
+      "id": "D6",
+      "class": "state not updated",
+      "file": "billing/ledger.py",
+      "function": "reverse",
+      "find": "        self._entries.append(entry)\n        self._balances.pop(original.account, None)\n        return entry",
+      "replace": "        self._entries.append(entry)\n        return entry",
+      "witness": "from billing.ledger import Ledger\nL = Ledger()\ne = L.post('a', '10.00')\nL.balance('a')\nL.reverse(e.id)\nL.balance('a')",
+      "summary": "reverse never drops the cached balance, so a balance read before the reversal is returned after it."
+    },
+    {
+      "id": "D7",
+      "class": "cache key",
+      "file": "billing/fx.py",
+      "function": "rate",
+      "find": "        key = (from_ccy, to_ccy)",
+      "replace": "        key = from_ccy",
+      "witness": "from billing.fx import Converter, table_source\nc = Converter(table_source({('USD', 'EUR'): '0.90', ('USD', 'GBP'): '0.80'}))\nc.convert('10.00', 'USD', 'EUR')\nc.convert('10.00', 'USD', 'GBP')",
+      "summary": "The rate cache is keyed by the source currency alone: after USD->EUR, USD->GBP returns the EUR rate."
+    },
+    {
+      "id": "D8",
+      "class": "sort key",
+      "file": "billing/export.py",
+      "function": "to_rows",
+      "find": "    rows.sort(key=lambda r: r[\"_n\"])",
+      "replace": "    rows.sort(key=lambda r: r[\"invoice\"])",
+      "witness": "from billing.export import to_rows\nfrom billing.invoice import Invoice\n[r['invoice'] for r in to_rows([Invoice(10, 'a', 'OR'), Invoice(9, 'b', 'OR')])]",
+      "summary": "Rows are sorted by the label string, so INV-10 sorts before INV-9."
+    },
+    {
+      "id": "D9",
+      "class": "swallowed error",
+      "file": "billing/export.py",
+      "function": "parse_amount",
+      "find": "    except (ValueError, InvalidOperation) as e:\n        raise ValueError(f\"unreadable amount {text!r}\") from e",
+      "replace": "    except (ValueError, InvalidOperation):\n        return Decimal(\"0.00\")",
+      "witness": "from billing.export import parse_amount\nparse_amount('12O.00')",
+      "summary": "An unreadable amount is read as 0.00 instead of raising, against the module's own stated rule."
+    },
+    {
+      "id": "D12",
+      "class": "silently filtered data",
+      "file": "billing/reports.py",
+      "function": "monthly_revenue",
+      "find": "        total = to_money(row[\"total\"])\n        out[row[\"date\"][:7]] += total",
+      "replace": "        total = to_money(row[\"total\"])\n        if total > 0:\n            out[row[\"date\"][:7]] += total",
+      "witness": "from billing.reports import monthly_revenue\nmonthly_revenue()['2025-03']",
+      "summary": "monthly_revenue drops refunds (negative totals), so every month is overstated; the module says refunds are netted."
+    },
+    {
+      "id": "D10",
+      "class": "test copies the code",
+      "file": "tests/test_invoice.py",
+      "function": null,
+      "decoy": "decoys/test_invoice.py",
+      "hides": "D5",
+      "patterns": [
+        "copy|own|local|stand.?in|redefin|instead of import|not .{0,20}import"
+      ],
+      "summary": "test_invoice.py defines its own Invoice and Line and tests those, so it passes while billing.invoice is broken."
+    },
+    {
+      "id": "D11",
+      "class": "vacuous test",
+      "file": "tests/test_ledger.py",
+      "function": null,
+      "decoy": "decoys/test_ledger.py",
+      "hides": "D6",
+      "patterns": [
+        "never|empty|nothing|vacuous|no assert|before|loop"
+      ],
+      "summary": "test_reversal_zeroes_the_balance asserts inside a loop over reversals taken before the reversal happens: it checks nothing."
+    }
+  ],
+  "controls": [
+    {
+      "id": "C1",
+      "file": "billing/proration.py",
+      "function": "days_used",
+      "summary": "The +1 is right: both ends of the window are inclusive, as documented."
+    },
+    {
+      "id": "C2",
+      "file": "billing/tax.py",
+      "function": "tax_breakdown",
+      "summary": "Shares rounded individually may differ from compute_tax by a cent; documented as the regulator's method."
+    },
+    {
+      "id": "C3",
+      "file": "billing/dunning.py",
+      "function": "parse_due",
+      "summary": "The broad except re-raises with context; nothing is hidden."
+    },
+    {
+      "id": "C4",
+      "file": "billing/money.py",
+      "function": "to_money",
+      "summary": "Refusing floats is intended, and documented."
+    }
+  ]
+}

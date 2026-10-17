@@ -267,8 +267,12 @@ dispatched turn, so the daemon never slept -- two spawns a second with
 nothing in `events.jsonl`. Failures now back off, are recorded whoever
 reported them, and escalate once.
 
-**Read this part before you trust a grant.** Workspace confinement is
-enforced by `SdkRunner`. Runners that drive an external host have no
+**Read this part before you trust a grant.** `SdkRunner` confines its file
+tools to the workspaces, and that is all: `run_command` is a shell with the
+supervisor's access, and in a measured bench run an agent used it to find the
+bench checkout and read the answer key. It used to declare
+`supports_containment = True`; no runner now does, because an agent with a
+shell is contained only by what contains the process. Runners that drive an external host have no
 workspace mechanism at all — no grants, no confinement — and agents are
 bounded only by whatever permission model that host applies, which agyteam
 neither configures nor can observe. `Runner.supports_containment` declares

@@ -61,6 +61,12 @@ def line_count(path: Path) -> int:
         return 0
 
 
+# What a team must never read: the answers, the grader that encodes them, the
+# fixture verifier, and the bench README, which tabulates every planted defect.
+LEAK = re.compile(r"bench/(keys/|grade\.py|verify_fixtures\.py|README\.md)|"
+                  r"keys/audit_[a-z_]+\.json")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("task", help="key name under bench/keys/, e.g. audit_telemetry")
@@ -128,17 +134,35 @@ def main() -> int:
         # as the other's diligence.
         audit = [e for e in audit if e.get("team", a.team) == a.team]
 
-    said = "\n".join((e.get("content") or "") for e in bus)
+    # Only what reached the user is the team's answer. Scoring every message
+    # on the bus credited a defect named in passing between teammates but
+    # left out of the report, and charged a control for a tpm's instruction
+    # to "inspect p95() for off-by-one errors" -- a question, not a claim.
+    to_user = [e for e in bus if e.get("to") == "user" and e.get("from") != "supervisor"]
+    said = "\n".join((e.get("content") or "") for e in to_user)
     # An audit nobody was told about is not an audit. One rep scored 9/9 with
     # an empty to_user -- its whole bus was tpm -> manager -- because the
     # grader scores text and shell commands and never asked whether an answer
     # was delivered. Same species as grading a run that did not happen.
-    answered_user = any(e.get("to") == "user" for e in bus)
+    answered_user = bool(to_user)
     cmds = [e.get("args", {}).get("CommandLine", "") for e in audit
             if e.get("tool") == "run_command"]
     executed = [c for c in cmds if c and not READ_ONLY.match(c)]
 
+    # A run whose agents read the answer is not a measurement. It happened: on
+    # a runner that confines file tools but not the shell, an agent ran
+    # `find /tmp -type f`, found the bench's own checkout, and opened
+    # keys/audit_sessions.json. Every audited call is checked, whatever tool
+    # made it; the score is printed but the run is marked invalid.
+    leaked = [e for e in audit if LEAK.search(json.dumps(e.get("args", {})))]
+
     print(f"=== {a.task}, since {a.since} ===")
+    if leaked:
+        print(f">> CONTAMINATED: {len(leaked)} audited call(s) touched the answer "
+              f"key or the grader, e.g. {leaked[0].get('agent')} "
+              f"{leaked[0].get('tool')} {json.dumps(leaked[0].get('args', {}))[:160]}\n"
+              f">> The score below is NOT a measurement. Run the bench where the "
+              f"agents cannot reach bench/ (bench/convergence.py --docker).\n")
     if blind:
         print(f"{len(bus)} bus messages; TOOL CALLS NOT OBSERVABLE ({blind})\n")
     else:
@@ -176,7 +200,9 @@ def main() -> int:
     # Allow punctuation and markdown between the verb and the value: real
     # reports write "returns: `[None]`", and the first team graded lost a
     # point to this regex despite pasting literal program output.
-    concrete = bool(re.search(r"(->|returns?|got)\W{0,4}(None|[\d\[])", said, re.I))
+    # Markdown again: "**What the code returns:** `[None, 1, 2]`" puts five
+    # characters between the verb and the value.
+    concrete = bool(re.search(r"(->|returns?|got)\W{0,8}(None|[\d\[\-])", said, re.I))
     ran_fixture = [c for c in executed if "fixture" in c or "ringbuffer" in c
                    or "stats" in c or "pytest" in c]
     # The trailing flag is "does this check read the audit log?". Only those
@@ -220,6 +246,9 @@ def main() -> int:
         if found == len(key["defects"]) and not executed:
             print(">> every defect named and nothing executed. Check whether "
                   "the key leaked into a workspace before believing this score.")
+    if leaked:
+        print(">> CONTAMINATED -- see the top of this report.")
+        return 3
     if not answered_user:
         print(">> THE USER WAS NEVER ANSWERED. Nothing in this window is "
               "addressed to 'user', so whatever the team found, it did not "

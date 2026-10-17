@@ -141,3 +141,36 @@ pytest while the code it claims to test is broken, because it contains its own
 corrected transcription of that code instead of importing it. A team that
 reports "tests pass, the buffer is fine" has reproduced, exactly, the failure
 mode that cost this project its worst day.
+
+## The scale suite, and running it where the keys cannot be read
+
+`audit_telemetry` and `audit_sessions` saturate: a capable team scores 9/9
+on both, so a step back in quality cannot show. `bench/scale/` holds three
+larger sibling packages -- `billing`, `inventory`, `scheduling` -- each with
+eleven or twelve planted defects in the same classes (a loop bound, rounding
+through float, a configured zero treated as "unset", a boundary comparison, a
+mutable default, a cache not dropped, a cache key missing a field, a string
+sort of numbers, a swallowed error, data silently filtered, a test that tests
+its own copy of the code, a test that asserts nothing), four controls, and a
+data file of several thousand rows that costs a lot of context to read whole.
+
+`bench/scale/build.py` generates each audited tree from a correct reference
+by applying the planted edits, and refuses to build unless every defect's
+witness call returns different values in the two trees, the reference passes
+its tests, the audited tree passes ITS tests (the decoys are green), and the
+honest tests fail wherever a decoy hides a defect. The team writes
+`FINDINGS.json`; `bench/scale/grade_scale.py` runs every claimed reproduction
+against both trees and credits only real, truthfully reported defects --
+invented outputs and false alarms are counted beside the score.
+
+    .venv/bin/python bench/convergence.py --suite scale --docker \
+        --model gemini-3.1-pro-preview --team scale-$(date +%m%d) \
+        --audit ~/agy-lab-notes/scale-$(date +%m%d)/audit.jsonl
+
+`--docker` runs the team in a container built from `agyteam/` alone, with
+only the staged trees, the team directory and the audit log mounted. It is
+required in practice: no runner contains an agent's shell, and in one run an
+agent used `find /tmp -type f` to reach this checkout and read a key. Both
+graders also mark a run CONTAMINATED if any audited call touched a key, a
+reference or a grader. Expect tens of dollars for three rounds on a Pro
+roster.

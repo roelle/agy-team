@@ -1648,6 +1648,13 @@ class Supervisor:
             if agent in self.inflight:
                 self._log(f"    {agent}: skipped (a turn is in flight)")
                 continue
+            if not self._worked_since_cycle(agent):
+                # Nothing of its own to distill. Asked anyway, an agent that
+                # had not taken a turn spent 2.1M tokens reading its
+                # teammates' transcripts, memories and the bus for something
+                # to call a lesson.
+                self._log(f"    {agent}: skipped (no turns since its last cycle)")
+                continue
             if agent in self._purged_agents:
                 out[agent] = self.distill(agent)
                 continue
@@ -1820,6 +1827,22 @@ class Supervisor:
             self.distill_sweep(scheduled=True)
         except Exception as e:
             self._log(f"[supervisor] distill sweep failed: {type(e).__name__}: {e}")
+
+    def _worked_since_cycle(self, agent: str) -> bool:
+        """Has `agent` taken a turn since its conversation was last retired?"""
+        try:
+            turns = [t for t in self.observer.events("turn") if t.get("agent") == agent]
+        except Exception:
+            return True                 # cannot tell: do not skip
+        if not turns:
+            return False
+        try:
+            retired = [r.get("ts", "") for r in self.runner.retired_conversations()
+                       if r.get("agent") == agent]
+        except Exception:
+            retired = []
+        last = max(retired, default="")
+        return any((t.get("ts") or "") > last for t in turns)
 
     def cycle_all(self, agents: list[str] | None = None) -> dict[str, tuple[int, int]]:
         """distill_all, then a fresh conversation for each agent that distilled."""

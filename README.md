@@ -218,6 +218,14 @@ have configured, with a plain warning for each one it lacks.
 
 Stated here so you do not have to find them:
 
+- **No runner contains an agent that has a shell.** The SDK runner confines
+  its file tools to each agent's workspaces, but `run_command` runs with the
+  supervisor's own access to the machine: in a measured bench run an agent
+  ran `find /tmp -type f`, found the bench checkout, and read the answer key.
+  If an agent must not reach something, withhold `run_command` from it or run
+  the team in a container or under a separate account. Every runner now
+  declares `supports_containment = False`.
+
 - **Not validated on a codebase nobody here has seen.** Everything so far has
   been this repo or a problem we already knew the answer to.
 - **The review gate runs agent-written code with the bus server's access.**
@@ -596,11 +604,10 @@ user either until then. The operator can waive that:
 `python -m agyteam.supervisor --waive-review <task_id> --by user --reason ...`
 writes a `waiver` row that satisfies the gate and is never counted as a
 review. No agent is offered this as a tool, a waiver signed with a teammate's
-name is refused, and so is one issued from inside an agent's session. That is
-a boundary where agents are contained (the SDK runner); on the `agy` CLI,
-where an agent has an unconfined shell, it stops an agent reaching for the
-command but not one determined to forge it, so add it to
-`policy.forbidden_commands` if a pre-tool hook runs there. Status spellings like `in_progress`, `waiting` and `completed` are
+name is refused, and so is one issued from inside an agent's session. That
+stops an agent reaching for the command, not one determined to forge it: any
+agent with a shell can run it, on every runner, so add it to
+`policy.forbidden_commands` (or withhold `run_command`) where that matters. Status spellings like `in_progress`, `waiting` and `completed` are
 accepted and mapped.
 
 Start the sim, then `update_task(task_id, status="running", check_after="2h")`,

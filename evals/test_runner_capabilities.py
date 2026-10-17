@@ -41,7 +41,8 @@ def test_sdk_runner_declares_both_true_if_importable():
     except Exception:
         return          # dependency absent; nothing to assert
     assert SdkRunner.supports_audit is True
-    assert SdkRunner.supports_containment is True
+    # Its file tools are confined; its shell is not. See runner_sdk.
+    assert SdkRunner.supports_containment is False
 
 
 def test_status_reports_capabilities():

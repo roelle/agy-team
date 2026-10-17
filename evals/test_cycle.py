@@ -428,10 +428,18 @@ def test_cli_cycle_single() -> tuple[int, int]:
     ]), 5
 
 
+def worked_in(td, *agents):
+    with (Path(td) / "events.jsonl").open("a") as f:
+        for a in agents:
+            f.write(json.dumps({"ts": "2026-01-01 00:00:00", "event": "turn",
+                                "agent": a, "conversation": f"c-{a}"}) + "\n")
+
+
 def test_cli_distill_all() -> tuple[int, int]:
     """CLI --distill-all distills all agents on the roster in order."""
     print("\n== CLI --distill-all ==")
     td = make_temp_team()
+    worked_in(td, "coder", "tpm")    # an agent with no turns has nothing to distill
 
     runner = MockRunner()
     buf = io.StringIO()
@@ -452,6 +460,7 @@ def test_cli_cycle_all() -> tuple[int, int]:
     """CLI --cycle-all distills and resets all agents on the roster in order."""
     print("\n== CLI --cycle-all ==")
     td = make_temp_team()
+    worked_in(td, "coder", "tpm")    # an agent with no turns has nothing to distill
 
     runner = MockRunner()
     buf = io.StringIO()

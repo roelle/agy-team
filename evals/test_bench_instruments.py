@@ -79,9 +79,21 @@ def test_refuses_when_containment_cannot_be_determined(tmp_path, monkeypatch):
     assert "could not be inspected" in str(e.value)
 
 
-def test_allows_a_runner_that_contains(tmp_path, monkeypatch):
+def test_refuses_the_sdk_runner_too_since_its_shell_is_not_contained(tmp_path, monkeypatch):
+    """It was allowed, and in a measured run an agent used run_command to find
+    the bench checkout and read keys/audit_sessions.json."""
     pytest.importorskip("google.antigravity")
     monkeypatch.setenv("AGYTEAM_RUNNER", "agyteam.runner_sdk:SdkRunner")
+    with pytest.raises(SystemExit) as e:
+        conv.check_containment(tmp_path)
+    assert "--docker" in str(e.value)
+
+
+def test_a_runner_that_declares_containment_is_allowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(conv, "runner_spec", lambda: "x:Y")
+    import agyteam.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "capabilities", lambda spec: {
+        "spec": spec, "supports_containment": True, "error": None})
     conv.check_containment(tmp_path)        # must not raise
 
 

@@ -88,6 +88,21 @@ COLD_ROSTER = {
 
 TASKS = [("audit_telemetry", "fixtures"), ("audit_sessions", "fixtures2")]
 
+# The scale suite: three sibling packages, each a few hundred lines per module
+# with a large data file, eleven or twelve planted defects in the same
+# classes, decoy tests, and controls. Built and verified per run by
+# bench/scale/build.py; graded by executing the team's own reproductions
+# (bench/scale/grade_scale.py). Three rounds, so the trend is visible.
+SCALE_TASKS = ["billing", "inventory", "scheduling"]
+
+
+def scale_prompt(name: str, staged_dir: Path) -> str:
+    md = (HERE / "scale" / "TASK.md").read_text()
+    package = json.loads((HERE / "scale" / name / "defects.json").read_text())["package"]
+    body = md.split("---")[1].strip().replace("{dir}", str(staged_dir)).replace("{package}", package)
+    return (body + "\n\nReport to user when done. Do not send status updates "
+            "and do not ask me to confirm a plan.")
+
 
 def task_prompt(name: str, staged_dir: Path) -> str:
     """The team-facing text from bench/tasks/<name>.md, path rewritten."""
@@ -111,6 +126,9 @@ def runner_spec() -> str:
     return os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
 
 
+DOCKER: dict = {}      # set by main() for --docker: image, mounts, home
+
+
 def sup(team: str, audit: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ,
                AGYTEAM_TEAM=team,
@@ -120,9 +138,54 @@ def sup(team: str, audit: str, *args: str) -> subprocess.CompletedProcess:
     # task on whatever team the operator's shell exported, not the cold one.
     for key in ("AGYTEAM_TEAM_DIR", "AGYTEAM_DURABLE_DIR"):
         env.pop(key, None)
-    return subprocess.run(
-        [sys.executable, "-m", "agyteam.supervisor", *args],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=3600)
+    if not DOCKER:
+        return subprocess.run(
+            [sys.executable, "-m", "agyteam.supervisor", *args],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=4 * 3600)
+    # Inside the container the team can reach only what is mounted: the
+    # staged trees, its own team directory, and the audit log -- each at the
+    # path it has here, so the record reads the same on both sides.
+    passthrough = ["AGYTEAM_TEAM", "AGYTEAM_RUNNER", "AGYTEAM_AUDIT_LOG",
+                   "AGYTEAM_TEAMS_ROOT", "AGYTEAM_TURN_TIMEOUT", "AGYTEAM_PROJECT_DIR",
+                   "GEMINI_API_KEY"]
+    # The record's timestamps are local time, and each run is graded by
+    # the window it falls in on this clock. A container on UTC wrote times
+    # seven hours off, and one round's records landed in the next's window.
+    cmd = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+           "-e", f"HOME={DOCKER['home']}", "-w", "/app",
+           "-v", "/etc/localtime:/etc/localtime:ro"]
+    if os.environ.get("TZ"):
+        cmd += ["-e", "TZ"]
+    for k in passthrough:
+        if env.get(k):
+            cmd += ["-e", k]            # value taken from env, never argv
+    for m in DOCKER["mounts"]:
+        cmd += ["-v", f"{m}:{m}"]
+    cmd += [DOCKER["image"], "python", "-m", "agyteam.supervisor", *args]
+    return subprocess.run(cmd, env=env, capture_output=True, text=True,
+                          timeout=4 * 3600)
+
+
+def build_image(tag: str) -> str:
+    """Build the team image from agyteam/ and packaging files only."""
+    ctx = Path(tempfile.mkdtemp(prefix="bench-image-"))
+    shutil.copytree(REPO / "agyteam", ctx / "agyteam",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for f in ("pyproject.toml", "README.md"):
+        shutil.copy(REPO / f, ctx / f)
+    shutil.copy(HERE / "docker" / "Dockerfile", ctx / "Dockerfile")
+    p = subprocess.run(["docker", "build", "-q", "-t", tag, str(ctx)],
+                       capture_output=True, text=True)
+    shutil.rmtree(ctx, ignore_errors=True)
+    if p.returncode != 0:
+        sys.exit(f"docker build failed:\n{p.stderr[-2000:]}")
+    probe = subprocess.run(["docker", "run", "--rm", tag, "sh", "-c",
+                            "test ! -e /app/bench && test ! -e /app/evals && "
+                            "python -c 'import agyteam.supervisor, google.antigravity'"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        sys.exit(f"image {tag} is not fit to run the bench:\n{probe.stderr[-1000:]}")
+    return tag
 
 
 def rows(path: Path, since: str) -> list[dict]:
@@ -214,6 +277,30 @@ def grade(task: str, since: str, team_dir: Path, audit: str, team: str,
     return p.stdout + p.stderr
 
 
+LEAK = re.compile(r"bench/(keys/|grade\.py|verify_fixtures\.py|README\.md|scale/)|"
+                  r"defects\.json|/reference/|decoys/")
+
+
+def grade_scale(task: str, staged: Path, audit: str, audit_from: int, audit_to: int) -> str:
+    sys.path.insert(0, str(HERE / "scale"))
+    from grade_scale import grade as run_grade, render
+    lines = Path(audit).read_text(errors="replace").splitlines()[audit_from:audit_to] \
+        if Path(audit).exists() else []
+    leaked = [l for l in lines if LEAK.search(l)]
+    text = render(run_grade(task, staged))
+    if leaked:
+        text = (f">> CONTAMINATED: {len(leaked)} audited call(s) touched the key, "
+                f"the references or the grader, e.g. {leaked[0][:200]}\n"
+                ">> The score below is NOT a measurement.\n" + text)
+    return text
+
+
+def tokens(team_dir: Path, since: str) -> dict:
+    turns = [e for e in rows(team_dir / "events.jsonl", since) if e.get("event") == "turn"]
+    return {"input_tokens": sum(int(e.get("input_tokens") or 0) for e in turns),
+            "output_tokens": sum(int(e.get("output_tokens") or 0) for e in turns)}
+
+
 def episode_summary(team_dir: Path, since: str) -> dict:
     """Turns and seconds for the episodes in this window.
 
@@ -255,11 +342,10 @@ def check_containment(stage: Path) -> None:
         f"Staging the fixtures at {stage} does not make bench/keys/ "
         f"unreachable on this runner: roster `workspaces` are advisory here "
         f"and the keys are readable in the repo.\n"
-        f"A benchmark the subject can read is not a benchmark. Either run "
-        f"this under a runner that enforces containment, or enforce it where "
-        f"the process lives -- filesystem permissions, a container, a "
-        f"separate account -- and copy the fixtures somewhere the keys are "
-        f"not.")
+        f"A benchmark the subject can read is not a benchmark. Run it with "
+        f"--docker, which puts the team in a container holding none of "
+        f"bench/, or enforce it yourself where the process lives -- a "
+        f"separate account, filesystem permissions.")
 
 
 def main() -> int:
@@ -270,12 +356,23 @@ def main() -> int:
                     help="audit log path OUTSIDE every workspace")
     ap.add_argument("--teams-root",
                     default=str(Path.home() / "agy-teams"))
+    ap.add_argument("--suite", choices=("audit", "scale"), default="audit",
+                    help="audit: the two small sibling tasks; scale: three "
+                         "larger packages graded by executing the team's claims")
+    ap.add_argument("--docker", action="store_true",
+                    help="run the team in a container that holds none of bench/")
+    ap.add_argument("--model", default=None,
+                    help="put every agent on this model (and drop per-agent effort)")
+    ap.add_argument("--turn-timeout", type=int, default=None,
+                    help="AGYTEAM_TURN_TIMEOUT for the team's turns, seconds")
     a = ap.parse_args()
 
     # The supervisor runs as a child and finds the team through the
     # environment; --teams-root used to stop at this process.
     os.environ["AGYTEAM_TEAMS_ROOT"] = str(Path(a.teams_root).expanduser())
-    team_root = Path(a.teams_root) / a.team
+    if a.turn_timeout:
+        os.environ["AGYTEAM_TURN_TIMEOUT"] = str(a.turn_timeout)
+    team_root = Path(a.teams_root).expanduser() / a.team
     if team_root.exists():
         sys.exit(f"{team_root} already exists. A convergence run must start "
                  "cold; pick a fresh name rather than reusing a team that "
@@ -283,33 +380,59 @@ def main() -> int:
 
     stage = Path(tempfile.mkdtemp(prefix="bench-stage-"))
     print(f"cold team: {team_root}\nstaging:   {stage}\n"
-          f"runner:    {runner_spec()}\n")
+          f"runner:    {runner_spec()}\nsuite:     {a.suite}"
+          f"{' (docker)' if a.docker else ''}\nmodel:     {a.model or 'per roster'}\n")
 
-    verify = subprocess.run([sys.executable, str(HERE / "verify_fixtures.py")],
-                            capture_output=True, text=True)
-    if verify.returncode != 0:
-        sys.exit("bench fixtures are not intact; refusing to measure with a "
-                 "rotted instrument:\n" + verify.stdout + verify.stderr)
-    check_containment(stage)
+    if a.suite == "audit":
+        verify = subprocess.run([sys.executable, str(HERE / "verify_fixtures.py")],
+                                capture_output=True, text=True)
+        if verify.returncode != 0:
+            sys.exit("bench fixtures are not intact; refusing to measure with a "
+                     "rotted instrument:\n" + verify.stdout + verify.stderr)
+        tasks = TASKS
+    else:
+        tasks = [(t, None) for t in SCALE_TASKS]
+
+    if a.docker:
+        audit_dir = Path(a.audit).expanduser().resolve().parent
+        team_root.mkdir(parents=True)
+        home = team_root / "_home"
+        home.mkdir()
+        DOCKER.update(image=build_image("agyteam-bench:latest"),
+                      mounts=[str(stage), str(team_root), str(audit_dir)],
+                      home=str(home))
+        os.environ["AGYTEAM_PROJECT_DIR"] = str(stage)
+        print(f"image:     {DOCKER['image']} (mounts: {', '.join(DOCKER['mounts'])})\n")
+    else:
+        check_containment(stage)
 
     reports = []
-    for i, (task, fixdir) in enumerate(TASKS):
+    for i, (task, fixdir) in enumerate(tasks):
         run_stage = stage / task
-        shutil.copytree(HERE / fixdir, run_stage)
+        if a.suite == "audit":
+            shutil.copytree(HERE / fixdir, run_stage)
+            prompt = task_prompt(task, run_stage)
+        else:
+            sys.path.insert(0, str(HERE / "scale"))
+            from build import build
+            build(task, run_stage)
+            prompt = scale_prompt(task, run_stage)
 
         roster = json.loads(json.dumps(COLD_ROSTER))     # deep copy
         for agent in roster["agents"]:
             agent["workspaces"] = [str(run_stage)]
+            if a.model:
+                agent["model"] = a.model
+                agent.pop("effort", None)
         team_dir = team_root / "team"
         team_dir.mkdir(parents=True, exist_ok=True)
         (team_dir / "roster.json").write_text(json.dumps(roster, indent=2))
 
         since = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        label = "A (cold)" if i == 0 else "B (after retro + cycle)"
-        print(f"=== run {label}: {task}, since {since} ===")
+        label = chr(ord("A") + i) + (" (cold)" if i == 0 else f" (after {i} cycle{'s' if i > 1 else ''})")
+        print(f"=== run {label}: {task}, since {since} ===", flush=True)
         audit_from = line_count(Path(a.audit))
-        p = sup(a.team, a.audit, "--say",
-                f"manager: {task_prompt(task, run_stage)}")
+        p = sup(a.team, a.audit, "--say", f"manager: {prompt}")
         audit_to = line_count(Path(a.audit))
         if p.returncode != 0:
             print(p.stdout[-2000:], p.stderr[-2000:], sep="\n")
@@ -319,6 +442,7 @@ def main() -> int:
         metrics = process_metrics(team_dir, since)
         episode = episode_summary(team_dir, since)
         metrics.update(episode)
+        metrics.update(tokens(team_dir, since))
         # returncode != 0 does not mean the run happened. The supervisor exits
         # 0 on "team went idle", which is what an episode looks like when the
         # agents' bus servers are bound to a different team directory: every
@@ -338,13 +462,21 @@ def main() -> int:
                 f"team keeps its environment and writes to the old team's "
                 f"bus, where this run will never see it.")
 
-        print(grade(task, since, team_dir, a.audit, a.team,
-                    audit_from, audit_to))
+        if a.suite == "audit":
+            print(grade(task, since, team_dir, a.audit, a.team, audit_from, audit_to))
+        else:
+            print(grade_scale(task, run_stage, a.audit, audit_from, audit_to))
+            sys.path.insert(0, str(HERE / "scale"))
+            from grade_scale import grade as run_grade
+            r = run_grade(task, run_stage)
+            metrics.update(found=r["found"], planted=r["planted"],
+                           false_alarms=len(r["false_alarms"]),
+                           invented=len(r["invented"]))
         reports.append((label, task, metrics))
-        print("process:", json.dumps(metrics, indent=2), "\n")
+        print("process:", json.dumps(metrics, indent=2), "\n", flush=True)
 
-        if i == 0:
-            print("=== retro + cycle-all: the convergence loop itself ===")
+        if i < len(tasks) - 1:
+            print("=== retro + cycle-all: the convergence loop itself ===", flush=True)
             sup(a.team, a.audit, "--retro", "--retro-force")
             sup(a.team, a.audit, "--cycle-all")
             norms = team_dir / "NORMS.md"
@@ -352,35 +484,32 @@ def main() -> int:
                   f"{len(norms.read_text().splitlines())} lines"
                   if norms.exists() else
                   "NOT WRITTEN - the loop produced no team learning; "
-                  "expect run B to look like run A")
+                  "expect the next run to look like this one", flush=True)
 
-    print("=== the question that matters: did B beat A? ===")
+    print("=== the question that matters: does each run beat the last? ===")
     for label, task, m in reports:
-        print(f"  run {label}: delegated to {m['manager_delegated_to'] or 'nobody'}, "
+        score = (f"{m['found']}/{m['planted']} found, {m['false_alarms']} false alarms, "
+                 f"{m['invented']} invented; " if "found" in m else "")
+        print(f"  run {label}: {score}delegated to {m['manager_delegated_to'] or 'nobody'}, "
               f"{m['lateral_messages']} lateral, "
               f"gate-jumped={m['answered_before_any_review']}, "
               f"final-answer-reviewed={m['final_answer_was_reviewed']}, "
               f"{m['turns']} turns, {m['model_seconds']}s model, "
-              f"{m['episode_seconds']}s wall")
+              f"{m['episode_seconds']}s wall, {m['input_tokens']:,} in / "
+              f"{m['output_tokens']:,} out tokens")
 
     # Print the delta, because the derivative is the claim. Saying "judge on
     # cost" and then printing no cost leaves the reader to do arithmetic the
     # script already has the numbers for.
-    if len(reports) == 2:
-        (_, _, a_m), (_, _, b_m) = reports
-        print("\n  B - A:")
-        for field in ("turns", "model_seconds", "episode_seconds",
-                      "lateral_messages", "messages"):
-            delta = b_m[field] - a_m[field]
-            better = "cheaper" if field.endswith(("turns", "seconds")) else "more"
-            direction = "" if delta == 0 else (
-                f" ({better})" if (delta < 0) == field.endswith(("turns", "seconds"))
-                else "")
-            print(f"    {field}: {a_m[field]} -> {b_m[field]} "
-                  f"({delta:+g}){direction}")
+    for (la, _, pm), (lb, _, m) in zip(reports, reports[1:]):
+        print(f"\n  {lb[0]} - {la[0]}:")
+        for field in ("found", "false_alarms", "invented", "turns", "model_seconds",
+                      "input_tokens", "lateral_messages", "messages"):
+            if field in m and field in pm:
+                print(f"    {field}: {pm[field]} -> {m[field]} ({m[field] - pm[field]:+g})")
 
-    print("\nContent scores are above, printed per run. If run A saturated "
-          "the scale, judge on process and cost; the level tells you the "
+    print("\nContent scores are above, printed per run. If the first run "
+          "saturated the scale, judge on process and cost; the level tells you the "
           "team is good, only the derivative tells you the system is "
           "convergent.")
     return 0

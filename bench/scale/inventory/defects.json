@@ -1,0 +1,157 @@
+{
+  "task": "scale_inventory",
+  "package": "inventory",
+  "summary": "An inventory package: units, stock, reorder, FIFO valuation, expiry, picking, orders, receiving, reports.",
+  "defects": [
+    {
+      "id": "D1",
+      "class": "loop bound",
+      "file": "inventory/picking.py",
+      "function": "waves",
+      "find": "    return [ordered[i:i + size] for i in range(0, len(ordered), size)]",
+      "replace": "    return [ordered[i:i + size] for i in range(0, len(ordered) - size + 1, size)]",
+      "witness": "from inventory.picking import waves\nlines = [{'sku': str(i), 'qty': 1, 'bin': f'A-{i}'} for i in range(1, 8)]\nsum(len(w) for w in waves(lines, 3))",
+      "summary": "waves drops a short last wave: 7 lines in waves of 3 pick only 6."
+    },
+    {
+      "id": "D2",
+      "class": "rounding",
+      "file": "inventory/valuation.py",
+      "function": "cents",
+      "find": "    return Decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)",
+      "replace": "    return Decimal(str(round(float(value), 2))).quantize(CENT)",
+      "witness": "from decimal import Decimal\nfrom inventory.valuation import cents\ncents(Decimal('0.125'))",
+      "summary": "cents rounds through float and banker's rounding: 0.125 becomes 0.12, not the documented half-up 0.13."
+    },
+    {
+      "id": "D3",
+      "class": "laundered default",
+      "file": "inventory/expiry.py",
+      "function": "shelf_life",
+      "find": "    if family in SHELF_LIFE:\n        return SHELF_LIFE[family]",
+      "replace": "    if SHELF_LIFE.get(family):\n        return SHELF_LIFE[family]",
+      "witness": "from datetime import date\nfrom inventory.expiry import expires_on\nexpires_on(date(2026, 1, 1), 'hardware')",
+      "summary": "A family configured as 0 (does not expire) falls through to the 30-day default, so hardware expires."
+    },
+    {
+      "id": "D4",
+      "class": "boundary comparison",
+      "file": "inventory/reorder.py",
+      "function": "needs_reorder",
+      "find": "    return available <= reorder_point",
+      "replace": "    return available < reorder_point",
+      "witness": "from inventory.reorder import needs_reorder\nneeds_reorder(20, 20)",
+      "summary": "At exactly the reorder point no order goes out; the module says at the point, it does."
+    },
+    {
+      "id": "D5",
+      "class": "mutable default",
+      "file": "inventory/orders.py",
+      "function": "create_order",
+      "find": "def create_order(customer: str, lines=None, notes=None) -> Order:\n    \"\"\"A new order with its own lines and notes lists.\"\"\"\n    order = Order(_next_id[0], customer,\n                  [OrderLine(s, q) for s, q in (lines or [])],\n                  list(notes) if notes else [])",
+      "replace": "def create_order(customer: str, lines=None, notes=[]) -> Order:\n    \"\"\"A new order with its own lines and notes lists.\"\"\"\n    order = Order(_next_id[0], customer,\n                  [OrderLine(s, q) for s, q in (lines or [])],\n                  notes)",
+      "witness": "from inventory.orders import add_note, create_order\na = create_order('x')\nb = create_order('y')\nadd_note(a, 'rush')\nb.notes",
+      "summary": "Orders created without notes share one default list: a note on one order appears on every other."
+    },
+    {
+      "id": "D6",
+      "class": "state not updated",
+      "file": "inventory/stock.py",
+      "function": "release",
+      "find": "        self._reserved[sku] = held - qty\n        self._available.pop(sku, None)",
+      "replace": "        self._reserved[sku] = held - qty",
+      "witness": "from inventory.stock import Stock\ns = Stock()\ns.receive('A', 10)\ns.reserve('A', 4)\ns.available('A')\ns.release('A', 4)\ns.available('A')",
+      "summary": "release never drops the cached available count, so released units stay unavailable until something else touches the SKU."
+    },
+    {
+      "id": "D7",
+      "class": "cache key",
+      "file": "inventory/units.py",
+      "function": "factor",
+      "find": "        key = (from_unit, to_unit)",
+      "replace": "        key = from_unit",
+      "witness": "from inventory.units import Converter\nc = Converter()\nc.convert(1, 'case', 'each')\nc.convert(1, 'case', 'dozen')",
+      "summary": "The factor cache is keyed by the source unit alone: after case->each, case->dozen returns 24."
+    },
+    {
+      "id": "D8",
+      "class": "sort key",
+      "file": "inventory/picking.py",
+      "function": "walk_order",
+      "find": "    return sorted(lines, key=lambda l: bin_key(l[\"bin\"]))",
+      "replace": "    return sorted(lines, key=lambda l: l[\"bin\"])",
+      "witness": "from inventory.picking import walk_order\n[l['bin'] for l in walk_order([{'sku': 'a', 'qty': 1, 'bin': 'B-12'}, {'sku': 'b', 'qty': 1, 'bin': 'B-7'}])]",
+      "summary": "Bins are sorted as strings, so B-12 is walked before B-7."
+    },
+    {
+      "id": "D9",
+      "class": "swallowed error",
+      "file": "inventory/receiving.py",
+      "function": "parse_line",
+      "find": "    try:\n        qty = int(parts[1])\n    except ValueError as e:\n        raise ValueError(f\"ASN quantity is not a whole number: {text!r}\") from e",
+      "replace": "    try:\n        qty = int(parts[1])\n    except ValueError:\n        return {\"sku\": parts[0], \"qty\": 0, \"lot\": None}",
+      "witness": "from inventory.receiving import parse_line\nparse_line('SKU-1, 12x')",
+      "summary": "An unreadable quantity is received as 0 instead of raising, against the module's own stated rule."
+    },
+    {
+      "id": "D10",
+      "class": "silently filtered data",
+      "file": "inventory/reports.py",
+      "function": "net_movement",
+      "find": "    for row in _rows(path):\n        out[row[\"sku\"]] += int(row[\"qty\"])",
+      "replace": "    for row in _rows(path):\n        if row[\"kind\"] != \"adjustment\":\n            out[row[\"sku\"]] += int(row[\"qty\"])",
+      "witness": "from inventory.reports import net_movement\nnet_movement()['SKU-0001']",
+      "summary": "net_movement leaves out adjustments, so shrinkage never reduces net stock; the module says every movement type is included."
+    },
+    {
+      "id": "D11",
+      "class": "test copies the code",
+      "file": "tests/test_stock.py",
+      "function": null,
+      "decoy": "decoys/test_stock.py",
+      "hides": "D6",
+      "patterns": [
+        "copy|mirror|own|local|redefin|instead of import|not .{0,20}import"
+      ],
+      "summary": "test_stock.py tests its own mirror of Stock (with no cache), so it passes while inventory.stock is broken."
+    },
+    {
+      "id": "D12",
+      "class": "vacuous test",
+      "file": "tests/test_orders.py",
+      "function": null,
+      "decoy": "decoys/test_orders.py",
+      "hides": "D5",
+      "patterns": [
+        "never|empty|nothing|vacuous|no assert|before|loop"
+      ],
+      "summary": "test_notes_belong_to_one_order checks b's notes in a loop that runs before any note exists, then never checks b."
+    }
+  ],
+  "controls": [
+    {
+      "id": "C1",
+      "file": "inventory/reorder.py",
+      "function": "safety_stock",
+      "summary": "Rounding up is intended and documented."
+    },
+    {
+      "id": "C2",
+      "file": "inventory/expiry.py",
+      "function": "expires_on",
+      "summary": "days - 1 is right: day one is the receiving day."
+    },
+    {
+      "id": "C3",
+      "file": "inventory/receiving.py",
+      "function": "parse_asn",
+      "summary": "The broad except re-raises with the line number."
+    },
+    {
+      "id": "C4",
+      "file": "inventory/units.py",
+      "function": "convert",
+      "summary": "Three places half up is the documented precision."
+    }
+  ]
+}
