@@ -347,8 +347,9 @@ def test_inbox_pull_wakes_with_a_summary_and_the_agent_reads_the_mail(team):
 
 
 def test_inbox_pull_does_not_redeliver_what_the_agent_already_took(team):
-    """A turn that pulled its mail and then timed out had processed it; the
-    snapshot was requeued anyway, and the next wake did the work twice."""
+    """A turn that pulled its mail, answered, and then timed out had
+    processed it; the snapshot was requeued anyway, and the next wake did
+    the work twice."""
     calls = []
 
     class PullThenDie(ScriptedRunner):
@@ -358,7 +359,8 @@ def test_inbox_pull_does_not_redeliver_what_the_agent_already_took(team):
             calls.append(agent)
             inbox = load_transport(agent)
             got = inbox.fetch()
-            inbox.acknowledge(got)        # read it, then the host times out
+            inbox.acknowledge(got)        # read it, answered, then timed out
+            inbox.send("user", "done")
             if len(calls) == 1:
                 return "[error: timed out]"
             return "ok"
@@ -372,6 +374,55 @@ def test_inbox_pull_does_not_redeliver_what_the_agent_already_took(team):
     finally:
         sup.close()
     assert calls == ["coder"]
+
+
+def test_inbox_pull_restores_mail_a_failed_turn_took_but_never_acted_on(team):
+    """Pulled with check_inbox, then a 503 before the agent sent a word: the
+    mail had left the inbox and nothing put it back. A turn that sent
+    nothing has not acted, so what it took goes back, once."""
+    calls = []
+
+    class PullThenFail(ScriptedRunner):
+        inbox_pull = True
+
+        def wake(self, agent, message):
+            calls.append(agent)
+            inbox = load_transport(agent)
+            inbox.acknowledge(inbox.fetch())
+            return "[error: 503 UNAVAILABLE]" if len(calls) == 1 else "ok"
+
+    load_transport("user").send("coder", "please")
+    load_transport("tpm").send("coder", "and this")
+    sup = Supervisor(AGENTS, PullThenFail({}), quiet=True)
+    try:
+        sup.step()
+        back = load_transport("coder").peek()
+        assert sorted(m.content for m in back) == ["and this", "please"]
+        sup._backoff.clear()
+        sup.step()
+    finally:
+        sup.close()
+    assert calls == ["coder", "coder"]
+    assert load_transport("coder").peek() == []
+
+
+def test_restoring_pulled_mail_never_duplicates_what_is_still_there(team):
+    class TakeOne(ScriptedRunner):
+        inbox_pull = True
+
+        def wake(self, agent, message):
+            inbox = load_transport(agent)
+            inbox.acknowledge(inbox.fetch()[:1])
+            return "[error: 503]"
+
+    load_transport("user").send("coder", "one")
+    load_transport("user").send("coder", "two")
+    sup = Supervisor(AGENTS, TakeOne({}), quiet=True)
+    try:
+        sup.step()
+    finally:
+        sup.close()
+    assert sorted(m.content for m in load_transport("coder").peek()) == ["one", "two"]
 
 
 def test_inbox_pull_still_redelivers_what_was_never_taken(team):

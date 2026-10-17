@@ -28,6 +28,10 @@ Per agent:
     "confined":         false                  opt out of the path rule (a role
                                                that maintains the platform itself)
 
+    "max_inbound_bytes": 2800                  the largest message teammates may send
+                                               it; for a role that reads only its
+                                               inbox (no file tools), where a long
+                                               message would arrive cut short
     "allowed_mcp_servers": ["agyteam_bus"]     on a host whose generic MCP call
                                                names the server in its arguments,
                                                the only servers it may call
@@ -85,6 +89,9 @@ FILE_TOOL = re.compile(r"file|dir|path|read|write|edit|view|glob|grep|list|"
                        r"open|save|cat|ls|find", re.I)
 SHELL_TOOL = re.compile(r"command|shell|bash|exec|terminal|run", re.I)
 DETACHED = re.compile(r"\bnohup\b|\bsetsid\b|&\s*$|\bdisown\b")
+#: File tools that change what is on disk, as opposed to reading it.
+WRITE_TOOL = re.compile(r"write|edit|create|delete|remove|move|rename|append|"
+                        r"replace|save|patch|notebook|mkdir|touch", re.I)
 
 #: Our own servers' tools: policy is applied to their *arguments* inside the
 #: server, never to their names as file operations.
@@ -212,6 +219,104 @@ def _paths_in(args: dict) -> list[Path]:
     return out
 
 
+def other_workspaces(agent: str, roster: dict) -> dict[Path, str]:
+    """{workspace: owner} for every teammate's private durable workspace."""
+    try:
+        from . import scope
+        root = scope.load().durable_root() / "agents"
+    except Exception:
+        return {}
+    out = {}
+    for a in roster.get("agents", []):
+        name = a.get("name")
+        if name and name != agent:
+            out[(root / name).resolve()] = name
+    return out
+
+
+def _owner(p: Path, others: dict[Path, str]) -> str | None:
+    return next((who for ws, who in others.items() if p == ws or ws in p.parents), None)
+
+
+_SEGMENT = re.compile(r"\|\||&&|[;|\n]")
+_REDIRECT = re.compile(r"(?:^|[^<>&0-9])(?:[0-9]|&)?>>?\|?\s*(\S+)")
+_COPYLIKE = {"cp", "mv", "rsync", "install", "ln", "scp"}
+_TOUCHES = {"rm", "rmdir", "unlink", "touch", "mkdir", "chmod", "chown", "truncate",
+            "shred", "tee"}
+
+
+def _written_by(cmd: str, cwd: str = "") -> list[Path]:
+    """Paths a shell command looks like it writes. Best effort, by design.
+
+    Redirections, the destination of cp/mv/rsync/install/ln (the last
+    argument, or -t DIR), every argument of rm/touch/mkdir/chmod/tee and
+    their kind, sed -i's files, dd's of=, and the same again inside
+    `sh -c` / `bash -c`. A source being read -- `cp theirs/x mine/`,
+    `pytest theirs/test_x.py` -- is not a write. What it cannot see is a
+    path computed at run time, or a write made by a program it runs.
+    """
+    import shlex
+    home = str(Path.home())
+
+    def norm(word: str) -> Path | None:
+        w = word.strip("'\"")
+        if not w or w.startswith(("-", "&")):          # 2>&1 names no file
+            return None
+        w = _HOME_VAR.sub(home, w)
+        if w == "~" or w.startswith("~/"):
+            w = home + w[1:]
+        p = Path(w)
+        if not p.is_absolute():
+            if not cwd:
+                return None
+            p = Path(cwd) / p
+        try:
+            return p.resolve()
+        except (OSError, RuntimeError):
+            return None
+
+    out: list[Path] = []
+    for seg in _SEGMENT.split(cmd or ""):
+        for m in _REDIRECT.finditer(seg):
+            if (p := norm(m.group(1))) is not None:
+                out.append(p)
+        bare = _REDIRECT.sub(" ", seg)
+        try:
+            words = shlex.split(bare)
+        except ValueError:
+            words = bare.split()
+        while words and ("=" in words[0] and not words[0].startswith("-")
+                         or words[0] in ("sudo", "env", "nohup", "setsid", "time", "exec")):
+            words = words[1:]
+        if not words:
+            continue
+        prog, args = Path(words[0]).name, words[1:]
+        if prog in ("sh", "bash", "zsh") and "-c" in args:
+            i = args.index("-c")
+            if i + 1 < len(args):
+                out += _written_by(args[i + 1], cwd)
+            continue
+        plain = [a for a in args if not a.startswith("-")]
+        if prog in _COPYLIKE:
+            if "-t" in args and args.index("-t") + 1 < len(args):
+                targets = [args[args.index("-t") + 1]]
+            else:
+                tgt = next((a.split("=", 1)[1] for a in args
+                            if a.startswith("--target-directory=")), None)
+                targets = [tgt] if tgt else plain[-1:] if len(plain) >= 2 else []
+        elif prog in _TOUCHES:
+            targets = plain
+        elif prog == "sed" and any(a == "-i" or a.startswith("-i") or a == "--in-place"
+                                   for a in args):
+            targets = plain[1:] if not any(a in ("-e", "-f") for a in args) else plain
+        elif prog == "dd":
+            targets = [a[3:] for a in args if a.startswith("of=")]
+        else:
+            targets = []
+        out += [p for p in map(norm, targets) if p is not None]
+    return out
+
+
 def check_tool_policy(agent: str, tool: str, args: dict | None,
                       team_dir: Path | str | None = None,
                       roster: dict | None = None,
@@ -249,6 +354,16 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
                         f"{', '.join(allowed) or 'nobody'} (roster allowed_send_to), "
                         f"not '{to}'. Route it through them]")
 
+    if name == "send_to_teammate":
+        to = str(args.get("to") or "")
+        cap = _entry(roster, to).get("max_inbound_bytes")
+        size = len(str(args.get("content") or "").encode("utf-8"))
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 and size > cap:
+            return (f"[refused: {to} takes messages of at most {cap} bytes (roster "
+                    f"max_inbound_bytes) and this one is {size}. Write the detail "
+                    f"to a file in the shared directory and send {to} a short "
+                    f"summary with its path]")
+
     if name in ("create_task", "update_task", "claim_task") and entry.get("assigns_tasks") is False:
         owner = args.get("owner")
         if name == "create_task" and owner and owner != agent:
@@ -270,6 +385,31 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
             return (f"[refused: {agent} may call only these MCP servers: "
                     f"{', '.join(allowed_servers) or 'none'} (roster "
                     f"allowed_mcp_servers), not '{server}']")
+
+    # Each agent's durable workspace -- its identity, its memory, whatever
+    # it keeps there -- is its own. Read freely; written only by its owner.
+    # This holds for every agent, confined or not: one implementer with a
+    # shell copied into a reviewer's directory and overwrote the evidence
+    # the review rested on. `"policy": {"private_workspaces": false}` turns
+    # it off for a team that shares them on purpose.
+    private = (roster.get("policy") or {}).get("private_workspaces", True) is not False
+    if private and name not in TEAM_TOOLS:
+        others = None
+        written: list[Path] = []
+        if SHELL_TOOL.search(name):
+            cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")
+            cwd = str(args.get("Cwd") or args.get("cwd") or "")
+            written = _written_by(cmd, cwd) if cmd else []
+        elif WRITE_TOOL.search(name) and FILE_TOOL.search(name):
+            written = _paths_in(args)
+        if written:
+            others = other_workspaces(agent, roster)
+            for p in written:
+                who = _owner(p, others)
+                if who:
+                    return (f"[refused: {p} is in {who}'s workspace, which only "
+                            f"{who} writes. Put what you are handing over in the "
+                            f"shared directory and send {who} the path]")
 
     if SHELL_TOOL.search(name) and name not in TEAM_TOOLS:
         cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")

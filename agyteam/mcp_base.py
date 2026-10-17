@@ -14,7 +14,16 @@ PROTOCOL_VERSION = "2025-06-18"
 #: call to read -- and on a confined agent that file is outside its
 #: workspace, so the read is refused and the content never arrives. Listings
 #: stop under it and say how many items they left out. 0 means no ceiling.
-OUTPUT_BYTES = int(os.environ.get("AGYTEAM_TOOL_OUTPUT_BYTES", 3800))
+#: 3,200 leaves room under the spill points measured on hosts (3,500-4,000).
+OUTPUT_BYTES = int(os.environ.get("AGYTEAM_TOOL_OUTPUT_BYTES", 3200))
+
+
+def truncate_utf8(text: str, max_bytes: int) -> str:
+    """`text` cut to at most `max_bytes` UTF-8 bytes, never inside a character."""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max(0, max_bytes)].decode("utf-8", errors="ignore")
 
 
 def fit(blocks: list[str], more: str, sep: str = "\n\n", head: str = "",
@@ -22,8 +31,12 @@ def fit(blocks: list[str], more: str, sep: str = "\n\n", head: str = "",
     """Join as many of `blocks`, in order, as fit in `limit` bytes.
 
     Returns (text, how many blocks it holds). The first block is always
-    returned whole, however long: an item cut in half is worse than one that
-    spills. When blocks are left out, `more` -- formatted with n, the number
+    included; if it alone is over the limit it is cut, on a character
+    boundary, with a note saying so. It used to be returned whole on the
+    theory that a spilled result is still readable by its agent -- but a
+    confined agent is refused the spill file, and then it read nothing. A
+    caller whose block must not be lost (check_inbox) saves it elsewhere
+    first. When blocks are left out, `more` -- formatted with n, the number
     left out -- is appended, and counted against the limit.
     """
     limit = OUTPUT_BYTES if limit is None else limit
@@ -39,9 +52,12 @@ def fit(blocks: list[str], more: str, sep: str = "\n\n", head: str = "",
         if size(candidate) > limit:
             break
         used += 1
-    text = head + sep.join(blocks[:used])
-    if used < len(blocks):
-        text += sep + more.format(n=len(blocks) - used)
+    tail = sep + more.format(n=len(blocks) - used) if used < len(blocks) else ""
+    text = head + sep.join(blocks[:used]) + tail
+    if used == 1 and size(text) > limit:
+        note = f"\n[... cut at the {limit}-byte inline limit]"
+        budget = max(64, limit - size(head) - size(tail) - size(note))
+        text = head + truncate_utf8(blocks[0], budget) + note + tail
     return text, used
 
 

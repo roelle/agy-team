@@ -55,9 +55,24 @@ def test_fit_keeps_the_footer_inside_the_limit():
     assert size(text) <= 1000 and 0 < n < 100 and text.endswith(f"[{100 - n} more]")
 
 
-def test_fit_returns_an_oversized_first_item_whole():
-    text, n = mcp_base.fit(["y" * 5000, "z"], "[{n} more]", limit=1000)
-    assert n == 1 and "y" * 5000 in text and text.endswith("[1 more]")
+def test_fit_cuts_an_oversized_first_item_on_a_character_boundary():
+    """Returned whole, it spilled to a file a confined agent may not read."""
+    text, n = mcp_base.fit(["é" * 3000, "z"], "[{n} more]", limit=1000)
+    assert n == 1 and size(text) <= 1000 and text.endswith("[1 more]")
+    assert "cut at the 1000-byte inline limit" in text
+    text.encode("utf-8").decode("utf-8")              # no broken character
+
+
+def test_a_message_too_long_to_show_is_saved_where_its_agent_can_read_it(team, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGYTEAM_DURABLE_DIR", str(tmp_path / "durable"))
+    FileTransport("manager").send("coder", "start " + "x" * 9000 + " end")
+    out = mcp_bus._check_inbox(FileTransport("coder"))
+    assert size(out) <= 3800 and "cut at the" in out
+    path = Path(out.split("full text is in ", 1)[1].split("]", 1)[0])
+    from agyteam import scope
+    assert scope.load().agent_workspace("coder") in path.parents
+    assert path.read_text().rstrip().endswith(" end")
+    assert mcp_bus._check_inbox(FileTransport("coder")) == "[inbox empty]"
 
 
 def test_a_ceiling_of_zero_means_none():
@@ -236,6 +251,89 @@ def test_the_stop_hook_never_fails_the_host(team, tmp_path):
         r = hook("hook_stop", payload, env)
         assert r.returncode == 0 and r.stderr
     assert not (tmp_path.parent / "escape.jsonl").exists()
+
+
+# --- private workspaces ------------------------------------------------------
+
+@pytest.fixture
+def workspaces(team, tmp_path, monkeypatch):
+    durable = tmp_path / "durable"
+    monkeypatch.setenv("AGYTEAM_DURABLE_DIR", str(durable))
+    from agyteam import scope
+    qa = scope.load().agent_workspace("qa")
+    (qa / "reviews").mkdir(parents=True, exist_ok=True)
+    return team, qa, scope.load().agent_workspace("coder")
+
+
+def refusal(td, tool, args, agent="coder"):
+    return policy.check_tool_policy(agent, tool, args, team_dir=td)
+
+
+@pytest.mark.parametrize("cmd", [
+    "cp /tmp/new.py {qa}/reviews/test_x.py", "echo pass > {qa}/reviews/verdict",
+    "sed -i s/fail/pass/ {qa}/reviews/test_x.py", "rm -rf {qa}/reviews",
+    "bash -c 'touch {qa}/reviews/z'", "cat log | tee {qa}/notes.md",
+    "cp -t {qa}/reviews a.py"])
+def test_no_agent_writes_into_a_teammates_workspace_from_the_shell(workspaces, cmd):
+    """An implementer copied over the reviewer's frozen evidence."""
+    td, qa, _ = workspaces
+    out = refusal(td, "run_command", {"CommandLine": cmd.format(qa=qa)})
+    assert out and "qa's workspace" in out, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest {qa}/reviews/test_x.py", "cat {qa}/reviews/test_x.py",
+    "cp {qa}/reviews/test_x.py /tmp/", "diff {qa}/a {own}/b > /tmp/d",
+    "echo x > {own}/notes.md"])
+def test_reading_a_teammates_workspace_and_writing_your_own_are_fine(workspaces, cmd):
+    td, qa, own = workspaces
+    assert refusal(td, "run_command", {"CommandLine": cmd.format(qa=qa, own=own)}) is None, cmd
+
+
+def test_file_tools_hold_the_same_line_confined_or_not(workspaces):
+    td, qa, own = workspaces
+    set_roster(td, confined=False)
+    assert "qa's workspace" in refusal(td, "write_to_file", {"TargetFile": str(qa / "x")})
+    assert refusal(td, "view_file", {"AbsolutePath": str(qa / "x")}) is None
+    assert refusal(td, "write_to_file", {"TargetFile": str(own / "x")}) is None
+
+
+def test_a_team_can_share_workspaces_on_purpose(workspaces):
+    td, qa, _ = workspaces
+    doc = json.loads((td / "roster.json").read_text())
+    doc["policy"] = {"private_workspaces": False}
+    (td / "roster.json").write_text(json.dumps(doc))
+    assert refusal(td, "run_command", {"CommandLine": f"cp a {qa}/"}) is None
+
+
+def test_the_hook_trusts_the_conversation_over_a_leaked_environment(team):
+    (team / "conversations.json").write_text(json.dumps({"qa": "conv-qa"}))
+    set_roster(team, tools_off=["run_command"])          # coder may not
+    r = hook("hook_pre_tool_use", {"conversationId": "conv-qa", "tool_name": "run_command",
+                                   "tool_input": {"command": "ls"}},
+             {"AGYTEAM_TEAM_DIR": str(team), "AGYTEAM_AGENT": "coder"})
+    assert r.returncode == 0, "qa's call was judged as coder's"
+
+
+# --- inbound cap, and the model that ran ---------------------------------------------
+
+def test_a_recipient_can_cap_what_it_is_sent(team):
+    doc = json.loads((team / "roster.json").read_text())
+    doc["agents"][0]["max_inbound_bytes"] = 100            # manager
+    (team / "roster.json").write_text(json.dumps(doc))
+    out = mcp_bus._send(FileTransport("coder"), {"to": "manager", "content": "r" * 500})
+    assert out.startswith("[refused:") and "shared directory" in out
+    assert "queued" in mcp_bus._send(FileTransport("coder"), {"to": "manager", "content": "ok"})
+    assert "queued" in mcp_bus._send(FileTransport("coder"), {"to": "qa", "content": "r" * 500})
+
+
+def test_the_turn_records_the_model_the_host_says_ran_it(team, tmp_path):
+    sig = tmp_path / "signals"
+    env = {"AGYTEAM_SIGNAL_DIR": str(sig)}
+    hook("hook_stop", {"conversationId": "c1", "model": "fallback-model",
+                       "usage": {"contextTokens": 99}}, env)
+    line = json.loads((sig / "c1.jsonl").read_text())
+    assert line["model"] == "fallback-model" and line["context_tokens"] == 99
 
 
 if __name__ == "__main__":

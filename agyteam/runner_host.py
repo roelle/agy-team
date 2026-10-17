@@ -32,8 +32,10 @@ string -- or on stdin, with "deliver_stdin": true, for hosts that cap
 argument length. The host's stop hook (`python -m agyteam.hook_stop` is a
 generic one) appends one line to
 <signal_dir>/<conversation>.jsonl when a turn ends; a line that is JSON may
-carry "error", and token counts ("input_tokens", "output_tokens",
-"total_tokens", "cache_read_tokens"), which are recorded when present.
+carry "error", token counts ("input_tokens", "output_tokens",
+"total_tokens", "cache_read_tokens", and "context_tokens" -- how full the
+window is, which auto-cycle prefers when present), and the "model" that
+actually ran the turn; each is recorded when present.
 
 ## Two-phase start
 
@@ -96,6 +98,9 @@ class HostRunner(Runner):
         self.supports_containment = bool(caps.get("supports_containment", False))
         self.supports_capability_scoping = bool(caps.get("supports_capability_scoping", False))
         self.inbox_pull = bool(c.get("inbox_pull", False))
+        # A host that compacts its own conversations should not have them
+        # reset: "distill_only" (see config.AUTO_CYCLE_MODE).
+        self.auto_cycle_mode = c.get("auto_cycle_mode")
         # Signal lines accounted for, per conversation. Persisted, so a
         # restart knows where it left off: the first version started empty
         # and the first begin() after a restart read every historical line
@@ -328,13 +333,19 @@ class HostRunner(Runner):
                     self._record_failure(agent, conv, err, handle)
                     return err
                 tokens = {k: doc.get(k) for k in
-                          ("input_tokens", "output_tokens", "cache_read_tokens", "total_tokens")
+                          ("input_tokens", "output_tokens", "cache_read_tokens",
+                           "total_tokens", "context_tokens")
                           if doc.get(k) is not None}
+                # The model that ran the turn, when the host says: a host
+                # that falls back or is overridden runs something other than
+                # what the roster asked for, and the record should say so.
+                if isinstance(doc.get("model"), str) and doc["model"].strip():
+                    tokens["model"] = doc["model"].strip()
         except ValueError:
             pass
+        tokens.setdefault("model", self.model_for(agent) or None)
         try:
             self.observer.record_turn(agent=agent, conversation=conv, duration_s=dur,
-                                      model=self.model_for(agent) or None,
                                       **tokens, **self.meta_for(agent))
         except Exception:
             pass

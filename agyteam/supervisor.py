@@ -654,7 +654,9 @@ class Supervisor:
         self.inflight: dict[str, dict] = {}
         self._backoff: dict[str, float] = {}
         self._fail_streak: dict[str, int] = {}
-        self._escalated: set[str] = set()
+        self._hard_streak: dict[str, int] = {}
+        self._escalated: set[str] = self._load_escalations()
+        self._distilled_above: dict[str, str] = {}
         self._heartbeat_at = 0.0
         self._step_lock = threading.RLock()
         self._load_ledger()
@@ -842,7 +844,27 @@ class Supervisor:
                             id=m.get("id"), kind=m.get("kind") or "work",
                             task_id=m.get("task_id"))
                     for m in turn.get("msgs", [])]
-            if getattr(self.runner, "resumable", False) and not handle.get("thread"):
+            stale = self._stale_turn(turn)
+            if stale and getattr(self.runner, "resumable", False) and not handle.get("thread"):
+                try:
+                    self.runner.cancel(handle)
+                except Exception:
+                    pass
+                self._log(f"[supervisor] {agent}'s turn from before the restart "
+                          f"began {stale}; cancelled, and its mail will be "
+                          f"delivered again")
+                transport = self.transports.get(agent)
+                if self.inbox_pull and transport is not None:
+                    self._restore_pulled_mail(agent, transport, {
+                        "ts": turn.get("ts", ""), "msgs": msgs})
+                try:
+                    self.observer.record_failure(
+                        agent, handle.get("conversation", ""),
+                        f"[error: turn from before the restart began {stale}; "
+                        f"cancelled]", duration_s=None, hop=turn.get("hop"))
+                except Exception:
+                    pass
+            elif getattr(self.runner, "resumable", False) and not handle.get("thread"):
                 self.inflight[agent] = {
                     "handle": handle, "msgs": msgs, "ts": turn.get("ts", ""),
                     "hop": turn.get("hop", 0), "trigger": turn.get("trigger", {}),
@@ -861,6 +883,29 @@ class Supervisor:
                 except Exception:
                     pass
         self._save_ledger()
+
+    def _stale_turn(self, turn: dict) -> str:
+        """How long ago a ledger turn began, if too long to resume; else ''.
+
+        Resumed blindly, a turn orphaned hours before the restart sat in
+        flight for one more full timeout before anything noticed it, and its
+        agent's mail waited behind it.
+        """
+        timeout = getattr(self.runner, "timeout", None)
+        try:
+            limit = float(timeout) * config.INFLIGHT_STALE_MULTIPLIER
+        except (TypeError, ValueError):
+            return ""
+        if limit <= 0:
+            return ""
+        started = (turn.get("handle") or {}).get("started")
+        try:
+            began = float(started) if started is not None else time.mktime(
+                time.strptime(turn.get("ts", ""), "%Y-%m-%d %H:%M:%S"))
+        except (TypeError, ValueError, OverflowError):
+            return ""
+        age = time.time() - began
+        return f"{age / 60:.0f} minutes ago" if age > limit else ""
 
     def _heartbeat(self, mode: str = "running") -> None:
         """Say that a supervisor is alive, for tools that need to know.
@@ -900,6 +945,110 @@ class Supervisor:
             bits.append(f"bytes={len(m.content.encode('utf-8', 'replace'))}")
             parts.append(" ".join(bits))
         return PULL_PROMPT.format(n=len(msgs), summary="; ".join(parts))
+
+    # Who has already been escalated, kept on disk: held only in memory, a
+    # restarted daemon escalated the same broken agent again on its first
+    # failure streak, and a crash-looping one did it every few minutes.
+
+    @property
+    def escalations_path(self) -> Path:
+        return self.team_dir / "escalations.json"
+
+    def _load_escalations(self) -> set[str]:
+        try:
+            doc = json.loads(self.escalations_path.read_text(encoding="utf-8"))
+            return {str(a) for a in doc} if isinstance(doc, dict) else set()
+        except (OSError, ValueError):
+            return set()
+
+    def _save_escalations(self, why: dict[str, str] | None = None) -> None:
+        try:
+            doc = json.loads(self.escalations_path.read_text(encoding="utf-8"))
+            doc = doc if isinstance(doc, dict) else {}
+        except (OSError, ValueError):
+            doc = {}
+        doc = {a: v for a, v in doc.items() if a in self._escalated}
+        for a, reason in (why or {}).items():
+            doc[a] = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "reason": reason[:300]}
+        try:
+            if doc:
+                _rewrite(self.escalations_path, json.dumps(doc, indent=2) + "\n")
+            elif self.escalations_path.exists():
+                self.escalations_path.unlink()
+        except OSError:
+            pass
+
+    def _restore_pulled_mail(self, agent: str, transport, turn: dict) -> int:
+        """Put back mail a failed turn pulled but never acted on.
+
+        Under inbox_pull the agent takes its mail with check_inbox, which
+        marks it read, so the supervisor leaves a failed turn's mail alone:
+        re-queueing a turn that answered and then timed out handed it the
+        same work twice. But a turn that pulled its mail and then failed
+        before sending anything -- a 503 mid-research, a timeout -- lost
+        that mail outright. A turn that sent nothing has not acted on it, so
+        whatever of it has left the inbox goes back. At-least-once, as
+        everywhere else.
+        """
+        if any(self._sent_during(agent, turn["ts"]).values()):
+            return 0
+        if not (hasattr(transport, "requeue") and callable(transport.requeue)):
+            return 0
+        try:
+            waiting = transport.peek()
+        except Exception:
+            waiting = None
+        if waiting is None:
+            return 0            # cannot tell what is missing; do not duplicate
+        key = lambda m: (m.ts, m.sender, m.kind, m.content)      # noqa: E731
+        present = {key(m) for m in waiting}
+        missing = [m for m in turn["msgs"] if key(m) not in present]
+        if missing:
+            try:
+                transport.requeue(missing)
+            except TypeError:
+                transport.requeue(agent, missing)
+            self._log(f"    {agent}: turn failed before acting; "
+                      f"{len(missing)} pulled message(s) restored to its inbox")
+        return len(missing)
+
+    def _budget_exhausted(self, reply: str) -> bool:
+        low = (reply or "").lower()
+        return any(p in low for p in config.BUDGET_HALT_PATTERNS)
+
+    def _halt_for_budget(self, agent: str, reply: str) -> None:
+        """Stop the team once for an account-level failure, and say so once."""
+        from . import lifecycle
+        already = (self.team_dir / ".stop").exists()
+        reason = f"budget exhausted ({agent}): {reply[:200]}"
+        if not already:
+            try:
+                lifecycle.stop_team(reason=reason, team_dir=self.team_dir)
+            except Exception:
+                pass
+            text = (f"Every agent on this team is about to fail the same way: "
+                    f"{agent}'s turn failed with what looks like an exhausted "
+                    f"account or quota, so the team has been stopped rather "
+                    f"than let each agent fail and escalate in turn. Their "
+                    f"mail is queued. Fix the account, then run `python -m "
+                    f"agyteam.lifecycle start` (or delete {self.team_dir / '.stop'}). "
+                    f"Error: {reply[:300]}")
+            try:
+                bus = load_transport("supervisor")
+                try:
+                    bus.send_kind("user", text, kind="blocker")
+                finally:
+                    if hasattr(bus, "close"):
+                        bus.close()
+                self._user_mail_at_start = self._user_mail_count()
+            except Exception:
+                pass
+            try:
+                self.observer.record_event("budget_halt", agent=agent, error=reply[:500])
+            except Exception:
+                pass
+            self._log(f"[supervisor] {reason} -- team stopped; the user has been told")
+        self.stopped = f"team stopped: {reason}"
 
     def _failure_count(self) -> int:
         try:
@@ -1015,6 +1164,8 @@ class Supervisor:
                         transport.requeue(msgs)
                     except TypeError:
                         transport.requeue(agent, msgs)
+                elif self.inbox_pull:
+                    self._restore_pulled_mail(agent, transport, turn)
             elif hasattr(transport, "acknowledge") and callable(transport.acknowledge):
                 try:
                     transport.acknowledge(msgs)
@@ -1027,8 +1178,21 @@ class Supervisor:
         except Exception:
             pass
 
+        if failed and self._budget_exhausted(reply):
+            try:
+                self.observer.record_failure(agent, cid, reply, duration_s=dur,
+                                             hop=turn["hop"], trigger=turn["trigger"])
+            except Exception:
+                pass
+            self._halt_for_budget(agent, reply)
+            return
+
         if failed:
             self._fail_streak[agent] = self._fail_streak.get(agent, 0) + 1
+            if runner_lib.is_retryable(reply):
+                self._hard_streak.pop(agent, None)
+            else:
+                self._hard_streak[agent] = self._hard_streak.get(agent, 0) + 1
             streak = self._fail_streak[agent]
             # A failing wake path returned in milliseconds, counted as a
             # dispatched turn, and the daemon never slept: two spawns a
@@ -1045,13 +1209,31 @@ class Supervisor:
                                                  trigger=turn["trigger"])
                 except Exception:
                     pass
+            hard = self._hard_streak.get(agent, 0)
+            if config.RESET_AFTER_FAILURES > 0 and hard == config.RESET_AFTER_FAILURES:
+                # The same non-transient failure, again: the conversation
+                # itself is what is broken. It cannot distill, so it is
+                # retired without that; the id stays findable.
+                try:
+                    self.runner.reset(agent)
+                    self._log(f"[supervisor] {agent} failed {hard} turns in a row "
+                              f"with no transient cause; its conversation was "
+                              f"retired and the next wake starts a new one")
+                    self.observer.record_event("reset", agent=agent, conversation=cid,
+                                               failures=hard, error=reply[:300])
+                except Exception:
+                    pass
             if streak >= config.ESCALATE_AFTER_FAILURES and agent not in self._escalated:
                 self._escalated.add(agent)
+                self._save_escalations({agent: reply})
                 self._escalate(agent, streak, reply)
         else:
             self._fail_streak.pop(agent, None)
+            self._hard_streak.pop(agent, None)
             self._backoff.pop(agent, None)
-            self._escalated.discard(agent)
+            if agent in self._escalated:
+                self._escalated.discard(agent)
+                self._save_escalations()
 
         sent = self._sent_during(agent, turn["ts"])
         try:
@@ -1359,6 +1541,7 @@ class Supervisor:
                 self.runner.wait_turn(self.poll)
             else:
                 self.auto_cycle()
+                self._maybe_distill_sweep()
                 stop.wait(self.poll)
 
     def _memory_count(self, agent: str) -> int:
@@ -1397,30 +1580,35 @@ class Supervisor:
             before = self._memory_count(agent)
             return (before, before)
 
-        self._last_distill_failed = False
         before_snap = self._memory_snapshot(agent)
-        before = len(before_snap)
         self._log(f"  → distilling {agent}")
         t0 = time.monotonic()
         try:
             reply = self.runner.wake(agent, DISTILL_PROMPT)
         except Exception as e:
-            self._last_distill_failed = True
-            dur = time.monotonic() - t0
-            reply = f"[error: {type(e).__name__}: {e}]"
-            try:
-                cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
-                self.observer.record_failure(agent, cid, reply, duration_s=dur)
-            except Exception:
-                pass
+            reply = self._distill_raised(agent, e, time.monotonic() - t0)
+        before, after, failed = self._finish_distill(agent, before_snap, reply)
+        self._last_distill_failed = failed
+        return (before, after)
 
-        if reply.startswith("[error:"):
-            self._last_distill_failed = True
+    def _distill_raised(self, agent: str, e: Exception, dur: float) -> str:
+        reply = f"[error: {type(e).__name__}: {e}]"
+        try:
+            cid = getattr(self.runner, "conversation_id", lambda a: "")(agent) or ""
+            self.observer.record_failure(agent, cid, reply, duration_s=dur)
+        except Exception:
+            pass
+        return reply
+
+    def _finish_distill(self, agent: str, before_snap: dict, reply: str) -> tuple[int, int, bool]:
+        """Log and count one distillation; shared by distill and distill_all."""
+        failed = reply.startswith("[error:")
+        if failed:
             self._log(f"    {agent}: {reply[:200]}")
         elif not self.quiet:
             first = reply.strip().splitlines()[0] if reply.strip() else ""
             self._log(f"    {agent}: {first[:120]}")
-
+        before = len(before_snap)
         after_snap = self._memory_snapshot(agent)
         after = len(after_snap)
         new_count = len(set(after_snap) - set(before_snap))
@@ -1438,7 +1626,213 @@ class Supervisor:
             self._log(f"    {agent}: memory count changed from {before} to {after}")
         else:
             self._log(f"    {agent}: 0 memories saved ({before} before, {after} after)")
-        return (before, after)
+        return before, after, failed
+
+    def distill_all(self, agents: list[str] | None = None) -> dict[str, tuple[int, int]]:
+        """Distill several agents at once. Returns {agent: (before, after)}.
+
+        `--distill-all` used to wake them one after another, each blocking
+        until its turn ended: a dozen agents at under a minute each was the
+        best part of ten minutes. The turns are independent, so they run
+        through the same begin/poll the dispatcher uses. An agent with a turn
+        already in flight is skipped -- two turns in one conversation at once
+        is the collision the dispatcher exists to prevent -- as is one whose
+        context was purged. Agents whose distillation failed are in
+        `self.distill_failed` afterwards.
+        """
+        targets = [a for a in (agents if agents is not None else self.agents)]
+        out: dict[str, tuple[int, int]] = {}
+        self.distill_failed: set[str] = set()
+        running: dict[str, tuple[dict, dict, float]] = {}
+        for agent in targets:
+            if agent in self.inflight:
+                self._log(f"    {agent}: skipped (a turn is in flight)")
+                continue
+            if agent in self._purged_agents:
+                out[agent] = self.distill(agent)
+                continue
+            before_snap = self._memory_snapshot(agent)
+            self._log(f"  → distilling {agent}")
+            t0 = time.monotonic()
+            try:
+                handle = self.runner.begin(agent, DISTILL_PROMPT)
+            except Exception as e:
+                reply = self._distill_raised(agent, e, time.monotonic() - t0)
+                before, after, failed = self._finish_distill(agent, before_snap, reply)
+                out[agent] = (before, after)
+                if failed:
+                    self.distill_failed.add(agent)
+                continue
+            running[agent] = (handle, before_snap, t0)
+        while running:
+            for agent, (handle, before_snap, t0) in list(running.items()):
+                try:
+                    reply = self.runner.poll(handle)
+                except Exception as e:
+                    reply = self._distill_raised(agent, e, time.monotonic() - t0)
+                if reply is None:
+                    continue
+                del running[agent]
+                before, after, failed = self._finish_distill(
+                    agent, before_snap, reply if isinstance(reply, str) else "")
+                out[agent] = (before, after)
+                if failed:
+                    self.distill_failed.add(agent)
+            if running:
+                self.runner.wait_turn(self.poll)
+        return out
+
+    # --- the scheduled sweep ---------------------------------------------------
+    #
+    # auto_cycle distills an agent only once its context passes the threshold,
+    # so an agent with light days never distilled at all, and on a host that
+    # does not report tokens nobody did. Teams ran a nightly script that
+    # queued the distill prompt to everyone -- and had to get right, outside
+    # the supervisor, the four things that make it safe: once per day across
+    # restarts, never into a turn in flight, only agents that did something,
+    # and not on the scarce models. Those belong here.
+
+    SWEEP_DEFAULTS = {"enabled": True, "hour_utc": 9, "min_turns_24h": 2,
+                      "idempotency_hours": 20.0, "exclude_models": [],
+                      "exclude_agents": []}
+
+    def distill_schedule(self) -> dict | None:
+        """roster "nightly_distill" (top level or under "policy"), or None."""
+        try:
+            doc = json.loads((self.team_dir / "roster.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            doc = {}
+        cfg = doc.get("nightly_distill") or (doc.get("policy") or {}).get("nightly_distill")
+        hour = os.environ.get("AGYTEAM_NIGHTLY_DISTILL_HOUR_UTC", "").strip()
+        if not cfg and hour:
+            cfg = {"hour_utc": int(hour)}
+        if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+            return None
+        return {**self.SWEEP_DEFAULTS, **cfg}
+
+    @staticmethod
+    def _epoch(ts: str) -> float | None:
+        try:
+            return time.mktime(time.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _last_sweep(self) -> float | None:
+        try:
+            rows = self.observer.events("distill_sweep")
+        except Exception:
+            return None
+        stamps = [r.get("epoch") or self._epoch(r.get("ts", "")) for r in rows]
+        stamps = [float(x) for x in stamps if x]
+        return max(stamps) if stamps else None
+
+    def sweep_candidates(self, cfg: dict) -> tuple[list[str], dict[str, str]]:
+        """(agents to distill, {agent: why not}) under this schedule."""
+        since = time.time() - 24 * 3600
+        try:
+            turns = self.observer.events("turn")
+        except Exception:
+            turns = []
+        counts: dict[str, int] = {}
+        for t in turns:
+            at = self._epoch(t.get("ts", ""))
+            if at is not None and at >= since:
+                counts[t.get("agent")] = counts.get(t.get("agent"), 0) + 1
+        try:
+            specs = {a["name"]: a for a in roster_lib.load(self.team_dir / "roster.json")["agents"]}
+        except Exception:
+            specs = {}
+        take, skip = [], {}
+        for agent in self.agents:
+            model = str(specs.get(agent, {}).get("model") or "")
+            if agent in (cfg.get("exclude_agents") or []):
+                skip[agent] = "excluded"
+            elif model and model in (cfg.get("exclude_models") or []):
+                skip[agent] = f"model {model} excluded"
+            elif agent in self.inflight:
+                skip[agent] = "a turn is in flight"
+            elif agent in self._purged_agents:
+                skip[agent] = "context purged"
+            elif counts.get(agent, 0) < int(cfg.get("min_turns_24h", 2)):
+                skip[agent] = f"{counts.get(agent, 0)} turn(s) in 24h"
+            else:
+                take.append(agent)
+        return take, skip
+
+    def distill_sweep(self, scheduled: bool = False, force: bool = False,
+                      dry_run: bool = False, min_turns: int | None = None) -> dict:
+        """Distill every agent that worked in the last day, at most once a day.
+
+        `scheduled` is the daemon asking: it also requires the configured
+        UTC hour to have come. `force` ignores the once-a-day guard. The
+        sweep is recorded (event "distill_sweep") before it runs, under a
+        lock, so two supervisors on one team cannot both start it.
+        """
+        cfg = self.distill_schedule()
+        if cfg is None:
+            if scheduled:
+                return {"ran": False, "reason": "no nightly_distill in the roster"}
+            cfg = dict(self.SWEEP_DEFAULTS)
+        if min_turns is not None:
+            cfg["min_turns_24h"] = min_turns
+        now = time.time()
+        if scheduled and time.gmtime(now).tm_hour < int(cfg.get("hour_utc", 9)):
+            return {"ran": False, "reason": "not yet the hour"}
+        window = float(cfg.get("idempotency_hours", 20.0)) * 3600
+        take, skip = self.sweep_candidates(cfg)
+        if dry_run:
+            last = self._last_sweep()
+            return {"ran": False, "reason": "dry run", "agents": take, "skipped": skip,
+                    "last_sweep_hours_ago": None if last is None else round((now - last) / 3600, 1)}
+        with filelock.locked(self.team_dir / "distill_sweep"):
+            last = self._last_sweep()
+            if not force and last is not None and now - last < window:
+                return {"ran": False, "reason": f"swept {(now - last) / 3600:.1f}h ago"}
+            if not take:
+                return {"ran": False, "reason": "nobody qualified", "skipped": skip}
+            try:
+                self.observer.record_event("distill_sweep", epoch=now, agents=take,
+                                           skipped=skip)
+            except Exception:
+                pass
+        self._log(f"[supervisor] distill sweep: {', '.join(take)}"
+                  + (f" (skipped: {', '.join(f'{a} -- {w}' for a, w in skip.items())})"
+                     if skip else ""))
+        results = self.distill_all(take)
+        failed = sorted(getattr(self, "distill_failed", set()))
+        try:
+            self.observer.record_event("distill_sweep_done", agents=take, failed=failed,
+                                       memories={a: list(c) for a, c in results.items()})
+        except Exception:
+            pass
+        return {"ran": True, "agents": take, "skipped": skip, "failed": failed,
+                "results": results}
+
+    def _maybe_distill_sweep(self) -> None:
+        """From the daemon's idle loop: at most one look a minute."""
+        now = time.monotonic()
+        if now - getattr(self, "_sweep_looked_at", 0.0) < 60:
+            return
+        self._sweep_looked_at = now
+        if self.inflight:
+            return
+        try:
+            self.distill_sweep(scheduled=True)
+        except Exception as e:
+            self._log(f"[supervisor] distill sweep failed: {type(e).__name__}: {e}")
+
+    def cycle_all(self, agents: list[str] | None = None) -> dict[str, tuple[int, int]]:
+        """distill_all, then a fresh conversation for each agent that distilled."""
+        counts = self.distill_all(agents)
+        for agent in counts:
+            if agent in self.distill_failed:
+                self._log(f"    {agent}: cycle aborted because distillation failed")
+            elif agent in self._purged_agents:
+                self._log(f"    {agent}: cycle aborted (agent context was purged due to anomaly)")
+            else:
+                self.runner.reset(agent)
+                self._log(f"    {agent}: conversation reset")
+        return counts
 
     def cycle(self, agent: str) -> tuple[int, int]:
         """Distill learnings into memory, then reset conversation for `agent`.
@@ -1467,6 +1861,10 @@ class Supervisor:
         """
         threshold = int(os.environ.get("AGYTEAM_CYCLE_THRESHOLD", config.CYCLE_THRESHOLD_TOKENS))
         anomaly_threshold = int(os.environ.get("AGYTEAM_ANOMALY_OUTPUT_TOKENS", config.ANOMALY_OUTPUT_TOKENS_THRESHOLD))
+        mode = str(getattr(self.runner, "auto_cycle_mode", None)
+                   or config.AUTO_CYCLE_MODE).strip().lower()
+        if mode == "off":
+            return []
         try:
             turn_events = self.observer.events("turn")
         except Exception:
@@ -1501,8 +1899,16 @@ class Supervisor:
                 self._log(f"  → {agent}: large turn ({out_tok:,} output tokens); "
                           f"cycling rather than purging (step() found no degeneration)")
 
-            input_tokens = latest_ev.get("input_tokens")
-            if input_tokens is None or input_tokens <= threshold:
+            # context_tokens, when a runner reports it, is how full the
+            # window is; input_tokens is the fallback, and on some hosts it
+            # is per-step rather than per-context.
+            size = latest_ev.get("context_tokens")
+            label = "context_tokens"
+            if size is None:
+                size, label = latest_ev.get("input_tokens"), "input_tokens"
+            if size is None or size <= threshold:
+                if self._distilled_above.get(agent) == conv_id:
+                    del self._distilled_above[agent]     # compacted below: re-arm
                 continue
 
             pending_msgs = self.pending().get(agent) or []
@@ -1510,7 +1916,22 @@ class Supervisor:
                 self._log(f"  → skipping auto-cycle for {agent}: work outstanding ({len(pending_msgs)} pending messages)")
                 continue
 
-            self._log(f"  → auto-cycling {agent} (latest turn input_tokens {input_tokens:,} > threshold {threshold:,})")
+            if mode == "distill_only":
+                # The host compacts this conversation itself, and a reset
+                # would throw away the pane the operator works in. Distill
+                # once each time the context crosses the threshold, not on
+                # every turn it stays above it.
+                if self._distilled_above.get(agent) == conv_id:
+                    continue
+                self._log(f"  → auto-distilling {agent} in place ({label} "
+                          f"{size:,} > threshold {threshold:,})")
+                self.distill(agent)
+                if not getattr(self, "_last_distill_failed", False):
+                    self._distilled_above[agent] = conv_id
+                    cycled.append(agent)
+                continue
+
+            self._log(f"  → auto-cycling {agent} (latest turn {label} {size:,} > threshold {threshold:,})")
             self.cycle(agent)
             if not getattr(self, "_last_distill_failed", False):
                 cycled.append(agent)
@@ -2519,6 +2940,14 @@ def main(argv=None, runner=None):
                     help="Distill learnings for all agents on the roster, then exit")
     ap.add_argument("--cycle-all", action="store_true",
                     help="Distill and reset conversations for all agents on the roster, then exit")
+    ap.add_argument("--nightly-distill", action="store_true",
+                    help="Distill every agent with recent turns, at most once a day "
+                         "(the roster's nightly_distill settings; --force to ignore "
+                         "the once-a-day guard), then exit")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="With --nightly-distill: say who would be distilled, and stop")
+    ap.add_argument("--min-turns", type=int, default=None,
+                    help="With --nightly-distill: turns in the last 24h an agent needs")
     ap.add_argument("--say", metavar="'agent: message'",
                     help="Send this, then run until the team goes idle")
     ap.add_argument("--chat", action="store_true",
@@ -2654,12 +3083,14 @@ def main(argv=None, runner=None):
             if args.cycle not in agents:
                 sys.exit(f"unknown agent {args.cycle!r}; roster has: {', '.join(agents)}")
             sup.cycle(args.cycle)
+        elif args.nightly_distill:
+            out = sup.distill_sweep(force=args.retro_force, dry_run=args.dry_run,
+                                    min_turns=args.min_turns)
+            print(json.dumps({k: v for k, v in out.items() if k != "results"}, indent=2))
         elif args.distill_all:
-            for a in agents:
-                sup.distill(a)
+            sup.distill_all(agents)
         elif args.cycle_all:
-            for a in agents:
-                sup.cycle(a)
+            sup.cycle_all(agents)
         elif args.chat:
             _run_chat_loop(sup, agents)
         elif args.say:

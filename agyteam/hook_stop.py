@@ -7,8 +7,8 @@ gains a line. Every host needs something to write that line, and until now
 every integrator wrote their own. This is that half, generic: it reads the
 JSON the host's stop hook is given on stdin and appends one line,
 
-    {"ts", "error"?, "input_tokens"?, "output_tokens"?, "cache_read_tokens"?,
-     "total_tokens"?}
+    {"ts", "error"?, "model"?, "input_tokens"?, "output_tokens"?,
+     "cache_read_tokens"?, "total_tokens"?, "context_tokens"?}
 
 with each optional field present only when the payload had it. Accepted
 payload keys:
@@ -16,8 +16,10 @@ payload keys:
     conversation:  "conversation_id" | "conversationId" | "session_id" |
                    "sessionId" | "conversation"
     error:         "error" (a string, or an object with "message")
+    model:         "model" | "modelName" -- the model that actually ran
     tokens:        snake_case or camelCase, at the top level or under
-                   "usage" | "tokenUsage" | "tokens"
+                   "usage" | "tokenUsage" | "tokens"; context_tokens is how
+                   full the window is, and is what auto-cycle measures
 
 The signal directory is AGYTEAM_SIGNAL_DIR, or else the "signal_dir" (and
 "signal_suffix") in AGYTEAM_RUNNER_CONFIG, so the hook and the runner can
@@ -44,7 +46,8 @@ TOKENS = {"input_tokens": ("input_tokens", "inputTokens", "prompt_tokens", "prom
                             "completionTokens"),
           "cache_read_tokens": ("cache_read_tokens", "cacheReadTokens",
                                 "cached_tokens", "cachedTokens"),
-          "total_tokens": ("total_tokens", "totalTokens")}
+          "total_tokens": ("total_tokens", "totalTokens"),
+          "context_tokens": ("context_tokens", "contextTokens")}
 
 
 def signal_file(conversation: str) -> Path | None:
@@ -73,6 +76,9 @@ def line_for(payload: dict) -> dict | None:
     line = {"ts": time.strftime("%Y-%m-%d %H:%M:%S")}
     if err:
         line["error"] = str(err)
+    model = payload.get("model") or payload.get("modelName")
+    if isinstance(model, str) and model.strip():
+        line["model"] = model.strip()
     sources = [payload] + [payload[k] for k in ("usage", "tokenUsage", "tokens")
                            if isinstance(payload.get(k), dict)]
     for field, names in TOKENS.items():

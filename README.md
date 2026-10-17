@@ -104,7 +104,7 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 ### Troubleshooting for Non-Coders
 
 - **Missing or Invalid API Key**: If `./run` reports `GEMINI_API_KEY is unset or invalid`, grab a key from [Google AI Studio](https://aistudio.google.com/) and paste it when prompted, or save `GEMINI_API_KEY=your_key_here` in `.env` in the repository root.
-- **Billing / Quota Limits**: If you see quota or 429 rate limit errors, verify your Google AI Studio project has billing enabled and tier quotas configured for Gemini API access.
+- **Billing / Quota Limits**: If you see quota or 429 rate limit errors, verify your Google AI Studio project has billing enabled and tier quotas configured for Gemini API access. A failure that means the account itself is out (`insufficient_quota`, HTTP 402, "credit balance is too low"; see `AGYTEAM_BUDGET_HALT_PATTERNS`) stops the whole team once and tells you, instead of every agent failing in turn; the mail stays queued, and `python -m agyteam.lifecycle start` resumes.
 - **Python Version**: `agy-team` requires Python 3.10 or newer. If `./run` reports an older version, install Python 3.10+ using your system package manager (e.g. `sudo apt install python3 python3-venv` on Ubuntu/Debian, or `brew install python` on macOS).
 
 ## Developer / Manual Quick Start
@@ -372,8 +372,13 @@ form (a team whose agents roam, but must never touch one checkout; it also
 refuses a shell command that names the path, after expanding `~` and `$HOME`
 and removing quotes — a text match that stops an agent reaching for the path,
 not one that builds it at run time), and
-`allowed_mcp_servers` where the host's generic MCP call names its server.
-Team-wide, `"policy": {"detach_commands": [regex...]}` refuses a foreground
+`allowed_mcp_servers` where the host's generic MCP call names its server, and
+`max_inbound_bytes` on a recipient that reads only its inbox (a longer message
+to it is refused, with a pointer to the shared directory). Every agent's
+durable workspace is its own to write: a file tool or a shell command that
+writes into a teammate's (a redirect, the destination of `cp`/`mv`, `rm`,
+`sed -i`, `tee`, ...) is refused, confined or not; reading one is fine, and
+`"policy": {"private_workspaces": false}` turns it off. Team-wide, `"policy": {"detach_commands": [regex...]}` refuses a foreground
 run of a command that takes hours unless it is already detached, and
 `"forbidden_commands": [{"pattern", "message"}]` refuses outright with that
 message. The generic hook accepts the nested `toolCall`/`conversationId`
@@ -551,11 +556,27 @@ list_tasks(project=None, owner=None, status=None, task_id=None)  # newest first
 ```
 
 `list_tasks`, `list_reviews` and `check_inbox` return at most
-`AGYTEAM_TOOL_OUTPUT_BYTES` (default 3,800) inline and end with a count of
+`AGYTEAM_TOOL_OUTPUT_BYTES` (default 3,200) inline and end with a count of
 what they left out: the `agy` CLI moves a longer tool result into a file, and
-a confined agent may not be allowed to read it. `check_inbox` marks read only
-the messages it returned. `list_tasks` notes "in flight with <agent> since
+a confined agent may not be allowed to read it. A single item longer than
+that is cut on a character boundary and says so. `check_inbox` marks read
+only the messages it returned, and saves a message too long to show in full
+to the agent's own workspace first, naming the file. `list_tasks` notes "in flight with <agent> since
 <time>" on a task whose reminder or message started the turn running now.
+
+**Distillation without a token threshold.** `auto_cycle` distills an agent
+only once its context passes `AGYTEAM_CYCLE_THRESHOLD`, so a lightly used
+agent may never distill. A roster `"nightly_distill": {"hour_utc": 9,
+"min_turns_24h": 2, "exclude_models": [...], "exclude_agents": [...]}` has the
+daemon distill, once a day after that hour and only while it is idle, every
+agent with that many turns in the last day and no turn in flight. The once-a-
+day guard is recorded in `events.jsonl`, so it holds across restarts.
+`python -m agyteam.supervisor --nightly-distill [--dry-run] [--force]` runs
+the same sweep from any scheduler. `--distill-all` and `--cycle-all` run their
+turns concurrently. On a host that compacts its own conversations, set
+`AGYTEAM_AUTO_CYCLE_MODE=distill_only` (or `"auto_cycle_mode"` in the runner
+config) so auto-cycle distills without retiring the conversation, once per
+time the context crosses the threshold; `off` disables it.
 
 **Waiting on a sim without spending turns on it.** `until="file_exists:/path"`
 (or `file_contains:/path:text`, `pid_exited:1234`) makes the sweep check the
@@ -1039,13 +1060,18 @@ All subsystems support configuration through environment variables:
 | `AGYTEAM_DURABLE_DIR` | Absolute path overriding durable storage for agent memory and identities | `~/agy-teams/<team>` |
 | `AGYTEAM_TEAMS_ROOT` | Base directory for multi-team namespaces | `~/agy-teams` |
 | `AGYTEAM_AUDIT_LOG` | Where every tool call is recorded, by the SDK runner or by `hook_pre_tool_use` on a host; keep it outside all workspaces | unset (nothing recorded) |
-| `AGYTEAM_TOOL_OUTPUT_BYTES` | Ceiling on what `list_tasks`, `list_reviews` and `check_inbox` return inline (`0` = none) | `3800` |
+| `AGYTEAM_TOOL_OUTPUT_BYTES` | Ceiling on what `list_tasks`, `list_reviews` and `check_inbox` return inline (`0` = none) | `3200` |
 | `AGYTEAM_SIGNAL_DIR` / `AGYTEAM_STOP_IDLE_KEY` | For `hook_stop`: where to write turn-end lines (else the runner config's `signal_dir`), and the payload key whose `false` means "paused, not finished" | unset |
 | `AGYTEAM_PROOF_PYTHON` | Interpreter the review gate uses to run proof files; must be able to `import pytest` | the repo's `.venv`, then the current interpreter |
 | `AGYTEAM_TURN_TIMEOUT` | Wall-clock ceiling on one turn, seconds (`0` = none). SDK runner only: the `agy` CLI and host runners take `"timeout"` in `AGYTEAM_RUNNER_CONFIG` (default `900`) | `600` |
 | `AGYTEAM_CYCLE_THRESHOLD` | Input tokens on an agent's latest turn above which it is distilled and given a fresh conversation once the episode ends | `100000` |
 | `AGYTEAM_WAKE_BACKOFF_BASE` / `AGYTEAM_WAKE_BACKOFF_MAX` | Seconds to wait before retrying an agent whose turn failed; doubles per failure up to the max | `5` / `300` |
-| `AGYTEAM_ESCALATE_AFTER` | Consecutive failed turns before the supervisor tells the manager (or you) | `3` |
+| `AGYTEAM_ESCALATE_AFTER` | Consecutive failed turns before the supervisor tells the manager (or you); remembered across restarts in `escalations.json` | `3` |
+| `AGYTEAM_RESET_AFTER_FAILURES` | Consecutive non-transient failures after which an agent's conversation is retired and the next wake starts a new one (`0` = never) | `2` |
+| `AGYTEAM_INFLIGHT_STALE_MULTIPLIER` | A turn left in flight by a stopped supervisor is resumed on restart unless it began more than this many turn timeouts ago | `2.0` |
+| `AGYTEAM_BUDGET_HALT_PATTERNS` | Comma-separated error text that means the account is out; a failed turn matching one stops the team | `insufficient_quota`, HTTP 402, … |
+| `AGYTEAM_AUTO_CYCLE_MODE` | What auto-cycle does past the threshold: `cycle`, `distill_only`, or `off` | `cycle` |
+| `AGYTEAM_NIGHTLY_DISTILL_HOUR_UTC` | Enables the daily distill sweep at this hour when the roster has no `nightly_distill` | unset |
 | `AGYTEAM_PROJECT_DIR` / `AGYTEAM_SHARED_DIR` | The project root and the directory for deliverables agents hand each other | the git root / `<project>/.agy-team-shared` |
 | `AGYTEAM_EXTRA_WORKSPACES` | Extra directories (path-separated) every SDK agent may read: an observation grant, for transcripts and the like | unset |
 | `AGYTEAM_RETRY_ATTEMPTS` / `AGYTEAM_RETRY_BASE` | Tries, and base seconds of jittered backoff, for a model call that fails transiently | `4` / `5` |

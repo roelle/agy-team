@@ -228,6 +228,28 @@ is a second policy language beside the first. What generalised went in:
 `tools_off` now sees through a generic MCP-call tool, and `refuse_paths`
 covers shell commands that name the path.
 
+**A daemon that runs for days fails in ways a one-shot run never shows.**
+Under `inbox_pull` a turn that pulled its mail and then hit a 503 before
+sending anything lost that mail; it is now restored, and only when the turn
+sent nothing, so a turn that answered and then timed out is not handed the
+work twice. An exhausted account used to fail every agent in turn, each
+backing off and escalating separately; it now writes the same `.stop` an
+operator would, once, and tells the user. A conversation that fails the same
+non-transient way twice is retired (a transient failure never counts, or
+one network blip would wipe every agent's context). Escalations are kept on
+disk, so a restart does not fire them again. Deliberately not done: one
+global cooldown across all alarms, which would hide a second agent's failure
+behind the first's.
+
+Model routing is still undesigned on purpose. An integrator asked for a live
+`model_overrides.json` with expiry and a 503 fallback chain; the turn now
+records the model the host says actually ran, and nothing more. A fallback
+on a host that fixes the model at conversation start means either a new
+conversation without the agent's context or a different model in the old
+one, and neither should happen without someone deciding which. Likewise the
+pre-invocation hook (direct-chat reminder, pre-compaction memory nudge)
+stays in that host's adapter: it is built on one host's transcript format.
+
 **Turns run concurrently, and the ledger is what makes that survivable.**
 `Supervisor.step()` waited on each `wake()`: eight turns finished one at a
 time over thirty-five minutes, a twelve-minute turn holding seven agents who

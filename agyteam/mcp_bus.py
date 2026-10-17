@@ -21,11 +21,13 @@ guessing, so messages can never be filed under the wrong agent.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+from . import mcp_base
 from .mcp_base import fit, serve, string, tool
 from . import heartbeat, policy
 from .transport import KINDS, Transport, load
@@ -150,11 +152,34 @@ def _check_inbox(t: Transport) -> str:
         return "[inbox empty]"
     # Oldest first, and only as many as fit inline; only those are marked
     # read, so the rest are still there on the next call.
-    text, shown = fit([m.render() for m in msgs],
-                      "[{n} more unread: call check_inbox again]")
+    blocks = [m.render() for m in msgs]
+    limit = mcp_base.OUTPUT_BYTES
+    if limit > 0 and len(blocks[0].encode("utf-8")) > limit - 200:
+        # One message longer than the limit would be cut, and it is marked
+        # read with the rest of it unseen. Its full text goes into the
+        # agent's own workspace first -- the one place every runner lets the
+        # agent read -- and the inline copy says where.
+        saved = _save_long_message(t, msgs[0])
+        if saved:
+            blocks[0] = (f"[this message is longer than the inline limit; the full "
+                         f"text is in {saved}]\n" + blocks[0])
+    text, shown = fit(blocks, "[{n} more unread: call check_inbox again]")
     if hasattr(t, "acknowledge") and callable(t.acknowledge):
         t.acknowledge(msgs[:shown])
     return text
+
+
+def _save_long_message(t: Transport, m) -> str | None:
+    try:
+        from . import scope
+        d = scope.load().agent_workspace(t.me) / "inbox"
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = re.sub(r"[^0-9A-Za-z]+", "", m.ts or "")[:14] or str(int(time.time()))
+        path = d / f"{stamp}-{re.sub(r'[^A-Za-z0-9_-]', '_', m.sender)}.txt"
+        path.write_text(m.render() + "\n", encoding="utf-8")
+        return str(path)
+    except Exception:
+        return None
 
 
 def _team_dir(t: Transport) -> Path:
@@ -461,7 +486,7 @@ def _send(t: Transport, a: dict) -> str:
     if kind not in KINDS:
         return (f"[error: kind must be one of {', '.join(KINDS)}, not {kind!r}]")
     task_id = a.get("task_id").strip() if isinstance(a.get("task_id"), str) else None
-    refusal = policy.check_tool_policy(t.me, "send_to_teammate", {"to": to},
+    refusal = policy.check_tool_policy(t.me, "send_to_teammate", {"to": to, "content": content},
                                        team_dir=_team_dir(t), check_paths=False)
     if refusal:
         return refusal

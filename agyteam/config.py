@@ -188,3 +188,33 @@ def api_key() -> str:
 WAKE_BACKOFF_BASE_S = float(os.environ.get("AGYTEAM_WAKE_BACKOFF_BASE", 5))
 WAKE_BACKOFF_MAX_S = float(os.environ.get("AGYTEAM_WAKE_BACKOFF_MAX", 300))
 ESCALATE_AFTER_FAILURES = int(os.environ.get("AGYTEAM_ESCALATE_AFTER", 3))
+
+# After this many failed turns in a row, none of them transient, the agent's
+# conversation is retired and the next wake starts a new one. A dead host
+# session or a conversation the host can no longer load fails the same way
+# on every wake; backoff alone retried it for as long as the daemon ran. A
+# transient failure (503, rate limit) never counts toward it: resetting on a
+# network blip would throw away every agent's context at once. 0 = never.
+RESET_AFTER_FAILURES = int(os.environ.get("AGYTEAM_RESET_AFTER_FAILURES", 2))
+
+# A turn the ledger says was in flight when the supervisor stopped is resumed
+# on restart -- unless it began more than this many turn timeouts ago, in
+# which case it is cancelled and its mail delivered again.
+INFLIGHT_STALE_MULTIPLIER = float(os.environ.get("AGYTEAM_INFLIGHT_STALE_MULTIPLIER", 2.0))
+
+# Failures that mean the account, not the agent, is out: every agent on the
+# key will fail the same way. Matched case-insensitively against a failed
+# turn's error text only. On a match the team is stopped -- the same
+# `.stop` an operator writes -- and the user told once; `python -m
+# agyteam.lifecycle start` resumes it.
+BUDGET_HALT_PATTERNS = tuple(p.strip().lower() for p in os.environ.get(
+    "AGYTEAM_BUDGET_HALT_PATTERNS",
+    "insufficient_quota,billing_hard_limit_reached,credit balance is too low,"
+    "payment required,http 402,error 402").split(",") if p.strip())
+
+# What auto_cycle does to an agent whose context has grown past the
+# threshold: "cycle" (distill, then a fresh conversation), "distill_only"
+# (distill and keep the conversation -- for a host that compacts its own
+# conversations, where a reset throws away the operator's pane), or "off".
+# A runner may set its own `auto_cycle_mode`; this is the default.
+AUTO_CYCLE_MODE = os.environ.get("AGYTEAM_AUTO_CYCLE_MODE", "cycle").strip().lower()

@@ -42,13 +42,24 @@ from . import policy
 
 
 def agent_for(payload: dict, team_dir: Path) -> str | None:
-    agent = os.environ.get("AGYTEAM_AGENT") or payload.get("agent") or payload.get("agent_name")
-    if agent:
-        return str(agent)
+    """Who is making this call. The conversation id wins when it is known.
+
+    AGYTEAM_AGENT used to win outright, and it leaks: a host started from a
+    shell where it was set, or a supervisor's own environment, stamped every
+    agent's calls with one name. The id in the payload is about this call;
+    the environment is about whoever started the host.
+    """
     conv = next((payload[k] for k in ("conversation_id", "conversationId", "session_id",
                                       "sessionId", "conversation") if payload.get(k)), None)
-    if not conv:
-        return None
+    if conv:
+        found = _by_conversation(str(conv), team_dir)
+        if found:
+            return found
+    agent = os.environ.get("AGYTEAM_AGENT") or payload.get("agent") or payload.get("agent_name")
+    return str(agent) if agent else None
+
+
+def _by_conversation(conv: str, team_dir: Path) -> str | None:
     try:
         live = json.loads((team_dir / "conversations.json").read_text())
         for name, cid in live.items():
