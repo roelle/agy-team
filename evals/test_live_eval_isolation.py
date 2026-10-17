@@ -25,7 +25,8 @@ sys.path.insert(0, str(ROOT / "evals"))
 import rpc_util  # noqa: E402
 from agyteam import scope  # noqa: E402
 
-LIVE = ["test_delivery.py", "test_reactive.py", "test_continuity.py", "test_a2a.py"]
+LIVE = ["test_delivery.py", "test_reactive.py", "test_continuity.py", "test_a2a.py",
+        "test_direct_specialist.py"]
 
 
 def test_forgetting_the_ambient_team_beats_an_exported_team_dir(tmp_path, monkeypatch):

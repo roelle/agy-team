@@ -27,5 +27,6 @@ evals/reactive_sandbox/
 evals/continuity_scratch/
 
 evals/delivery_shared/
+evals/direct_shared/
 .agy-team-shared/
 .venv-rebuild/

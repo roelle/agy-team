@@ -33,7 +33,7 @@ testpaths = ["evals"]
 # evals/ (all gitignored), and agents write proof files into them: after one
 # delivery run `pytest evals/` collected five tests an agent had written, and
 # the count no longer matched a fresh clone's.
-norecursedirs = ["delivery_shared", "reactive_sandbox", "reactive_durable",
+norecursedirs = ["delivery_shared", "direct_shared", "reactive_sandbox", "reactive_durable",
                  "continuity_scratch", "ws_*", "team_*", "a2a_*", "*_unit",
                  ".agy-team-shared", ".venv", "*.egg-info"]
 filterwarnings = [
