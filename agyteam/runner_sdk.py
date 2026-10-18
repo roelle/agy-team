@@ -221,8 +221,24 @@ class SdkRunner(Runner):
     async def _wake(self, agent: str, message: str) -> str:
         t0 = time.monotonic()
         a = await self._ensure(agent)
-        chat_resp = await a.chat(message)
-        reply = await chat_resp.text()
+        chat_resp = None
+        try:
+            chat_resp = await a.chat(message)
+            reply = await chat_resp.text()
+        except asyncio.CancelledError:
+            # The caller gave up on this turn (TURN_TIMEOUT). Cancelling the
+            # coroutine only stops the waiting; the turn itself runs on in
+            # the harness, and one went on to answer the user after its
+            # timeout while its mail was queued to be delivered again. Stop
+            # it where it runs, then let the cancellation through.
+            try:
+                if chat_resp is not None:
+                    await chat_resp.cancel()
+                else:
+                    await a.conversation.cancel()
+            except Exception:
+                pass
+            raise
         dur = time.monotonic() - t0
         # build_config points save_dir at the CLI's conversation store, so this
         # session is a real, joinable conversation — but only once somebody
