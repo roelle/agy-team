@@ -62,3 +62,7 @@ def test_a_timed_out_turn_is_cancelled_where_it_runs(tmp_path, monkeypatch):
         r.close()
     assert reply.startswith("[error:") and "Timeout" in reply
     assert log == ["turn cancelled"], "the turn was abandoned but left running"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))
