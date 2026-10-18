@@ -1144,6 +1144,7 @@ All subsystems support configuration through environment variables:
 | `AGYTEAM_INFLIGHT_STALE_MULTIPLIER` | A turn left in flight by a stopped supervisor is resumed on restart unless it began more than this many turn timeouts ago | `2.0` |
 | `AGYTEAM_BUDGET_HALT_PATTERNS` | Comma-separated error text that means the account is out; a failed turn matching one stops the team | `insufficient_quota`, HTTP 402, … |
 | `AGYTEAM_AUTO_CYCLE_MODE` | What auto-cycle does past the threshold: `cycle`, `distill_only`, or `off` | `cycle` |
+| `AGYTEAM_WAKE_PROMPT_BYTES` | Budget for messages pasted into a wake prompt; waking ones always go in, quiet ones while they fit, the rest stay unread | `24000` |
 | `AGYTEAM_NIGHTLY_DISTILL_HOUR_UTC` | Enables the daily distill sweep at this hour when the roster has no `nightly_distill` | unset |
 | `AGYTEAM_PROJECT_DIR` / `AGYTEAM_SHARED_DIR` | The project root and the directory for deliverables agents hand each other | the git root / `<project>/.agy-team-shared` |
 | `AGYTEAM_EXTRA_WORKSPACES` | Extra directories (path-separated) every SDK agent may read: an observation grant, for transcripts and the like | unset |

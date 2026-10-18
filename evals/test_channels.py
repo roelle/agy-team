@@ -136,6 +136,24 @@ def test_list_channels_shows_only_mine(team):
         "creating the first channel keeps the implicit #general, with everyone"
 
 
+def test_a_busy_channel_does_not_flood_the_wake_prompt(team, monkeypatch):
+    """Every waking message goes in; quiet ones only while they fit, and the
+    rest stay unread rather than being dropped."""
+    from agyteam import config
+    monkeypatch.setattr(config, "WAKE_PROMPT_BYTES", 2000)
+    for i in range(40):
+        actions.post(team, "billing", f"chatter {i:02d} " + "x" * 80, author="matt")
+    actions.post(team, "billing", "@coder this one matters", author="matt")
+    runner = Recording()
+    step(runner)
+    prompt = runner.prompts["coder"]
+    assert "this one matters" in prompt and "chatter 00" in prompt
+    assert "chatter 39" not in prompt and "more unread message(s)" in prompt
+    left = inbox("coder")
+    assert left and all(m.quiet for m in left), "deferred mail was lost or woke"
+    assert len(left) + prompt.count("chatter ") == 40
+
+
 # --- threads ---------------------------------------------------------------------------
 
 def test_replies_carry_their_thread_and_the_record_groups_them(team):

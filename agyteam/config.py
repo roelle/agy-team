@@ -218,3 +218,10 @@ BUDGET_HALT_PATTERNS = tuple(p.strip().lower() for p in os.environ.get(
 # conversations, where a reset throws away the operator's pane), or "off".
 # A runner may set its own `auto_cycle_mode`; this is the default.
 AUTO_CYCLE_MODE = os.environ.get("AGYTEAM_AUTO_CYCLE_MODE", "cycle").strip().lower()
+
+# Budget for the messages pasted into a wake prompt, in bytes. Every message
+# that woke the agent is always included; quiet ones (channel posts that did
+# not mention it, acks, fyi) fill the rest, oldest first, and the remainder
+# stays unread in the inbox for check_inbox. Without it, an agent in a busy
+# channel was woken with every post since its last turn in its prompt.
+WAKE_PROMPT_BYTES = int(os.environ.get("AGYTEAM_WAKE_PROMPT_BYTES", 24_000))

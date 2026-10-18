@@ -1025,7 +1025,31 @@ class Supervisor:
         except OSError:
             pass
 
-    def wake_prompt(self, msgs: list[Message]) -> str:
+    @staticmethod
+    def _fit_wake(msgs: list[Message]) -> tuple[list[Message], int]:
+        """(messages to deliver now, how many quiet ones wait for later).
+
+        Every waking message goes in. Quiet ones follow, oldest first, while
+        they fit config.WAKE_PROMPT_BYTES; the rest stay in the inbox --
+        unacknowledged, so nothing is lost -- and the prompt says how many.
+        """
+        budget = config.WAKE_PROMPT_BYTES
+        loud = [m for m in msgs if m.wakes]
+        quiet = [m for m in msgs if not m.wakes]
+        if budget <= 0:
+            return msgs, 0
+        used = sum(len(m.render().encode("utf-8", "replace")) for m in loud)
+        keep = []
+        for m in quiet:
+            size = len(m.render().encode("utf-8", "replace"))
+            if used + size > budget:
+                break
+            keep.append(m)
+            used += size
+        chosen = set(map(id, loud + keep))
+        return [m for m in msgs if id(m) in chosen], len(quiet) - len(keep)
+
+    def wake_prompt(self, msgs: list[Message], deferred: int = 0) -> str:
         """What an agent is woken with.
 
         By default, the messages themselves. With inbox_pull, one line saying
@@ -1035,7 +1059,12 @@ class Supervisor:
         user message.
         """
         if not self.inbox_pull:
-            return WAKE_PROMPT.format(messages="\n\n".join(m.render() for m in msgs))
+            body = "\n\n".join(m.render() for m in msgs)
+            if deferred:
+                body += (f"\n\n[{deferred} more unread message(s) -- channel posts "
+                         f"that did not mention you, acks, fyi -- are still in your "
+                         f"inbox. Read them with check_inbox if they may matter.]")
+            return WAKE_PROMPT.format(messages=body)
         parts = []
         for m in msgs:
             bits = [f"from={m.sender}", f"kind={m.kind}"]
@@ -1194,6 +1223,7 @@ class Supervisor:
                 continue
             if not msgs or not any(m.wakes for m in msgs):
                 continue            # quiet mail waits for a waking cause
+            msgs, deferred = self._fit_wake(msgs)
             senders = ", ".join(sorted({m.sender for m in msgs}))
             self.hops += 1
             trigger = {"senders": sorted({m.sender for m in msgs}),
@@ -1207,8 +1237,10 @@ class Supervisor:
             turn = {"msgs": msgs, "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "started": time.monotonic(), "hop": self.hops,
                     "trigger": trigger, "failures_before": self._failure_count()}
+            if deferred:
+                turn["deferred"] = deferred
             try:
-                turn["handle"] = self.runner.begin(agent, self.wake_prompt(msgs))
+                turn["handle"] = self.runner.begin(agent, self.wake_prompt(msgs, deferred))
             except Exception as e:          # the runner could not even start it
                 turn["handle"] = {"raised": repr(e)}
                 self._finish(agent, turn, f"[error: {type(e).__name__}: {e}]")
