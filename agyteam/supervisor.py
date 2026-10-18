@@ -839,11 +839,7 @@ class Supervisor:
             return
         for agent, turn in doc.items():
             handle = turn.get("handle") or {}
-            msgs = [Message(ts=m.get("ts", ""), sender=m.get("from", "?"),
-                            to=m.get("to", agent), content=m.get("content", ""),
-                            id=m.get("id"), kind=m.get("kind") or "work",
-                            task_id=m.get("task_id"))
-                    for m in turn.get("msgs", [])]
+            msgs = [Message.from_dict({"to": agent, **m}) for m in turn.get("msgs", [])]
             stale = self._stale_turn(turn)
             if stale and getattr(self.runner, "resumable", False) and not handle.get("thread"):
                 try:
@@ -1196,7 +1192,7 @@ class Supervisor:
             except Exception as e:
                 self._log(f"  ! could not read {agent}'s mail: {type(e).__name__}: {e}")
                 continue
-            if not msgs or not any(wakes(m.kind) for m in msgs):
+            if not msgs or not any(m.wakes for m in msgs):
                 continue            # quiet mail waits for a waking cause
             senders = ", ".join(sorted({m.sender for m in msgs}))
             self.hops += 1
@@ -1623,7 +1619,8 @@ class Supervisor:
             pending = transport.peek()
         except Exception:
             return False
-        return bool(pending) and any(wakes(getattr(m, "kind", "work")) for m in pending)
+        return bool(pending) and any(getattr(m, "wakes", wakes(getattr(m, "kind", "work")))
+                                     for m in pending)
 
     def run_forever(self, stop: threading.Event | None = None) -> None:
         """React to mail as it arrives, indefinitely."""

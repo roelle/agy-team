@@ -96,6 +96,7 @@ WRITE_TOOL = re.compile(r"write|edit|create|delete|remove|move|rename|append|"
 #: Our own servers' tools: policy is applied to their *arguments* inside the
 #: server, never to their names as file operations.
 TEAM_TOOLS = {"send_to_teammate", "broadcast", "check_inbox", "list_teammates",
+              "post_to_channel", "list_channels",
               "record_review", "list_reviews", "record_retro", "list_retros",
               "create_task", "claim_task", "update_task", "complete_task",
               "list_tasks", "save_memory", "read_memory", "delete_memory",

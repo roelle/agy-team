@@ -228,6 +228,14 @@ is a second policy language beside the first. What generalised went in:
 `tools_off` now sees through a generic MCP-call tool, and `refuse_paths`
 covers shell commands that name the path.
 
+**Channels exist to save wakes, not to add them.** A post is copied to every
+member, but only a mentioned member's copy wakes them (`Message.quiet`); the
+rest wait and arrive with whatever wakes that agent next. The supervisor's
+waking check is `m.wakes`, which is the kind's rule unless the copy is quiet.
+The record (`agyteam.record`) and the operator's actions (`agyteam.actions`)
+are the whole interface a client needs; a UI that reaches past them is
+depending on a file format, and should not.
+
 **A daemon that runs for days fails in ways a one-shot run never shows.**
 Under `inbox_pull` a turn that pulled its mail and then hit a 503 before
 sending anything lost that mail; it is now restored, and only when the turn

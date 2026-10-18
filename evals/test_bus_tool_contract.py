@@ -79,10 +79,10 @@ def test_the_index_is_generated_not_transcribed():
     props = spec["inputSchema"]["properties"]
     props["urgency"] = {"type": "string", "description": "temporary"}
     try:
-        assert "send_to_teammate(to, content, [kind], [task_id], [urgency])" in persona.tool_index()
+        assert "send_to_teammate(to, content, [kind], [task_id], [thread], [urgency])" in persona.tool_index()
     finally:
         del props["urgency"]
-    assert "send_to_teammate(to, content, [kind], [task_id])" in persona.tool_index()
+    assert "send_to_teammate(to, content, [kind], [task_id], [thread])" in persona.tool_index()
 
 
 def test_required_and_optional_are_distinguishable():

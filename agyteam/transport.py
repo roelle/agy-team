@@ -41,6 +41,15 @@ def wakes(kind: str | None) -> bool:
     return (kind or "work") not in QUIET_KINDS
 
 
+#: Fields a message may carry beyond (ts, from, to, content, kind, task_id).
+#:   channel  the channel it was posted to, for a channel post
+#:   thread   the id of the message it replies to the thread of
+#:   author   the human behind a "user" message, by name
+#:   quiet    this copy does not wake its recipient, whatever its kind --
+#:            a channel post to a member it did not mention
+EXTRA_FIELDS = ("channel", "thread", "author", "quiet")
+
+
 @dataclass
 class Message:
     ts: str
@@ -50,11 +59,25 @@ class Message:
     id: str | int | None = None
     kind: str = "work"
     task_id: str | None = None
+    channel: str | None = None
+    thread: str | None = None
+    author: str | None = None
+    quiet: bool = False
+
+    @property
+    def wakes(self) -> bool:
+        """Does this copy wake its recipient? Its kind decides, unless it is
+        a channel post that did not mention them."""
+        return wakes(self.kind) and not self.quiet
 
     def render(self) -> str:
         tag = "" if self.kind == "work" else f" ({self.kind})"
         task = f" [task {self.task_id}]" if self.task_id else ""
-        return f"[{self.ts}] from {self.sender}{tag}{task}:\n{self.content}"
+        who = self.sender if not self.author else f"{self.sender} ({self.author})"
+        where = f" in #{self.channel}" if self.channel else ""
+        ids = f" [id {self.id}" + (f", thread {self.thread}" if self.thread else "") + "]" \
+            if self.id is not None else ""
+        return f"[{self.ts}] from {who}{where}{tag}{task}{ids}:\n{self.content}"
 
     def as_dict(self) -> dict:
         d = {"ts": self.ts, "from": self.sender, "to": self.to,
@@ -63,7 +86,19 @@ class Message:
             d["id"] = self.id
         if self.task_id:
             d["task_id"] = self.task_id
+        for k in EXTRA_FIELDS:
+            v = getattr(self, k)
+            if v:
+                d[k] = v
         return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Message":
+        return cls(ts=d.get("ts", ""), sender=d.get("from") or d.get("sender", "?"),
+                   to=d.get("to", ""), content=d.get("content", ""), id=d.get("id"),
+                   kind=d.get("kind") or "work", task_id=d.get("task_id"),
+                   channel=d.get("channel"), thread=d.get("thread"),
+                   author=d.get("author"), quiet=bool(d.get("quiet")))
 
 
 class Transport(ABC):
@@ -131,6 +166,29 @@ class Transport(ABC):
             tag = f"[{kind}]" if kind != "work" else ""
             task = f"[task {task_id}]" if task_id else ""
             return self.send(to, f"{tag}{task} {content}".strip())
+
+    def post(self, channel: str, members: list[str], content: str, kind: str = "work",
+             mentioned: set[str] | None = None, task_id: str | None = None,
+             thread: str | None = None, author: str | None = None) -> str:
+        """Post to a channel: one copy to each member, quiet unless mentioned.
+
+        The default delivers per member through send(), so any transport can
+        carry a channel post; a transport with a log of its own (the file
+        transport) overrides it to record the post once. Returns the post's
+        id when the transport assigns one, else ''.
+        """
+        mentioned = mentioned or set()
+        for name in members:
+            if name == self.me:
+                continue
+            meta = {"channel": channel, "thread": thread, "author": author,
+                    "quiet": name not in mentioned}
+            try:
+                self.send(name, content, kind=kind, task_id=task_id, **meta)
+            except TypeError:
+                prefix = f"[#{channel}{' thread ' + thread if thread else ''}] "
+                self.send_kind(name, prefix + content, kind=kind, task_id=task_id)
+        return ""
 
     def peek(self) -> list[Message] | None:
         """Messages waiting for me, WITHOUT consuming them. None = unsupported.

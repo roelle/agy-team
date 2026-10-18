@@ -51,8 +51,25 @@ TOOLS = [
                                   "are left in their inbox for their next wake and "
                                   "wake nobody -- use them for anything that needs "
                                   "no action"},
-          "task_id": string("The task this is about, if any")},
+          "task_id": string("The task this is about, if any"),
+          "thread": string("To reply in a thread: the id of the message it hangs off "
+                           "(shown as [id ...] on every message you receive)")},
          ["to", "content"]),
+    tool("post_to_channel",
+         "Post to a channel you are a member of. Everyone in it can read it; it "
+         "wakes only the agents it mentions (@name, @here for the channel, @all "
+         "for the whole team) -- everyone else reads it the next time they are "
+         "woken for anything. Reply in a thread by passing the id of the message "
+         "you are answering.",
+         {"channel": string("Channel name, e.g. 'billing' (see list_channels)"),
+          "content": string("The post. Mention who must act: @coder, @here"),
+          "kind": {"type": "string", "enum": list(KINDS),
+                   "description": "What this post is; same kinds as send_to_teammate"},
+          "thread": string("Id of the message whose thread this replies in, if any"),
+          "task_id": string("The task this is about, if any")},
+         ["channel", "content"]),
+    tool("list_channels",
+         "List the channels you are in, with their members and topics.", {}),
     tool("broadcast",
          "Send one message to every teammate at once. Use sparingly — for "
          "announcements, not for delegating work (delegate by name instead).",
@@ -501,7 +518,14 @@ def _send(t: Transport, a: dict) -> str:
             return (f"[refused: task {task_id} requires an approved review before "
                     f"its result goes to the user, and none names it. Have a "
                     f"teammate record_review(..., task_id='{task_id}') first]")
-    out = t.send_kind(to, content, kind=kind, task_id=task_id or None)
+    thread = a.get("thread").strip() if isinstance(a.get("thread"), str) and a.get("thread").strip() else None
+    if thread:
+        try:
+            out = t.send(to, content, kind=kind, task_id=task_id or None, thread=thread)
+        except TypeError:
+            out = t.send_kind(to, f"[thread {thread}] {content}", kind=kind, task_id=task_id or None)
+    else:
+        out = t.send_kind(to, content, kind=kind, task_id=task_id or None)
     if not out.startswith("[error"):
         who = heartbeat.describe(_team_dir(t))
         if to == "user":
@@ -511,6 +535,34 @@ def _send(t: Transport, a: dict) -> str:
         else:
             out = f"[queued for {to}; {who}]"
     return out
+
+
+def _post_to_channel(t: Transport, a: dict) -> str:
+    from . import channels
+    chan, content = _args("post_to_channel", a, "channel", "content")
+    kind = (a.get("kind") or "work").strip().lower() if isinstance(a.get("kind"), str) else "work"
+    if kind not in KINDS:
+        return f"[error: kind must be one of {', '.join(KINDS)}, not {kind!r}]"
+    thread = a.get("thread").strip() if isinstance(a.get("thread"), str) and a.get("thread").strip() else None
+    task_id = a.get("task_id").strip() if isinstance(a.get("task_id"), str) else None
+    try:
+        out = channels.post(t, _team_dir(t), chan, content, kind=kind, thread=thread,
+                            task_id=task_id or None)
+    except channels.ChannelError as e:
+        return f"[refused: {e}]"
+    woke = ", ".join(out["woke"]) or "nobody (no one was mentioned)"
+    return (f"[posted to #{out['channel']} as id {out['id'] or '?'}; it wakes {woke}; "
+            f"the other members read it on their next wake]")
+
+
+def _list_channels(t: Transport) -> str:
+    from . import channels
+    chans = channels.load(_team_dir(t))
+    mine = [(n, c) for n, c in sorted(chans.items()) if t.me in c.get("members", [])]
+    if not mine:
+        return "[you are in no channels]"
+    return "\n".join(f"- #{n}: {', '.join(c.get('members', []))}"
+                     + (f" -- {c['topic']}" if c.get("topic") else "") for n, c in mine)
 
 
 def _list_retros(t: Transport) -> str:
@@ -704,6 +756,8 @@ def main(transport: Transport, admin: bool = False):
 
     handlers = {
         "send_to_teammate": lambda a: _send(transport, a),
+        "post_to_channel": lambda a: _post_to_channel(transport, a),
+        "list_channels": lambda a: _list_channels(transport),
         "broadcast": _broadcast,
         "check_inbox": lambda a: _check_inbox(transport),
         "list_teammates": lambda a: _list_teammates(transport),

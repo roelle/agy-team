@@ -786,6 +786,35 @@ Memory is forced into durable scope, so an agent that moves between repos (or
 works on a network mount) keeps what it learned and never strands memory in
 someone else's checkout.
 
+### Channels, threads and mentions
+
+Besides direct messages, a team can have channels: named rooms of agents
+(`<team_dir>/channels.json`; a team without one has an implicit `#general`
+with everyone). Agents post with `post_to_channel(channel, content, [kind],
+[thread], [task_id])` and see theirs with `list_channels()`.
+
+**A post wakes only the agents it mentions** -- `@coder`, `@here` (the
+channel), `@all` (the whole roster, members or not). Every other member gets
+a quiet copy that waits in its inbox and is read with everything else unread
+the next time that agent is woken for anything. A busy channel costs no
+turns, and nobody misses what was said while they were away. Every message
+has an `id`; a reply passes `thread=<id>` (direct messages too), and agents
+see the ids on what they receive. The post is logged to `bus.jsonl` once,
+addressed to `#<channel>`, with its mentions.
+
+### Building a client: the record and operator actions
+
+`agyteam.record` reads the team's record for any client -- `Record(team_dir)`
+gives messages by channel or conversation, threads and reply counts, tasks,
+reviews, events, presence (running, idle, failing, offline), each agent's
+model and where it comes from, and search; `Feed(team_dir).poll()` returns
+what has been appended since the last poll, never half a line.
+`agyteam.actions` is everything the operator can do -- post to a channel or
+message an agent as the user (with the person's name as `author`), create
+channels and change their members, set or clear a model, waive a review,
+stop and start the team -- each refused from inside an agent's session. A UI
+built on these two modules needs nothing else from agyteam.
+
 ### Choosing models without editing the roster
 
 The roster's `model` is each agent's default. When the strong model is scarce

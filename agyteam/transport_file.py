@@ -21,10 +21,11 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from . import filelock, roster
-from .transport import Message, Transport
+from .transport import EXTRA_FIELDS, Message, Transport
 
 
 class FileTransport(Transport):
@@ -81,18 +82,27 @@ class FileTransport(Transport):
 
     # --- messaging -------------------------------------------------------
 
-    def send(self, to: str, content: str, kind: str = "work",
-             task_id: str | None = None) -> str:
-        known = [a["name"] for a in self._agents()]
-        if to != "user" and known and to not in known:
-            return (f"[error: no teammate named '{to}'. Teammates: "
-                    f"{', '.join(known)}, user]")
-        entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "from": self.me,
-                 "to": to, "content": content}
+    @staticmethod
+    def _entry(sender: str, to: str, content: str, kind: str, task_id, **meta) -> dict:
+        # Every message has an id, so a reply can name the thread it is in.
+        entry = {"id": uuid.uuid4().hex[:12], "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                 "from": sender, "to": to, "content": content}
         if kind and kind != "work":
             entry["kind"] = kind
         if task_id:
             entry["task_id"] = task_id
+        for k in EXTRA_FIELDS:
+            if meta.get(k):
+                entry[k] = meta[k]
+        return entry
+
+    def send(self, to: str, content: str, kind: str = "work",
+             task_id: str | None = None, **meta) -> str:
+        known = [a["name"] for a in self._agents()]
+        if to != "user" and known and to not in known:
+            return (f"[error: no teammate named '{to}'. Teammates: "
+                    f"{', '.join(known)}, user]")
+        entry = self._entry(self.me, to, content, kind, task_id, **meta)
         line = json.dumps(entry) + "\n"
         with self.log.open("a") as f:
             f.write(line)
@@ -105,6 +115,31 @@ class FileTransport(Transport):
                 f.write(line)
         return (f"[delivered to {to}]" if to != "user"
                 else "[delivered to the user]")
+
+    def post(self, channel: str, members: list[str], content: str, kind: str = "work",
+             mentioned: set[str] | None = None, task_id: str | None = None,
+             thread: str | None = None, author: str | None = None) -> str:
+        """The post is logged to bus.jsonl once, addressed to '#<channel>';
+        each member's inbox gets a copy, quiet unless they were mentioned."""
+        mentioned = mentioned or set()
+        entry = self._entry(self.me, f"#{channel}", content, kind, task_id,
+                            channel=channel, thread=thread, author=author)
+        if mentioned:
+            entry["mentions"] = sorted(mentioned)
+        with self.log.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        for name in members:
+            if name == self.me or name == "user":
+                continue
+            copy = dict(entry, to=name)
+            copy.pop("mentions", None)
+            if name not in mentioned:
+                copy["quiet"] = True
+            inbox = self._inbox(name)
+            with filelock.locked(inbox):
+                with inbox.open("a") as f:
+                    f.write(json.dumps(copy) + "\n")
+        return entry["id"]
 
     def _inbox(self, name: str) -> Path:
         return self.inbox_dir / f"{name}.jsonl"
@@ -136,10 +171,9 @@ class FileTransport(Transport):
                 continue
             try:
                 m = json.loads(line)
-                msgs.append(Message(ts=m["ts"], sender=m["from"], to=m["to"],
-                                    content=m["content"],
-                                    kind=m.get("kind") or "work",
-                                    task_id=m.get("task_id")))
+                if not all(k in m for k in ("ts", "from", "to", "content")):
+                    continue
+                msgs.append(Message.from_dict(m))
             except (ValueError, KeyError, TypeError):
                 continue            # skipped, never fatal; see module docstring
         return sorted(msgs, key=lambda m: 0 if m.sender == "user" else 1)
@@ -213,11 +247,9 @@ class FileTransport(Transport):
         for m in messages:
             recip = explicit_role or getattr(m, "to", None) or self.me
             if isinstance(m, Message):
-                entry = {"ts": m.ts, "from": m.sender, "to": m.to, "content": m.content}
-                if m.kind and m.kind != "work":
-                    entry["kind"] = m.kind
-                if m.task_id:
-                    entry["task_id"] = m.task_id
+                entry = m.as_dict()
+                if entry.get("kind") == "work":
+                    del entry["kind"]
             elif isinstance(m, dict):
                 entry = {
                     "ts": m.get("ts", time.strftime("%Y-%m-%d %H:%M:%S")),
