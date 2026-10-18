@@ -164,8 +164,9 @@ class AgyRunner(Runner):
         # (claude-*, gemini-*-pro), and encodes reasoning effort in the name, so
         # "model" and "effort" are combined back into a single CLI alias here.
         spec = self._roster_spec(agent)
-        model = spec.get("model") or self.config.get("model")
-        effort = spec.get("effort") or self.config.get("effort")
+        model, effort = self.resolved_model(
+            agent, spec.get("model") or self.config.get("model"),
+            spec.get("effort") or self.config.get("effort"))
         if model:
             if effort and not model.endswith(f"-{effort}"):
                 model = f"{model}-{effort}"

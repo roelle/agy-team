@@ -328,6 +328,19 @@ class Runner(ABC):
     def retired_path(self):
         return self.team_dir / "conversations_retired.jsonl"
 
+    def resolved_model(self, agent: str, model: str | None,
+                       effort: str | None = None) -> tuple[str | None, str | None]:
+        """The model (and effort) `agent` should run on: an operator override
+        from agyteam.models if one is in force, else what was passed in --
+        the roster's choice. Every runner asks this, so an override means the
+        same thing on all of them."""
+        from . import models
+        try:
+            m, e, _ = models.resolve(self.team_dir, agent, model, effort)
+            return m, e
+        except Exception:
+            return model, effort
+
     def reset(self, agent: str | None = None) -> None:
         """Forget stored conversations so the next wake starts fresh.
 

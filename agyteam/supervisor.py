@@ -884,6 +884,109 @@ class Supervisor:
                     pass
         self._save_ledger()
 
+    # --- model changes ------------------------------------------------------
+    #
+    # An agent's model is the roster's, or an operator override from
+    # agyteam.models. A change -- either kind -- is applied here, at the
+    # agent's next idle moment, as a cycle: distill on the conversation it
+    # has, retire it, and let the next wake start on the new model. What has
+    # been applied is kept on disk, so a restart neither re-cycles everyone
+    # nor misses a change made while it was down.
+
+    @property
+    def _models_applied_path(self) -> Path:
+        return self.team_dir / "models_applied.json"
+
+    def _wanted_models(self) -> dict[str, list]:
+        from . import models
+        try:
+            specs = {a["name"]: a for a in roster_lib.load(self.team_dir / "roster.json")["agents"]}
+        except Exception:
+            specs = {}
+        out = {}
+        for agent in self.agents:
+            spec = specs.get(agent, {})
+            m, e, _ = models.resolve(self.team_dir, agent, spec.get("model"), spec.get("effort"))
+            out[agent] = [m, e]
+        return out
+
+    def _apply_model_changes(self) -> None:
+        try:
+            wanted = self._wanted_models()
+        except Exception:
+            return
+        try:
+            applied = json.loads(self._models_applied_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            applied = None
+        if applied is None:                       # first look: this is the baseline
+            try:
+                _rewrite(self._models_applied_path, json.dumps(wanted, indent=2) + "\n")
+            except OSError:
+                pass
+            return
+        changed = False
+        for agent, now_on in wanted.items():
+            was_on = applied.get(agent)
+            if was_on is None:
+                applied[agent] = now_on
+                changed = True
+                continue
+            if list(was_on) == list(now_on) or agent in self.inflight:
+                continue                          # unchanged, or not idle yet
+            has_conversation = bool(getattr(self.runner, "conversation_id",
+                                            lambda a: None)(agent))
+            distilled = False
+            if has_conversation and self._worked_since_cycle(agent):
+                self._log(f"[supervisor] {agent}: model {was_on[0] or 'default'} -> "
+                          f"{now_on[0] or 'default'}; distilling, then a fresh conversation")
+                self.cycle(agent)
+                distilled = not getattr(self, "_last_distill_failed", False)
+            elif has_conversation:
+                self.runner.reset(agent)          # nothing to distill; just retire it
+            try:
+                self.observer.record_event("model_change", agent=agent, before=was_on,
+                                           after=now_on, distilled=distilled)
+            except Exception:
+                pass
+            applied[agent] = now_on
+            changed = True
+        if changed:
+            try:
+                _rewrite(self._models_applied_path, json.dumps(applied, indent=2) + "\n")
+            except OSError:
+                pass
+
+    def _model_allowance_alerts(self) -> None:
+        """Tell the user once when a model passes 80% and 100% of its weekly
+        allowance. Nothing is switched: that is the operator's call."""
+        now = time.monotonic()
+        if now - getattr(self, "_allowance_looked_at", 0.0) < 60:
+            return
+        self._allowance_looked_at = now
+        from . import models
+        try:
+            alerts = models.due_alerts(self.team_dir)
+        except Exception:
+            return
+        for a in alerts:
+            text = (f"{a['model']} has used {a['percent']}% of its weekly allowance "
+                    f"({a['used']:,} of {a['allowance']:,} tokens). Nothing has been "
+                    f"switched. To move agents off it: python -m agyteam.models set "
+                    f"<agent|*> <model> --until <when>.")
+            try:
+                bus = load_transport("supervisor")
+                try:
+                    bus.send_kind("user", text, kind="fyi")
+                finally:
+                    if hasattr(bus, "close"):
+                        bus.close()
+                # A notice from the supervisor is not the team answering.
+                self._user_mail_at_start = self._user_mail_count()
+                self._log(f"[supervisor] {text}")
+            except Exception:
+                pass
+
     def _stale_turn(self, turn: dict) -> str:
         """How long ago a ledger turn began, if too long to resume; else ''.
 
@@ -1362,6 +1465,8 @@ class Supervisor:
                     pass
 
             self._heartbeat()
+            self._apply_model_changes()
+            self._model_allowance_alerts()
             self._sweep_due_tasks()
             reaped = self._reap()
             begun = self._begin_turns(respect_backoff)

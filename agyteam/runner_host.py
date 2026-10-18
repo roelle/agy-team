@@ -130,9 +130,11 @@ class HostRunner(Runner):
         return {}
 
     def model_for(self, agent: str) -> str:
-        """Roster first, then the config's model_map, then its "*" default."""
-        return (self._spec(agent).get("model") or self.model_map.get(agent)
+        """An operator override (agyteam.models), else the roster, then the
+        config's model_map, then its "*" default."""
+        base = (self._spec(agent).get("model") or self.model_map.get(agent)
                 or self.model_map.get("*") or "")
+        return self.resolved_model(agent, base)[0] or ""
 
     def _brief(self, agent: str) -> str:
         from . import persona

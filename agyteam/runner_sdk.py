@@ -67,6 +67,7 @@ class SdkRunner(Runner):
         }
         self._agents: dict[str, Agent] = {}
         self._cms: dict[str, Agent] = {}
+        self._session_models: dict[str, str | None] = {}
         self._tool_call_starts: dict[tuple[str, str], tuple[float, any]] = {}
         self._tool_call_starts_by_name: dict[tuple[str, str], collections.deque] = collections.defaultdict(collections.deque)
         # One private event loop on its own thread: the supervisor API is
@@ -197,10 +198,13 @@ class SdkRunner(Runner):
                 duration_s=duration_s,
             )
 
+        model, effort = self.resolved_model(agent, spec.get("model", self.model),
+                                            spec.get("effort", self.effort))
+        self._session_models[agent] = model
         conf = build_config(
-            self.scopes.agent_workspace(agent), model=spec.get("model", self.model),
+            self.scopes.agent_workspace(agent), model=model,
             name=agent, interactive=False, use_mcp=True, with_bus=True,
-            effort=spec.get("effort", self.effort),
+            effort=effort,
             extra_sections=[section],
             subagents=[WORKER] if (self.use_workers and spec.get("workers", True))
             else None,
@@ -243,8 +247,9 @@ class SdkRunner(Runner):
         if out_tok is not None and thoughts:
             out_tok += thoughts
 
-        spec = self._specs.get(agent, {})
-        model = spec.get("model", self.model)
+        # The model this session was built on, which is what ran the turn --
+        # not whatever the roster says now.
+        model = self._session_models.get(agent) or self._specs.get(agent, {}).get("model", self.model)
 
         try:
             self.observer.record_turn(
@@ -363,8 +368,10 @@ class SdkRunner(Runner):
                 reasons = []
                 if old_ws != new_ws:
                     reasons.append("workspaces changed")
-                if (old_spec.get("model") or "") != (new_spec.get("model") or ""):
-                    reasons.append("model changed")
+                # A model change is not handled here: ending the session now
+                # threw away everything it had learned. The supervisor applies
+                # model changes as a cycle -- distill first -- at the agent's
+                # next idle moment (agyteam.models).
                 if old_spec.get("tools_off") != new_spec.get("tools_off"):
                     reasons.append("tools_off changed")
                 if (old_spec.get("role") or "") != (new_spec.get("role") or ""):

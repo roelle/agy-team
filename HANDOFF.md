@@ -241,6 +241,15 @@ disk, so a restart does not fire them again. Deliberately not done: one
 global cooldown across all alarms, which would hide a second agent's failure
 behind the first's.
 
+Model choice is the operator's, by hand (`agyteam.models`): an override per
+agent or for everyone, with an expiry, applied by the supervisor as a cycle
+at the agent's next idle moment so the change never strands a conversation
+on the wrong model or throws away what it learned. Weekly usage per model is
+totalled, and an allowance produces one message per threshold, never a swap.
+Automatic routing -- an agent or a rule choosing the model per task -- is
+still undesigned on purpose: it would need an evaluation good enough to trust
+with the decision, and that is the part nobody has.
+
 Model routing is still undesigned on purpose. An integrator asked for a live
 `model_overrides.json` with expiry and a 503 fallback chain; the turn now
 records the model the host says actually ran, and nothing more. A fallback

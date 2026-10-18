@@ -337,7 +337,8 @@ file writes, and no workers — delegation is its only path to results, which is
 enforced by capability, not prose.
 
 - The default team is manager, tpm, coder, syseng and qa. Per-agent `model` is
-  set in the roster.
+  set in the roster, and moved without editing it by `python -m agyteam.models`
+  (below).
 - Each teammate keeps its identity and memory under
   `~/agy-teams/<team>/agents/<name>/`; any of them also runs standalone via
   `agyteam.sdk_cli -w <that directory>`.
@@ -466,8 +467,8 @@ The CLI runner is the default when `AGYTEAM_RUNNER` is unset, because it is the
 one with no dependencies; it makes a team work *inside Antigravity proper*, so
 agents get the harness's tools, policies and subagents, and sessions are
 visible to Remote Control. The SDK runner keeps sessions alive between wakes,
-supports hooks, records an audit log, confines agents to their workspaces and
-enforces `tools_off` at the capability level.
+supports hooks, records an audit log, confines its file tools (not its shell)
+to the agents' workspaces, and enforces `tools_off` at the capability level.
 
 `agyteam.runner_mixed:MixedRunner` enables mixed runtimes where individual agents
 can run under different runners configured per agent in `roster.json` (e.g.,
@@ -784,6 +785,34 @@ these run inside MCP servers where a missing or slow binary would fail silently.
 Memory is forced into durable scope, so an agent that moves between repos (or
 works on a network mount) keeps what it learned and never strands memory in
 someone else's checkout.
+
+### Choosing models without editing the roster
+
+The roster's `model` is each agent's default. When the strong model is scarce
+and the weaker one is not, move agents between them as the work changes:
+
+```bash
+python -m agyteam.models set qa gemini-3.1-pro-preview --until 3d --reason "release week"
+python -m agyteam.models set '*' gemini-3.8-flash --until 2026-10-24T00:00:00Z
+python -m agyteam.models clear qa
+python -m agyteam.models list      # each agent's model, and whether it is the roster's or an override
+python -m agyteam.models usage     # tokens per model over the last week
+```
+
+A named agent's override beats `*`, and `--until` puts it back by itself.
+Every change is a row in `models.jsonl` in the team directory. The supervisor
+applies a change — an override, or an edit to the roster's `model` — at the
+agent's next idle moment, never mid-turn, as a cycle: the agent distills what
+it learned into memory, its conversation is retired, and the next wake starts
+on the new model with those memories. (Editing the roster's model on the SDK
+runner used to end the session with nothing distilled.) Every runner resolves
+the model through the same override, and each turn records the model that ran
+it. Overrides are the operator's: they are refused from inside an agent's
+session, and no agent is offered a tool for them.
+
+`"policy": {"model_allowance": {"<model>": <tokens per week>}}` in the roster
+gives a model a weekly budget; the supervisor tells you once when it passes 80%
+and again at 100%. It never switches a model on its own.
 
 ### Roster shapes
 
