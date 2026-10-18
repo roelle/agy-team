@@ -93,7 +93,7 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 
 - **Offline Testing is 100% Free**: Running `./run test` (over 400 contract and behavioral tests, about a minute) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
 - **Key Validation is Zero Tokens**: The setup probe validates your API key via `models.list` metadata — zero model inference tokens.
-- **Estimated Live Team Cost**: With every agent on the default model (`gemini-3.8-flash`) on the SDK runner, a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. The seeded roster puts `manager` and `qa` on a Pro model on purpose, which costs more than that; the figures in the eval tables below are Flash-priced as well. Treat all of them as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
+- **Estimated Live Team Cost**: With every agent on the default model (`gemini-3.8-flash`) on the SDK runner, a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. Putting `manager` and `qa` on a Pro model, as recommended below, costs more than that; the figures in the eval tables below are Flash-priced as well. Treat all of them as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
 
 ### Stopping & Resuming Safely
 
@@ -156,9 +156,17 @@ identity and memories, plus the shared bus, roster, reviews and event log.
 | `syseng` | owns the environment. Reproduces problems and reports the command and output that produced them. |
 | `qa` | reviews. Cannot edit source, so findings go back to the author. Keeps a memory of defects that recur here. |
 
-Oversight roles run a different model family from the implementers on purpose.
-Three reviewers with different blind spots caught three defects that none of
-them found alone; difference did that, not capability.
+Oversight roles are meant to run a different model family from the
+implementers: three reviewers with different blind spots caught three defects
+that none of them found alone; difference did that, not capability. The seed
+does not pin a model, because model names belong to the runtime (the SDK and
+the `agy` CLI know different ones, and an unknown name fails every turn), so
+choose them once you know which you are on:
+
+```bash
+python -m agyteam.models set manager <your strongest model>
+python -m agyteam.models set qa <your strongest model>
+```
 
 ## The four seams
 
