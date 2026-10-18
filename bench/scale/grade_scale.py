@@ -63,7 +63,16 @@ def matches(claimed: str, actual: str) -> bool:
         return kind.lower() in c.lower() and ("rais" in c.lower() or "error" in c.lower()
                                                or "exception" in c.lower())
     strip_decimal = lambda s: re.sub(r"Decimal\('([^']*)'\)", r"\1", s)  # noqa: E731
-    return strip_decimal(c) == strip_decimal(a)
+    if strip_decimal(c) == strip_decimal(a):
+        return True
+    # A number reported to fewer places than the code prints is imprecise,
+    # not invented: "Decimal('0.9')" for Decimal('0.9000000000000000222...')
+    # was scored as an invented output.
+    try:
+        x, y = float(strip_decimal(c)), float(strip_decimal(a))
+        return abs(x - y) <= 1e-9 * max(1.0, abs(y))
+    except ValueError:
+        return False
 
 
 def grade(task: str, staged: Path, answer_text: str = "",

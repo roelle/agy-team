@@ -132,5 +132,11 @@ def test_a_coverage_gap_in_an_unplanted_test_is_a_note_not_a_false_alarm(built):
     assert not r["false_alarms"] and len(r["notes"]) == 1
 
 
+def test_a_number_reported_to_fewer_places_is_not_invented():
+    assert grade_scale.matches("Decimal('0.9')", "Decimal('0.9000000000000000222044604925031308')")
+    assert not grade_scale.matches("Decimal('0.8')", "Decimal('0.9000000000000000222')")
+    assert not grade_scale.matches("8", "Decimal('8.01')")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))
