@@ -66,12 +66,22 @@ def matches(claimed: str, actual: str) -> bool:
     return strip_decimal(c) == strip_decimal(a)
 
 
-def grade(task: str, staged: Path, answer_text: str = "") -> dict:
+def grade(task: str, staged: Path, answer_text: str = "",
+          pristine: Path | None = None) -> dict:
+    """Grade the FINDINGS.json in `staged`.
+
+    Calls run against `pristine` -- a copy of the audited tree made before
+    the team saw it -- when given. The team can edit the tree it audits, and
+    one did: it fixed every bug in place, so grading against the edited tree
+    reported each true reproduction as a false alarm and an invented output.
+    """
     spec = json.loads((HERE / task / "defects.json").read_text())
     reference = HERE / task / "reference"
     path = staged / "FINDINGS.json"
+    audited = pristine or staged
     report = {"task": task, "findings_file": path.exists(), "credited": {},
-              "false_alarms": [], "invented": [], "unrunnable": [], "controls_hit": []}
+              "false_alarms": [], "invented": [], "unrunnable": [], "controls_hit": [],
+              "notes": []}
     try:
         findings = json.loads(path.read_text()) if path.exists() else []
         if isinstance(findings, dict):
@@ -100,13 +110,16 @@ def grade(task: str, staged: Path, answer_text: str = "") -> dict:
                 report["unrunnable"].append(f"{file}: named but the reason given "
                                             f"does not say what is wrong: {why[:80]!r}")
             else:
-                report["false_alarms"].append(f"{file}: no test defect planted there")
+                # A test that misses a defect is not a broken test, and saying
+                # which case it misses is a useful observation, not a false
+                # alarm: a first run named six such gaps, each correctly.
+                report["notes"].append(f"{file}: {why[:100]}")
             continue
         call = str(f.get("call") or "")
         if not call.strip():
             report["unrunnable"].append(f"{file}:{func}: no call to run")
             continue
-        bad = run_snippet(staged, call)
+        bad = run_snippet(audited, call)
         good = run_snippet(reference, call)
         if bad.startswith("raised driver") or (bad.startswith("raised SyntaxError")):
             report["unrunnable"].append(f"{file}:{func}: call does not run ({bad[:80]})")
@@ -132,10 +145,30 @@ def grade(task: str, staged: Path, answer_text: str = "") -> dict:
             d = hits[0] if len(hits) == 1 else None
         if d and truthful:
             report["credited"].setdefault(d["id"], f"{where}: {bad[:60]}")
+    if pristine is not None:
+        report["modified"] = modified_files(pristine, staged)
     report["found"] = len(report["credited"])
     report["planted"] = len(spec["defects"])
     report["answered_in_prose"] = bool(answer_text.strip())
     return report
+
+
+def modified_files(pristine: Path, staged: Path) -> list[str]:
+    """Files of the audited tree the team changed, plus files it added there
+    other than FINDINGS.json. An audit was asked for; edits were not."""
+    out = []
+    skip = ("__pycache__", ".pytest_cache", ".agy-team-shared")
+    for p in sorted(staged.rglob("*")):
+        rel = p.relative_to(staged)
+        if p.is_dir() or any(x in rel.parts for x in skip) or rel.name == "FINDINGS.json" \
+                or rel.suffix == ".pyc":
+            continue
+        orig = pristine / rel
+        if not orig.exists():
+            out.append(f"added {rel}")
+        elif orig.read_bytes() != p.read_bytes():
+            out.append(f"changed {rel}")
+    return out
 
 
 def render(r: dict) -> str:
@@ -150,6 +183,14 @@ def render(r: dict) -> str:
     out += [f"    - {x}" for x in r["false_alarms"]]
     out.append(f"  invented outputs: {len(r['invented'])}")
     out += [f"    - {x}" for x in r["invented"]]
+    if r.get("notes"):
+        out.append(f"  coverage notes on tests (not scored): {len(r['notes'])}")
+    if r.get("modified"):
+        changed = [m for m in r["modified"] if m.startswith("changed")]
+        out.append(f"  >> the team modified the code it was asked to audit: "
+                   f"{len(changed)} file(s) changed, "
+                   f"{len(r['modified']) - len(changed)} added")
+        out += [f"    - {m}" for m in changed[:12]]
     if r["unrunnable"]:
         out.append(f"  not gradeable: {len(r['unrunnable'])}")
         out += [f"    - {x}" for x in r["unrunnable"]]
@@ -161,6 +202,9 @@ if __name__ == "__main__":
     ap.add_argument("task")
     ap.add_argument("staged", type=Path)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--pristine", type=Path, default=None,
+                    help="the audited tree as built, before the team touched it")
     a = ap.parse_args()
-    r = grade(a.task, a.staged.resolve())
+    r = grade(a.task, a.staged.resolve(),
+              pristine=a.pristine.resolve() if a.pristine else None)
     print(json.dumps(r, indent=2) if a.json else render(r))

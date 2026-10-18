@@ -281,13 +281,14 @@ LEAK = re.compile(r"bench/(keys/|grade\.py|verify_fixtures\.py|README\.md|scale/
                   r"defects\.json|/reference/|decoys/")
 
 
-def grade_scale(task: str, staged: Path, audit: str, audit_from: int, audit_to: int) -> str:
+def grade_scale(task: str, staged: Path, audit: str, audit_from: int, audit_to: int,
+                pristine: Path | None = None) -> str:
     sys.path.insert(0, str(HERE / "scale"))
     from grade_scale import grade as run_grade, render
     lines = Path(audit).read_text(errors="replace").splitlines()[audit_from:audit_to] \
         if Path(audit).exists() else []
     leaked = [l for l in lines if LEAK.search(l)]
-    text = render(run_grade(task, staged))
+    text = render(run_grade(task, staged, pristine=pristine))
     if leaked:
         text = (f">> CONTAMINATED: {len(leaked)} audited call(s) touched the key, "
                 f"the references or the grader, e.g. {leaked[0][:200]}\n"
@@ -416,6 +417,10 @@ def main() -> int:
             sys.path.insert(0, str(HERE / "scale"))
             from build import build
             build(task, run_stage)
+            # Graded against this copy, outside every mount: the team can
+            # edit the tree it audits, and one fixed every bug in place.
+            pristine = Path(tempfile.mkdtemp(prefix="bench-pristine-")) / task
+            shutil.copytree(run_stage, pristine)
             prompt = scale_prompt(task, run_stage)
 
         roster = json.loads(json.dumps(COLD_ROSTER))     # deep copy
@@ -465,13 +470,15 @@ def main() -> int:
         if a.suite == "audit":
             print(grade(task, since, team_dir, a.audit, a.team, audit_from, audit_to))
         else:
-            print(grade_scale(task, run_stage, a.audit, audit_from, audit_to))
+            print(grade_scale(task, run_stage, a.audit, audit_from, audit_to, pristine))
             sys.path.insert(0, str(HERE / "scale"))
             from grade_scale import grade as run_grade
-            r = run_grade(task, run_stage)
+            r = run_grade(task, run_stage, pristine=pristine)
             metrics.update(found=r["found"], planted=r["planted"],
                            false_alarms=len(r["false_alarms"]),
-                           invented=len(r["invented"]))
+                           invented=len(r["invented"]),
+                           audited_files_changed=sum(1 for m in r["modified"]
+                                                     if m.startswith("changed")))
         reports.append((label, task, metrics))
         print("process:", json.dumps(metrics, indent=2), "\n", flush=True)
 
@@ -503,7 +510,8 @@ def main() -> int:
     # script already has the numbers for.
     for (la, _, pm), (lb, _, m) in zip(reports, reports[1:]):
         print(f"\n  {lb[0]} - {la[0]}:")
-        for field in ("found", "false_alarms", "invented", "turns", "model_seconds",
+        for field in ("found", "false_alarms", "invented", "audited_files_changed",
+                      "turns", "model_seconds",
                       "input_tokens", "lateral_messages", "messages"):
             if field in m and field in pm:
                 print(f"    {field}: {pm[field]} -> {m[field]} ({m[field] - pm[field]:+g})")

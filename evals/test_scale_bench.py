@@ -101,5 +101,36 @@ def test_a_vague_reason_for_a_bad_test_is_not_enough(built):
     assert grade_scale.grade(task, out)["found"] == 0
 
 
+def test_edits_to_the_audited_tree_do_not_change_the_grade(built, tmp_path):
+    """A team fixed every bug in place; graded against its own edited tree,
+    every true reproduction read as a false alarm and an invented output."""
+    import shutil
+    task, out, summary = built
+    pristine = tmp_path / "pristine"
+    shutil.copytree(out, pristine)
+    d = next(x for x in spec(task)["defects"] if not x.get("decoy"))
+    write(out, [{"file": d["file"], "function": d["function"], "call": d["witness"],
+                 "returned": summary["witnesses"][d["id"]]["buggy"]}])
+    fixed = (ROOT / "bench" / "scale" / task / "reference" / d["file"]).read_text()
+    (out / d["file"]).write_text(fixed)              # the team "fixes" it
+    try:
+        r = grade_scale.grade(task, out, pristine=pristine)
+        assert r["found"] == 1 and not r["invented"] and not r["false_alarms"]
+        assert f"changed {d['file']}" in r["modified"]
+    finally:
+        shutil.copy(pristine / d["file"], out / d["file"])
+
+
+def test_a_coverage_gap_in_an_unplanted_test_is_a_note_not_a_false_alarm(built):
+    task, out, _ = built
+    planted = {x["file"] for x in spec(task)["defects"] if x.get("decoy")}
+    other = next(p for p in sorted((out / "tests").glob("test_*.py"))
+                 if f"tests/{p.name}" not in planted)
+    write(out, [{"file": f"tests/{other.name}", "kind": "test",
+                 "why": "never exercises the boundary case"}])
+    r = grade_scale.grade(task, out)
+    assert not r["false_alarms"] and len(r["notes"]) == 1
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))
