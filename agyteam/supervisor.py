@@ -3117,6 +3117,8 @@ def main(argv=None, runner=None):
     ap = argparse.ArgumentParser(
         prog="agyteam.supervisor",
         description="Wake agents when teammates message them")
+    from . import __version__
+    ap.add_argument("--version", action="version", version=f"agyteam {__version__}")
     ap.add_argument("--distill", metavar="AGENT",
                     help="Distill learnings into memory for AGENT, then exit")
     ap.add_argument("--cycle", metavar="AGENT",

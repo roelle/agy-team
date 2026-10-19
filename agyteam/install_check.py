@@ -69,7 +69,11 @@ def local_imports(path: Path) -> set:
             if node.module:
                 out.add(node.module.split(".")[0])
             else:
-                out.update(a.name for a in node.names)
+                # `from . import x` names a module -- unless x is a package
+                # attribute such as __version__. Not decided by whether the
+                # file exists: this walk exists to name the ones that do not.
+                out.update(a.name for a in node.names
+                           if not (a.name.startswith("__") and a.name.endswith("__")))
         elif isinstance(node, ast.Import):
             for a in node.names:
                 if a.name.startswith("agyteam."):

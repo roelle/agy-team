@@ -99,6 +99,13 @@ def test_a_required_module_that_is_absent_is_named(tmp_path):
     assert "retro_store.py" in ic.missing(d.parent)
 
 
+def test_a_package_attribute_is_not_a_module(tmp_path):
+    """`from . import __version__` asked for __version__.py, which never exists."""
+    d = pkg(tmp_path, {"supervisor": "from . import __version__\nfrom . import tasks\n"})
+    missing = ic.missing(d.parent)
+    assert "__version__.py" not in missing and "tasks.py" in missing
+
+
 def test_a_complete_install_reports_nothing_missing(tmp_path):
     d = tmp_path / "agyteam"
     d.mkdir()

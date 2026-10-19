@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agyteam"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Persistent, learning agents and team platform for Google Antigravity"
 readme = "README.md"
 license = {text = "MIT"}
@@ -29,6 +29,9 @@ dev = [
 [project.scripts]
 agyteam = "agyteam.supervisor:main"
 agyteam-lifecycle = "agyteam.lifecycle:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "agyteam.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]

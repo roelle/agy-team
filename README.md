@@ -1194,6 +1194,33 @@ needed. A `pytest` from outside the venv will fail to import
 ```
 
 
+## Versioning
+
+Releases follow [Semantic Versioning](https://semver.org/), tagged
+`vX.Y.Z`, with notes in [CHANGELOG.md](CHANGELOG.md); how a release is cut is
+in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
+
+```bash
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.0.0"
+python -m agyteam.supervisor --version
+```
+
+The version promises this surface, and only this:
+
+- **What agents call**: the MCP tools of the bus, memory, introspection and
+  tasks servers -- their names, arguments and result conventions.
+- **What operators run**: the command lines of `agyteam.supervisor`,
+  `agyteam.models`, `agyteam.tasks`, `agyteam.lifecycle`, `agyteam.doctor`,
+  `agyteam.install_check`, and the environment variables documented above.
+- **What hosts and clients depend on**: the roster schema; the team
+  directory's record (`bus.jsonl`, `tasks.jsonl`, `reviews.jsonl`,
+  `events.jsonl`, `channels.json`, `models.jsonl`); `agyteam.record` and
+  `agyteam.actions`; the `Runner`, `Transport`, memory and observer seams; and
+  the payloads `hook_pre_tool_use` and `hook_stop` accept and emit.
+
+Not covered: other modules' internals, the wording of prompts and briefs
+given to agents, `evals/` and `bench/`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
