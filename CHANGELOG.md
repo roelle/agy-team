@@ -7,7 +7,35 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-18
+
+### Added
+- **The roster's `supervisor` block** (`runner`, `runner_config`, `manager`,
+  `inbox_pull`): how a team is run, kept with the team, so a supervisor
+  started by a client with none of your environment runs it the same way.
+  `--runner` on the supervisor command line; the heartbeat records the
+  runner, the manager and where each came from.
+- **Team-prefixed handles**: `@Ada` and `send_to_teammate(to="Ada")` reach
+  `at-Ada` when exactly one agent can be meant (exact name, then case, then a
+  name ending in `-Ada`, `_Ada` or `.Ada`). `agyteam.roster.resolve_name`.
+- **Document-fit reviews**: `record_review(..., deliverable, criteria)` --
+  each requirement either quoted verbatim from the deliverable (checked) or
+  marked unmet with a reason. Approval needs every criterion met; a request
+  for changes needs at least one unmet. Code reviews still need a proof.
+- **`switches_model_in_conversation`** on runners: a model change on a
+  runtime that switches in place (the agy CLI, measured) keeps the
+  conversation instead of distilling and cycling it. Host runners declare it
+  in `capabilities`.
+- **One supervisor per team**: a lock (`supervisor.lock`); a second
+  supervisor refuses the team and leaves the live one's heartbeat alone.
+
 ### Fixed
+- A supervisor started by a client used the client's runner and a guessed
+  manager: wakes failed and conversations were lost.
+- Turns that time out no longer count toward retiring a conversation; a slow
+  agent kept its context.
+- Under `inbox_pull`, a successful turn no longer marks the whole batch read;
+  only the pages the agent opened are.
 - **Review gate window**: an author's work now counts from the start of the
   episode in progress, or of the one that just finished when no new one has
   begun. It used to count only from the end of the last finished episode,
@@ -74,7 +102,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/roelle/agy-team/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/roelle/agy-team/compare/v2.0...v3.0.0
 [2.0]: https://github.com/roelle/agy-team/compare/v1.0...v2.0
 [1.0]: https://github.com/roelle/agy-team/releases/tag/v1.0

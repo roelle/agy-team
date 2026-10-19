@@ -136,6 +136,32 @@ def normalize(doc: dict, source: str = "roster") -> dict:
     return out
 
 
+_SEPARATORS = "-_."
+
+
+def resolve_name(handle: str, names) -> str | None:
+    """The agent a handle means: the agent named exactly that; else the one
+    whose name matches ignoring case; else the one whose name ends in it
+    after a team prefix ("Ada" -> "at-Ada", "at_ada", "at.Ada"). Two
+    candidates at any step is no match -- a handle that could wake either
+    of two agents wakes neither, rather than the wrong one."""
+    names = list(names)
+    if not handle:
+        return None
+    if handle in names:
+        return handle
+    low = handle.lower()
+    for candidates in (
+            [n for n in names if n.lower() == low],
+            [n for n in names if len(n) > len(low) and n.lower().endswith(low)
+             and n[-len(low) - 1] in _SEPARATORS]):
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            return None
+    return None
+
+
 def load(path) -> dict:
     """Read and normalise a roster file. Missing file → empty roster."""
     path = Path(path)

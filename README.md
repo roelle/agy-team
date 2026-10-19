@@ -820,6 +820,12 @@ has an `id`; a reply passes `thread=<id>` (direct messages too), and agents
 see the ids on what they receive. The post is logged to `bus.jsonl` once,
 addressed to `#<channel>`, with its mentions.
 
+A name can drop its team prefix and its case: `@Ada` wakes `at-Ada`, and
+`send_to_teammate(to="Ada")` reaches it too, provided exactly one agent is
+named `Ada` (ignoring case) or ends in `-Ada`, `_Ada` or `.Ada`. An exact name
+always wins; a handle two agents could answer to reaches neither, so add the
+prefix.
+
 ### Building a client: the record and operator actions
 
 [agy-chat](https://github.com/roelle/agy-chat) is a work-chat client built
@@ -890,6 +896,28 @@ first time it's edited. Genuinely ambiguous input is rejected with a readable
 message rather than an exception from three frames down: duplicate names, a
 mapping key that disagrees with its own `name` field, a list entry with no name,
 `user` as an agent name (it's reserved for the human), or a wrong type.
+
+### How a team is run: the roster's `supervisor` block
+
+A team that needs a particular runner or manager says so in its roster, so
+the supervisor runs it the same way whoever starts it -- a terminal, a cron
+job, or a client's Start button that knows nothing of your environment:
+
+```json
+{"agents": [...],
+ "supervisor": {"runner": "agyteam.runner_host:HostRunner",
+                "runner_config": {"start": "...", "deliver": "..."},
+                "manager": "at-Boss",
+                "inbox_pull": true}}
+```
+
+Every field is optional. The runner is `--runner`, else the roster's, else
+`AGYTEAM_RUNNER`, else the agy CLI; `runner_config` goes with the roster's
+runner, and an `AGYTEAM_RUNNER_CONFIG` meant for some other runner is not
+handed to it. The manager is `--manager`, else the roster's, else detected
+from roles. `distill`, `cycle` and `retro` use the same runner, so a cycle
+never resets a conversation on a runner that never had it. The heartbeat
+(`supervisor.json`) records the runner, the manager and where each came from.
 
 ### Roster management
 
@@ -1201,7 +1229,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.0.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.1.0"
 python -m agyteam.supervisor --version
 ```
 

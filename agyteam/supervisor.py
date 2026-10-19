@@ -1094,7 +1094,13 @@ class Supervisor:
             _rewrite(self.heartbeat_path, json.dumps({
                 "pid": os.getpid(), "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "mode": mode, "poll": self.poll,
-                "inflight": sorted(self.inflight)}) + "\n")
+                "inflight": sorted(self.inflight),
+                # What this supervisor is running with, and where that came
+                # from: a client can show it, and a wrong one is visible.
+                "runner": getattr(self.runner, "label", type(self.runner).__name__),
+                "runner_class": f"{type(self.runner).__module__}:{type(self.runner).__name__}",
+                "manager": self._find_manager(),
+                "source": getattr(self, "settings_source", {})}) + "\n")
         except OSError:
             pass
 
@@ -2607,7 +2613,7 @@ class Supervisor:
 
 def distill(agent: str, runner=None, team_dir=None) -> tuple[int, int]:
     """Wake `agent` to distill learnings into memory, returning (before_count, after_count)."""
-    r = runner or runner_lib.load()
+    r = runner or load_team_runner(team_dir)
     sup = Supervisor([agent], r, team_dir=team_dir)
     try:
         return sup.distill(agent)
@@ -2626,7 +2632,7 @@ def distill(agent: str, runner=None, team_dir=None) -> tuple[int, int]:
 
 def cycle(agent: str, runner=None, team_dir=None) -> tuple[int, int]:
     """Distill learnings and reset conversation for `agent`, returning (before_count, after_count)."""
-    r = runner or runner_lib.load()
+    r = runner or load_team_runner(team_dir)
     sup = Supervisor([agent], r, team_dir=team_dir)
     try:
         return sup.cycle(agent)
@@ -2663,7 +2669,7 @@ def retro(leader: str = "tpm", runner=None, team_dir=None,
     except Exception:
         agents = []
 
-    r = runner or runner_lib.load()
+    r = runner or load_team_runner(team_dir)
     sup = Supervisor(agents, r, team_dir=team_dir)
     try:
         return sup.retro(
@@ -3182,6 +3188,67 @@ def _agents_from_roster(team_dir: Path) -> list[str]:
     return [a["name"] for a in roster_lib.load(team_dir / "roster.json")["agents"]]
 
 
+def team_settings(team_dir) -> dict:
+    """The roster's "supervisor" block: how this team is meant to be run.
+
+        "supervisor": {"runner": "agyteam.runner_host:HostRunner",
+                       "runner_config": {...}, "manager": "at-Ada",
+                       "inbox_pull": true}
+
+    Kept with the team so every way of starting its supervisor -- a
+    terminal, a scheduler, a chat app's Start button -- runs it the same way.
+    Started from a client with none of the launcher's environment, a team
+    fell back to the default runner, its wakes failed, its agents lost their
+    conversations, and the manager was guessed.
+    """
+    try:
+        doc = json.loads((Path(team_dir) / "roster.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    block = doc.get("supervisor") if isinstance(doc, dict) else None
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def apply_team_settings(team_dir, runner_flag: str | None = None) -> dict:
+    """Resolve the runner for this process: --runner, else the roster's,
+    else AGYTEAM_RUNNER (the machine-wide default), else the default runner.
+    The roster beats the environment because the environment belongs to
+    whoever started the process, and the roster belongs to the team.
+
+    The runner's config travels with it: the roster's runner_config when it
+    gives one; the environment's only when it was set for the same runner.
+    """
+    settings = team_settings(team_dir) if team_dir is not None else {}
+    env_runner = os.environ.get("AGYTEAM_RUNNER")
+    source = {}
+    chosen, where = None, None
+    if runner_flag:
+        chosen, where = runner_flag, "--runner"
+    elif settings.get("runner"):
+        chosen, where = str(settings["runner"]), "roster"
+    if chosen:
+        if "runner_config" in settings and chosen == settings.get("runner"):
+            os.environ["AGYTEAM_RUNNER_CONFIG"] = json.dumps(settings["runner_config"])
+        elif chosen != env_runner:
+            os.environ.pop("AGYTEAM_RUNNER_CONFIG", None)
+        os.environ["AGYTEAM_RUNNER"] = chosen
+        source["runner"] = where
+    else:
+        source["runner"] = "AGYTEAM_RUNNER" if env_runner else "default"
+    if settings.get("manager"):
+        source["manager"] = "roster"
+    settings["_source"] = source
+    return settings
+
+
+def load_team_runner(team_dir=None, runner_flag: str | None = None):
+    """The runner this team is meant to run on (see apply_team_settings)."""
+    if team_dir is None and os.environ.get("AGYTEAM_TEAM_DIR"):
+        team_dir = Path(os.environ["AGYTEAM_TEAM_DIR"])
+    apply_team_settings(team_dir, runner_flag=runner_flag)
+    return runner_lib.load()
+
+
 def main(argv=None, runner=None):
     ap = argparse.ArgumentParser(
         prog="agyteam.supervisor",
@@ -3240,7 +3307,11 @@ def main(argv=None, runner=None):
     ap.add_argument("--no-require-review", action="store_true",
                     help="Do not bounce unreviewed answers back to the manager")
     ap.add_argument("--manager", metavar="AGENT", default=None,
-                    help="Agent acting as manager (default: auto-detect from roster)")
+                    help="Agent acting as manager (default: the roster's "
+                         "supervisor.manager, else auto-detect)")
+    ap.add_argument("--runner", metavar="MODULE:CLASS", default=None,
+                    help="Runner for this run (default: the roster's supervisor.runner, "
+                         "else AGYTEAM_RUNNER, else the agy CLI)")
     ap.add_argument("--waive-review", metavar="TASK_ID", default=None,
                     help="Operator's 'ship it without review' for a requires_review "
                          "task; recorded as a waiver, never as a review. Pairs with "
@@ -3306,13 +3377,15 @@ def main(argv=None, runner=None):
             sup.close()
         return
 
+    settings = apply_team_settings(team_dir, runner_flag=args.runner)
     r = runner or runner_lib.load()
     sup = Supervisor(agents, r, team_dir=team_dir,
                      max_hops=args.max_hops, poll=args.poll, quiet=args.quiet,
                      stop_on_answer=not args.no_stop_on_answer,
                      require_review=not args.no_require_review,
-                     manager=args.manager,
-                     inbox_pull=True if args.inbox_pull else None)
+                     manager=args.manager or settings.get("manager"),
+                     inbox_pull=True if args.inbox_pull else settings.get("inbox_pull"))
+    sup.settings_source = settings.get("_source", {})
     try:
         if args.retro:
             retro_leader = resolve_retro_leader(args.retro_leader, agents,

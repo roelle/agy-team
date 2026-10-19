@@ -30,6 +30,7 @@ from pathlib import Path
 from . import mcp_base
 from .mcp_base import fit, serve, string, tool
 from . import heartbeat, policy
+from . import roster as roster_lib
 from .transport import KINDS, Transport, load
 
 # The repo this module lives in, for resolving relative proof paths and the
@@ -536,6 +537,9 @@ def _send(t: Transport, a: dict) -> str:
     if kind not in KINDS:
         return (f"[error: kind must be one of {', '.join(KINDS)}, not {kind!r}]")
     task_id = a.get("task_id").strip() if isinstance(a.get("task_id"), str) else None
+    if to != "user":
+        from . import channels
+        to = roster_lib.resolve_name(to, channels._roster_agents(_team_dir(t))) or to
     refusal = policy.check_tool_policy(t.me, "send_to_teammate", {"to": to, "content": content},
                                        team_dir=_team_dir(t), check_paths=False)
     if refusal:

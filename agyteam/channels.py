@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 from . import filelock
+from . import roster as roster_lib
 
 FILE = "channels.json"
 DEFAULT = "general"
@@ -140,7 +141,9 @@ def of(team_dir, agent: str) -> list[str]:
 
 
 def mentioned(content: str, channel_members: list[str], roster: list[str]) -> set[str]:
-    """Who a post wakes: named agents on the roster, @here, @all."""
+    """Who a post wakes: named agents on the roster, @here, @all. A name
+    may drop the team prefix or its case (@Ada wakes at-Ada) when that
+    leaves exactly one agent it can mean."""
     out: set[str] = set()
     known = set(roster)
     for name in _MENTION.findall(content or ""):
@@ -149,8 +152,10 @@ def mentioned(content: str, channel_members: list[str], roster: list[str]) -> se
             out |= set(channel_members)
         elif low in ("all", "everyone", "channel"):
             out |= known
-        elif name in known:
-            out.add(name)
+        else:
+            agent = roster_lib.resolve_name(name, roster)
+            if agent:
+                out.add(agent)
     return out
 
 
