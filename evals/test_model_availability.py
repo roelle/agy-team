@@ -102,6 +102,10 @@ def test_the_record_flags_an_agent_pinned_to_an_unavailable_model(fake_agy, team
     m = Record(team).models()
     assert m["manager"]["available"] is False
     assert m["coder"]["available"] is True and m["qa"]["available"] is None
+    models.set_model(team, "manager", "gemini-4-argon-high")
+    m = Record(team).models()["manager"]
+    assert m["available"] is True and m["roster_available"] is False, \
+        "an override hides a stale roster pin it will fall back to when it expires"
 
 
 def test_doctor_names_the_agent_whose_turns_will_fail(fake_agy, team, capsys):
