@@ -930,6 +930,7 @@ class Supervisor:
                 continue
             if list(was_on) == list(now_on) or agent in self.inflight:
                 continue                          # unchanged, or not idle yet
+            self._warn_unavailable_model(agent, now_on)
             has_conversation = bool(getattr(self.runner, "conversation_id",
                                             lambda a: None)(agent))
             distilled = False
@@ -952,6 +953,33 @@ class Supervisor:
                 _rewrite(self._models_applied_path, json.dumps(applied, indent=2) + "\n")
             except OSError:
                 pass
+
+    def _warn_unavailable_model(self, agent: str, now_on: list) -> None:
+        """Tell the user, once per change, when an agent is about to run on a
+        model the runner does not offer -- an override that expired back to a
+        stale roster pin, say. It is not blocked: the runner's list can lag."""
+        from . import runner as runner_lib
+        try:
+            ok = runner_lib.model_available(now_on[0], now_on[1])
+        except Exception:
+            ok = None
+        if ok is not False:
+            return
+        text = (f"{agent} is moving to {now_on[0]!r}, which the configured runner "
+                f"does not offer: its turns will fail. Choose one it does "
+                f"(python -m agyteam.models available) and set it with "
+                f"python -m agyteam.models set {agent} <model>, or fix the roster.")
+        try:
+            bus = load_transport("supervisor")
+            try:
+                bus.send_kind("user", text, kind="blocker")
+            finally:
+                if hasattr(bus, "close"):
+                    bus.close()
+            self._user_mail_at_start = self._user_mail_count()
+            self._log(f"[supervisor] {text}")
+        except Exception:
+            pass
 
     def _model_allowance_alerts(self) -> None:
         """Tell the user once when a model passes 80% and 100% of its weekly

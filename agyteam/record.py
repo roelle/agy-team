@@ -175,10 +175,14 @@ class Record:
     def models(self) -> dict[str, dict]:
         """{agent: {"model", "effort", "source"}}."""
         from . import models as models_lib
+        from . import runner as runner_lib
         out = {}
         for a in self.roster().get("agents", []):
             m, e, src = models_lib.resolve(self.team_dir, a["name"], a.get("model"), a.get("effort"))
-            out[a["name"]] = {"model": m, "effort": e, "source": src}
+            # available: False means the configured runner will refuse it,
+            # None that it cannot say (or that the runner's default is used).
+            out[a["name"]] = {"model": m, "effort": e, "source": src,
+                              "available": runner_lib.model_available(m, e)}
         return out
 
     # --- search ------------------------------------------------------------------------------

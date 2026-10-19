@@ -107,17 +107,36 @@ def _operator_only(by: str | None) -> str:
     return (by or os.environ.get("USER") or "operator").strip()
 
 
+def check_available(model: str, effort: str | None = None, spec: str | None = None) -> None:
+    """Refuse a model the configured runner says it cannot run.
+
+    A name one runtime knows and another does not fails every turn: the
+    seeded roster's SDK model id failed every CLI turn for two agents. When
+    the runner cannot say what it offers, nothing is refused.
+    """
+    from . import runner as runner_lib
+    if runner_lib.model_available(model, effort, spec) is False:
+        offered = [m["id"] for m in runner_lib.list_models(spec) or []]
+        cls = runner_lib.runner_class(spec)
+        raise ModelError(f"{model!r} is not a model the configured runner "
+                         f"({getattr(cls, 'label', 'runner')}) can run; it offers: "
+                         f"{', '.join(offered[:20])}{' ...' if len(offered) > 20 else ''}")
+
+
 def set_model(team_dir, agent: str, model: str, effort: str | None = None,
               until: str | None = None, reason: str = "", by: str | None = None,
-              now: float | None = None) -> dict:
+              now: float | None = None, check: bool = True) -> dict:
     """Put `agent` (or "*" for everyone) on `model`, optionally until a time
-    (a duration like '3d' or an ISO time with a zone)."""
+    (a duration like '3d' or an ISO time with a zone). With `check`, a model
+    the configured runner does not offer is refused."""
     who = _operator_only(by)
     agent = (agent or "").strip()
     if agent != "*" and agent not in _agent_names(team_dir):
         raise ModelError(f"no agent named {agent!r} on the roster")
     if not (model or "").strip():
         raise ModelError("give the model to switch to (clear removes an override)")
+    if check:
+        check_available(model.strip(), effort)
     when = None
     if until:
         from .tasks import TaskError, parse_when
@@ -254,10 +273,13 @@ def main(argv=None) -> int:
     s.add_argument("--effort", default=None)
     s.add_argument("--until", default=None, help="a duration like 3d, or an ISO time with a zone")
     s.add_argument("--reason", default="")
+    s.add_argument("--force", action="store_true",
+                   help="set it even if the configured runner does not list it")
     c = sub.add_parser("clear", help="remove an agent's (or '*') override")
     c.add_argument("agent")
     c.add_argument("--reason", default="")
     sub.add_parser("list", help="every agent's model and where it comes from")
+    sub.add_parser("available", help="the models the configured runner can run")
     u = sub.add_parser("usage", help="tokens per model over the last week")
     u.add_argument("--days", type=float, default=7)
     a = ap.parse_args(argv)
@@ -266,7 +288,8 @@ def main(argv=None) -> int:
     td = scope.team_dir(a.team_dir or os.environ.get("AGYTEAM_TEAM_DIR"))
     try:
         if a.command == "set":
-            row = set_model(td, a.agent, a.model, a.effort, a.until, a.reason)
+            row = set_model(td, a.agent, a.model, a.effort, a.until, a.reason,
+                            check=not a.force)
             print(f"{row['agent']} -> {row['model']}"
                   + (f" until {row['until']}" if row["until"] else "")
                   + "; the supervisor applies it at the agent's next idle moment "
@@ -274,12 +297,23 @@ def main(argv=None) -> int:
         elif a.command == "clear":
             clear(td, a.agent, a.reason)
             print(f"{a.agent}: override cleared; back to the roster's model")
+        elif a.command == "available":
+            from . import runner as runner_lib
+            offered = runner_lib.list_models()
+            cls = runner_lib.runner_class()
+            if offered is None:
+                print(f"the configured runner ({getattr(cls, 'label', '?')}) cannot list its models")
+            for m in offered or []:
+                print(f"  {m['id']:32} {m['label']}")
         elif a.command == "list":
+            from . import runner as runner_lib
             roster = {x["name"]: x for x in _roster(td).get("agents", []) if isinstance(x, dict)}
             for name, spec in roster.items():
                 model, effort, source = resolve(td, name, spec.get("model"), spec.get("effort"))
+                ok = runner_lib.model_available(model, effort)
+                flag = "   ** not offered by the configured runner **" if ok is False else ""
                 print(f"  {name:10} {model or '(runner default)'}"
-                      f"{'-' + effort if effort else ''}   [{source}]")
+                      f"{'-' + effort if effort else ''}   [{source}]{flag}")
             for agent, row in overrides(td).items():
                 if row.get("until"):
                     print(f"  ({agent} override expires {row['until']})")

@@ -14,6 +14,7 @@ Config (AGYTEAM_RUNNER_CONFIG), all optional:
 import asyncio
 import collections
 import json
+import os
 import sys
 import threading
 import time
@@ -341,6 +342,28 @@ class SdkRunner(Runner):
                     self._agents.pop(a, None)
         except Exception:
             pass
+
+    @classmethod
+    def list_models(cls, config=None):
+        """Gemini models this API key can call for generation (a metadata
+        call; no tokens)."""
+        key = os.environ.get("GEMINI_API_KEY", "")
+        if not key or key.startswith("offline-tests"):
+            return None
+        try:
+            from google import genai
+            client = genai.Client(api_key=key)
+            out = []
+            for m in client.models.list():
+                actions = getattr(m, "supported_actions", None) or []
+                if actions and "generateContent" not in actions:
+                    continue
+                mid = (m.name or "").split("/")[-1]
+                if mid.startswith("gemini"):
+                    out.append({"id": mid, "label": getattr(m, "display_name", None) or mid})
+            return sorted(out, key=lambda x: x["id"]) or None
+        except Exception:
+            return None
 
     def recycle_agent(self, agent: str, reason: str = "") -> None:
         """Explicitly terminate/recycle an agent session and log the required banner."""

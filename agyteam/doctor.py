@@ -362,6 +362,34 @@ def check_plugin_install(r: Report, spec: str) -> None:
              + "Reinstall: bash plugin/install.sh")
 
 
+def check_models(r: Report, team_dir: Path) -> None:
+    """Does the configured runner offer every agent's model?
+
+    A roster or override naming a model the runtime does not know fails every
+    turn for that agent -- the seeded roster once pinned an SDK model id that
+    the agy CLI rejected, and both oversight roles failed on every wake.
+    """
+    from . import runner as runner_lib
+    from .record import Record
+    try:
+        models = Record(team_dir).models()
+    except Exception as e:
+        r.line(WARN, f"could not read the agents' models: {e}")
+        return
+    if runner_lib.list_models() is None:
+        r.line(WARN, "the configured runner cannot list its models, so agents' "
+                     "models were not checked")
+        return
+    bad = {a: m["model"] for a, m in models.items() if m.get("available") is False}
+    if not bad:
+        r.line(OK, "every agent's model is one the configured runner offers")
+        return
+    for agent, model in bad.items():
+        r.line(BAD, f"{agent} is set to {model!r}, which the configured runner does "
+                    f"not offer; every turn will fail. See `python -m agyteam.models "
+                    f"available`, then `python -m agyteam.models set {agent} <model>`")
+
+
 def check_tasks_log(r: Report, team_dir: Path) -> None:
     """Is tasks.jsonl readable, and does every open task point at someone real?
 
@@ -516,6 +544,7 @@ def main(argv=None) -> int:
     check_stale_bus_servers(r, team_dir)
     print()
     check_tasks_log(r, team_dir)
+    check_models(r, team_dir)
     print()
     check_brief(r, team_dir, agent, a.brief_lines)
 

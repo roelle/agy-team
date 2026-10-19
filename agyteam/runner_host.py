@@ -129,6 +129,14 @@ class HostRunner(Runner):
             pass
         return {}
 
+    @classmethod
+    def list_models(cls, config=None):
+        """The config's "models": a list of ids, or of {"id", "label"}."""
+        raw = (config or {}).get("models")
+        if not raw:
+            return None
+        return [m if isinstance(m, dict) else {"id": str(m), "label": str(m)} for m in raw]
+
     def model_for(self, agent: str) -> str:
         """An operator override (agyteam.models), else the roster, then the
         config's model_map, then its "*" default."""

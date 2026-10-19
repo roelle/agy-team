@@ -62,6 +62,15 @@ def _sandbox_ambient_team():
         os.environ.pop(key, None)
     os.environ["AGYTEAM_DURABLE_DIR"] = SANDBOX
     os.environ["AGYTEAM_TEAMS_ROOT"] = SANDBOX
+    # Never ask the real runtime what models it has: that is a network call
+    # through whatever `agy` is on this machine, and its answer would decide
+    # offline tests. Tests of the check turn it back on against a fake.
+    os.environ["AGYTEAM_MODEL_CHECK"] = "0"
+    try:
+        from agyteam import runner
+        runner._MODEL_CACHE.clear()
+    except Exception:
+        pass
 
 
 _sandbox_ambient_team()

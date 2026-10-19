@@ -328,6 +328,19 @@ class Runner(ABC):
     def retired_path(self):
         return self.team_dir / "conversations_retired.jsonl"
 
+    @classmethod
+    def list_models(cls, config: dict | None = None) -> list[dict] | None:
+        """The models this runtime can run, as [{"id", "label"}], or None if
+        it cannot say. `id` is exactly what model_id() produces for a choice,
+        so a roster or override can be checked against it before a turn
+        fails on it. Classmethod: answering must not need a session."""
+        return None
+
+    @classmethod
+    def model_id(cls, model: str | None, effort: str | None = None) -> str | None:
+        """The identifier this runtime is given for (model, effort)."""
+        return model
+
     def resolved_model(self, agent: str, model: str | None,
                        effort: str | None = None) -> tuple[str | None, str | None]:
         """The model (and effort) `agent` should run on: an operator override
@@ -471,6 +484,64 @@ class Runner(ABC):
 
 CAPABILITIES = ("supports_audit", "supports_containment",
                 "supports_capability_scoping")
+
+
+_MODEL_CACHE: dict[str, tuple[float, list | None]] = {}
+
+
+def runner_class(spec: str | None = None):
+    """The configured runner's class, without constructing it (or None)."""
+    spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
+    try:
+        mod_name, _, cls_name = spec.partition(":")
+        cls = getattr(importlib.import_module(mod_name), cls_name)
+        return cls if isinstance(cls, type) and issubclass(cls, Runner) else None
+    except Exception:
+        return None
+
+
+def list_models(spec: str | None = None, config: dict | None = None,
+                max_age: float = 600) -> list[dict] | None:
+    """The configured runner's models (see Runner.list_models), cached for
+    `max_age` seconds: the CLI fetches its list over the network."""
+    if os.environ.get("AGYTEAM_MODEL_CHECK", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None                 # asked not to query the runtime
+    spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
+    if config is None:
+        try:
+            config = json.loads(os.environ.get("AGYTEAM_RUNNER_CONFIG") or "{}")
+        except ValueError:
+            config = {}
+    key = spec + json.dumps(config, sort_keys=True, default=str)
+    hit = _MODEL_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < max_age:
+        return hit[1]
+    cls = runner_class(spec)
+    try:
+        models = cls.list_models(config) if cls else None
+    except Exception:
+        models = None
+    _MODEL_CACHE[key] = (time.monotonic(), models)
+    return models
+
+
+def model_available(model: str | None, effort: str | None = None,
+                    spec: str | None = None) -> bool | None:
+    """Can the configured runner run (model, effort)? None if it cannot say,
+    or if no model is chosen (the runner's default)."""
+    if not model:
+        return None
+    models = list_models(spec)
+    if models is None:
+        return None
+    cls = runner_class(spec)
+    wanted = cls.model_id(model, effort) if cls else model
+    # A runtime may list effort-qualified ids ("gemini-3.8-flash-high") and
+    # still accept the family name, with its default effort.
+    efforts = ("minimal", "low", "medium", "high", "xhigh", "max")
+    return any(m["id"] == wanted or (m["id"].startswith(wanted + "-")
+                                     and m["id"][len(wanted) + 1:] in efforts)
+               for m in models)
 
 
 def capabilities(spec: str | None = None) -> dict:

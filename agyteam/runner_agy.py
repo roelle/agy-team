@@ -95,6 +95,33 @@ class AgyRunner(Runner):
             pass
         return persona.brief(agent, agents, shared)
 
+    @classmethod
+    def model_id(cls, model, effort=None):
+        # The CLI names a model with its effort ("gemini-3.8-flash-high");
+        # roster model + effort are joined the same way _run joins them.
+        if model and effort and not model.endswith(f"-{effort}"):
+            return f"{model}-{effort}"
+        return model
+
+    @classmethod
+    def list_models(cls, config=None):
+        """`agy models` prints one "<id>\t<label>" per line."""
+        binary = (config or {}).get("binary") or "agy"
+        exe = shutil.which(binary) or (binary if os.path.isfile(binary) else None)
+        if not exe:
+            return None
+        try:
+            p = subprocess.run([exe, "models"], capture_output=True, text=True, timeout=45)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        out = []
+        for line in p.stdout.splitlines():
+            if "\t" in line:
+                mid, _, label = line.partition("\t")
+                if mid.strip():
+                    out.append({"id": mid.strip(), "label": label.strip() or mid.strip()})
+        return out or None
+
     def available(self) -> str | None:
         """Return the resolved binary path, or None if agy isn't installed."""
         return shutil.which(self.binary) or (
@@ -109,11 +136,12 @@ class AgyRunner(Runner):
         agents worth putting on a different model.
         """
         spec = self._roster_spec(agent)
-        model = spec.get("model") or self.config.get("model") or ""
-        effort = spec.get("effort") or self.config.get("effort") or ""
-        if model and effort and not model.endswith(f"-{effort}"):
-            model = f"{model}-{effort}"
-        return model
+        # Through the override, exactly as _run does: recording the roster's
+        # model logged turns run on an override as the model they did not use.
+        model, effort = self.resolved_model(
+            agent, spec.get("model") or self.config.get("model"),
+            spec.get("effort") or self.config.get("effort"))
+        return self.model_id(model, effort) or ""
 
     def _record_usage(self, agent: str, payload: dict, conv_id: str | None = None,
                       duration_s: float | None = None) -> None:
@@ -168,9 +196,7 @@ class AgyRunner(Runner):
             agent, spec.get("model") or self.config.get("model"),
             spec.get("effort") or self.config.get("effort"))
         if model:
-            if effort and not model.endswith(f"-{effort}"):
-                model = f"{model}-{effort}"
-            cmd += ["--model", model]
+            cmd += ["--model", self.model_id(model, effort)]
         if conv_id:
             cmd[1:1] = ["--conversation", conv_id]
         cmd.extend(self.extra_args)
