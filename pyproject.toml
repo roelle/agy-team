@@ -7,15 +7,23 @@ name = "agyteam"
 version = "0.1.0"
 description = "Persistent, learning agents and team platform for Google Antigravity"
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
-dependencies = [
+# The core -- supervisor, MCP servers, transports, the CLI and host runners,
+# the record and operator APIs -- is standard library only. The Antigravity
+# SDK is needed only by the SDK runner (and sdk_agent/sdk_cli): install it
+# with the `sdk` extra. `dev` includes it, so the whole suite runs.
+dependencies = []
+
+[project.optional-dependencies]
+sdk = [
     "google-antigravity>=0.1.16",
     "google-genai>=1.0.0",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "google-antigravity>=0.1.16",
+    "google-genai>=1.0.0",
 ]
 
 [project.scripts]

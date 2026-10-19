@@ -111,8 +111,18 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install google-antigravity
+.venv/bin/pip install -e ".[sdk]"      # the core alone: pip install -e .
 echo "GEMINI_API_KEY=..." > .env
+```
+
+The core (supervisor, MCP servers, transports, the CLI and host runners, the
+client API) is standard library only. The `sdk` extra adds the Antigravity
+SDK, which only the SDK runner needs; `dev` adds it and pytest. To use agyteam
+as a library from another project:
+
+```bash
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git"           # core
+pip install "agyteam[sdk] @ git+https://github.com/roelle/agy-team.git"      # with the SDK runner
 ```
 
 Talk to a single agent. It remembers you next time:
@@ -812,6 +822,11 @@ addressed to `#<channel>`, with its mentions.
 
 ### Building a client: the record and operator actions
 
+[agy-chat](https://github.com/roelle/agy-chat) is a work-chat client built
+this way: channels, threads, DMs and agent-to-agent conversations beside live
+presence, models and the task board, in a local web app with no build step.
+
+
 `agyteam.record` reads the team's record for any client -- `Record(team_dir)`
 gives messages by channel or conversation, threads and reply counts, tasks,
 reviews, events, presence (running, idle, failing, offline), each agent's
@@ -1177,3 +1192,7 @@ needed. A `pytest` from outside the venv will fail to import
 .venv/bin/python -m pytest evals/test_review.py
 ```
 
+
+## License
+
+MIT. See [LICENSE](LICENSE).

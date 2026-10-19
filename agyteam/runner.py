@@ -524,7 +524,11 @@ def load(spec: str | None = None, config: dict | None = None) -> Runner:
     try:
         cls = getattr(importlib.import_module(mod_name), cls_name)
     except (ImportError, AttributeError) as e:
-        raise SystemExit(f"cannot load runner {spec!r}: {e}")
+        hint = ""
+        if isinstance(e, ImportError) and "google" in str(e):
+            hint = ("; this runner needs the Antigravity SDK, which is optional: "
+                    "pip install \"agyteam[sdk]\" (or pip install -e \".[sdk]\" in a checkout)")
+        raise SystemExit(f"cannot load runner {spec!r}: {e}{hint}")
     if not issubclass(cls, Runner):
         raise SystemExit(f"{spec} is not an agyteam.runner.Runner subclass")
     return cls(config)
