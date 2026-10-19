@@ -47,6 +47,14 @@ def test_a_tag_for_this_version_points_at_a_commit_that_has_it():
     assert f'__version__ = "{agyteam.__version__}"' in p.stdout
 
 
+def test_the_install_instructions_pin_this_version():
+    """A release that does not move these tells people to install the one
+    before it. agy-chat 0.2.0 shipped that way."""
+    for doc in ("README.md", "RELEASING.md"):
+        pins = re.findall(r"agy-team\.git@v(\d+\.\d+\.\d+)", (ROOT / doc).read_text())
+        assert pins and set(pins) == {agyteam.__version__}, (doc, pins)
+
+
 def test_the_command_line_reports_it():
     out = subprocess.run([sys.executable, "-m", "agyteam.supervisor", "--version"],
                          capture_output=True, text=True, cwd=ROOT, timeout=60)

@@ -94,6 +94,24 @@ def check_reply_text(r: Report, agent: str) -> None:
              '"[error: ...]" for a quiet success.')
 
 
+class _ProbeOnly:
+    """The agent's transport, with an inbox that holds only the probe."""
+
+    def __init__(self, transport, probe: str) -> None:
+        self._t, self._probe = transport, probe
+
+    def __getattr__(self, name):
+        return getattr(self._t, name)
+
+    def fetch(self):
+        return [m for m in self._t.fetch() if m.content == self._probe]
+
+    def acknowledge(self, msgs=None):
+        mine = [m for m in (msgs or []) if m.content == self._probe]
+        if mine:
+            self._t.acknowledge(mine)
+
+
 def check_tools(r: Report, team_dir: Path, agent: str) -> None:
     """Call every bus tool end to end. A tool list is not a probe; a call is."""
     from .mcp_bus import main as _bus_main            # noqa: F401  (import check)
@@ -107,9 +125,12 @@ def check_tools(r: Report, team_dir: Path, agent: str) -> None:
 
     from .mcp_bus import _check_inbox, _list_teammates
 
-    probe = f"[agyteam.doctor probe from {agent}]"
+    # Unique, so only this run's probe is ever taken out of the inbox below;
+    # and "fyi", so a supervisor running on this team does not wake the
+    # agent for it.
+    probe = f"[agyteam.doctor probe from {agent} at {time.time():.6f}]"
     try:
-        sent = t.send(agent, probe)
+        sent = t.send_kind(agent, probe, kind="fyi")
         r.line(OK if not sent.startswith("[error:") else BAD,
                f"send_to_teammate -> {sent}")
     except Exception as e:
@@ -131,8 +152,12 @@ def check_tools(r: Report, team_dir: Path, agent: str) -> None:
                  f"running server. Kill the bus server processes and let them "
                  f"respawn.")
 
+    # check_inbox marks read what it returns. Called on the agent's own inbox
+    # it consumed the agent's real mail -- on a live team, messages the
+    # agent then never saw, printed only to this preflight. It sees the
+    # probe and nothing else.
     try:
-        inbox = _check_inbox(t)
+        inbox = _check_inbox(_ProbeOnly(t, probe))
         r.line(OK if probe in inbox else WARN,
                "check_inbox returned the probe" if probe in inbox
                else "check_inbox did not return the probe (it may have been "
@@ -297,6 +322,32 @@ def check_workspace_grants(r: Report, team_dir: Path, caps: dict) -> None:
                      "directory is reachable regardless of the grant list")
         r.detail("Keep it outside every working tree and rely on the host: "
                  "filesystem permissions, a container, or a separate account.")
+
+
+def check_roster_writable(r: Report, team_dir: Path) -> None:
+    """Say who can rewrite the permissions, because the answer is usually us.
+
+    Every permission an agent has is in roster.json. An agent running as the
+    user who can write it can grant itself anything; the supervisor puts a
+    roster changed during a turn back, but that is detection. Downstream, a
+    test agent did exactly this, then used what it had granted itself.
+    """
+    roster = team_dir / "roster.json"
+    if not roster.exists() or not os.access(roster, os.W_OK):
+        r.line(OK, "roster.json is not writable by this user")
+        return
+    import getpass
+    try:
+        me = getpass.getuser()
+    except Exception:
+        me = f"uid {os.getuid()}" if hasattr(os, "getuid") else "this user"
+    r.line(WARN, f"roster.json is writable by {me}; an agent running as {me} "
+                 f"can rewrite its own permissions")
+    r.detail("The supervisor puts back a roster changed during a turn and "
+             "tells you, so the change does not last. It cannot undo what "
+             "the turn did with it. For a boundary, run the agents under an "
+             "account or in a container that cannot write "
+             f"{team_dir}.")
 
 
 def check_plugin_install(r: Report, spec: str) -> None:
@@ -538,6 +589,7 @@ def main(argv=None) -> int:
     check_tools(r, team_dir, agent)
     print()
     check_workspace_grants(r, team_dir, caps)
+    check_roster_writable(r, team_dir)
     print()
     check_plugin_install(r, caps.get("spec") or "")
     print()

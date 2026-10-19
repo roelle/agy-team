@@ -7,6 +7,42 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-19
+
+### Added
+- **The supervisor guards the roster.** Every permission an agent has is in
+  `roster.json`, and an agent with a shell runs as the user who wrote it.
+  Reported from downstream testing: a test agent given no permissions was
+  refused an edit, built the roster's path in pieces to get past the check,
+  granted itself access, edited the test script and finished its task. The
+  supervisor now keeps the roster it accepted. A change made while an
+  agent's turn is running, and not written by agyteam itself, is put back
+  and kept as `roster.rejected-<time>.json`. A `roster_reverted` event names
+  the agents that were running, and the operator gets a `blocker` message,
+  which does not count as an answer to the user. A change made while no turn
+  runs is adopted. This is detection, not a boundary: see Known limits in
+  the README.
+- `roster_history.jsonl`: `roster.save` records each write by content hash
+  before making it. This is how the supervisor tells `lifecycle` and the
+  roster admin tools apart from an agent editing the file.
+- `agyteam.doctor` warns when `roster.json` is writable by the user it runs
+  as, which on most setups means by the agents too.
+
+### Fixed
+- **No agent writes the team directory, confined or not.** The rule was
+  enforced only for agents with a declared workspace, so an agent given no
+  permissions was the one agent that could rewrite them. File tools and
+  shell writes (redirects, `cp`/`mv` destinations, `sed -i`, ...) into it are
+  refused, on the SDK runner too. The refusal asks the agent to request a
+  missing permission rather than work around it.
+- **`agyteam.doctor` no longer eats a live agent's mail.** It probed
+  `check_inbox` as the first agent on the roster, which marked that agent's
+  real messages read and printed them only to the preflight. It now sees and
+  acknowledges only its own probe, and sends the probe as `fyi` so a running
+  supervisor does not wake the agent for it.
+- `roster.save` writes atomically. A reader between the truncate and the
+  write saw an empty roster.
+
 ## [3.1.0] - 2026-10-18
 
 ### Added
@@ -102,7 +138,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/roelle/agy-team/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/roelle/agy-team/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/roelle/agy-team/compare/v2.0...v3.0.0
 [2.0]: https://github.com/roelle/agy-team/compare/v1.0...v2.0

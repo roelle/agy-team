@@ -80,6 +80,33 @@ def test_the_probe_is_a_call_not_an_inventory(tmp_path):
     assert "record_retro -> [retrospective answer recorded" in p.stdout
 
 
+def test_the_probe_leaves_the_agents_real_mail_unread(tmp_path):
+    """Run on a live team, check_inbox as the agent marked its real mail
+    read: the agent never saw it, and only the preflight's output had it."""
+    td = make_team(tmp_path)
+    real = {"ts": "2026-10-18 09:00:00", "from": "coder", "to": "manager",
+            "content": "the build is red, look before you ship", "kind": "work"}
+    (td / "inbox" / "manager.jsonl").write_text(json.dumps(real) + "\n")
+    p = run(td, tmp_path)
+    assert "check_inbox returned the probe" in p.stdout, p.stdout
+    assert "the build is red" not in p.stdout
+    left = [json.loads(x) for x in
+            (td / "inbox" / "manager.jsonl").read_text().splitlines() if x.strip()]
+    assert left == [real], left
+    sent = [json.loads(x) for x in (td / "bus.jsonl").read_text().splitlines()
+            if "agyteam.doctor probe" in x]
+    assert sent and all(m.get("kind") == "fyi" for m in sent), \
+        "a probe that wakes the agent costs a live team a turn"
+
+
+def test_it_says_agents_can_rewrite_a_roster_this_user_can_write(tmp_path):
+    """A thing to know, not a failure: it is true of nearly every team."""
+    td = make_team(tmp_path)
+    p = run(td, tmp_path)
+    assert "can rewrite its own permissions" in p.stdout, p.stdout
+    assert p.returncode == 0
+
+
 def test_the_probe_names_both_paths_when_it_lands(tmp_path):
     td = make_team(tmp_path)
     p = run(td, tmp_path)

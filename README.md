@@ -243,6 +243,13 @@ Stated here so you do not have to find them:
   If an agent must not reach something, withhold `run_command` from it or run
   the team in a container or under a separate account. Every runner now
   declares `supports_containment = False`.
+- **An agent with a shell can rewrite its own permissions.** They are in
+  `roster.json`, and it runs as the user who wrote that file. The supervisor
+  puts back a roster changed during a turn and tells you, so a self-granted
+  permission does not outlast the turn. It cannot undo what the turn did with
+  the permission while it held it, and an agent that forges agyteam's own
+  history file as well gets past it. The boundary is an OS account or
+  container for the agents that cannot write the team directory.
 
 - **Not validated on a codebase nobody here has seen.** Everything so far has
   been this repo or a problem we already knew the answer to.
@@ -372,7 +379,19 @@ enforced by capability, not prose.
 - **The team directory is the record and no agent is granted it.** Reviews,
   the bus, the roster and the task log are written by agyteam's own processes;
   agents reach them through the MCP servers. `grant_workspace` refuses a path
-  that contains it and `agyteam.doctor` fails on one.
+  that contains it and `agyteam.doctor` fails on one. A file tool or a shell
+  command that writes into it is refused for every agent, confined or not.
+- **The roster is the operator's.** Every permission an agent has is in
+  `roster.json`, so the supervisor keeps the roster it accepted. A change made
+  while an agent's turn is running, and not written by agyteam itself
+  (`lifecycle`, the roster admin tools), is put back. The rejected version is
+  kept as `roster.rejected-<time>.json`, a `roster_reverted` event names the
+  agents that were running, and you get a `blocker` message. A change made
+  while no turn runs is yours and is adopted. Each write is recorded by hash
+  in `roster_history.jsonl`. This came from a test agent given no permissions:
+  it was refused an edit, built the roster's path in pieces, granted itself
+  access, and finished its task with it. See Known limits for what this
+  does not do.
 
 A team can replace a section of the brief, or add to one agent's, without
 forking `persona.py`: `<team_dir>/persona/teamwork.md` (or `principal`,
@@ -1229,7 +1248,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.1.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.2.0"
 python -m agyteam.supervisor --version
 ```
 

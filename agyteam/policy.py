@@ -387,6 +387,33 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
                     f"{', '.join(allowed_servers) or 'none'} (roster "
                     f"allowed_mcp_servers), not '{server}']")
 
+    written: list[Path] = []
+    if name not in TEAM_TOOLS:
+        if SHELL_TOOL.search(name):
+            cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")
+            cwd = str(args.get("Cwd") or args.get("cwd") or "")
+            written = _written_by(cmd, cwd) if cmd else []
+        elif WRITE_TOOL.search(name) and FILE_TOOL.search(name):
+            written = _paths_in(args)
+
+    # The team directory is the record, and roster.json in it is every
+    # permission on the team. No agent writes there, confined or not: the
+    # servers do it for them. This was enforced only for an agent with a
+    # declared workspace, so one given no permissions at all was the one
+    # agent that could rewrite them -- and downstream, one did, then used
+    # the access it had granted itself. As everywhere in this file, a write
+    # a program makes at run time is not visible here; the supervisor
+    # reverts a roster changed during a turn.
+    if written and team_dir:
+        td = Path(team_dir).expanduser().resolve()
+        hit = next((p for p in written if p == td or td in p.parents), None)
+        if hit:
+            return (f"[refused: {hit} is in the team directory, the record "
+                    f"agyteam keeps of this team; no agent writes there, and "
+                    f"its roster is the operator's. Use the team tools. If "
+                    f"you need a permission you do not have, ask for it -- "
+                    f"do not work around this]")
+
     # Each agent's durable workspace -- its identity, its memory, whatever
     # it keeps there -- is its own. Read freely; written only by its owner.
     # This holds for every agent, confined or not: one implementer with a
@@ -394,23 +421,14 @@ def check_tool_policy(agent: str, tool: str, args: dict | None,
     # the review rested on. `"policy": {"private_workspaces": false}` turns
     # it off for a team that shares them on purpose.
     private = (roster.get("policy") or {}).get("private_workspaces", True) is not False
-    if private and name not in TEAM_TOOLS:
-        others = None
-        written: list[Path] = []
-        if SHELL_TOOL.search(name):
-            cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")
-            cwd = str(args.get("Cwd") or args.get("cwd") or "")
-            written = _written_by(cmd, cwd) if cmd else []
-        elif WRITE_TOOL.search(name) and FILE_TOOL.search(name):
-            written = _paths_in(args)
-        if written:
-            others = other_workspaces(agent, roster)
-            for p in written:
-                who = _owner(p, others)
-                if who:
-                    return (f"[refused: {p} is in {who}'s workspace, which only "
-                            f"{who} writes. Put what you are handing over in the "
-                            f"shared directory and send {who} the path]")
+    if private and written:
+        others = other_workspaces(agent, roster)
+        for p in written:
+            who = _owner(p, others)
+            if who:
+                return (f"[refused: {p} is in {who}'s workspace, which only "
+                        f"{who} writes. Put what you are handing over in the "
+                        f"shared directory and send {who} the path]")
 
     if SHELL_TOOL.search(name) and name not in TEAM_TOOLS:
         cmd = str(args.get("command") or args.get("cmd") or args.get("CommandLine") or "")

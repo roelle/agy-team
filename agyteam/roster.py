@@ -23,7 +23,11 @@ Anything else raises RosterError with a message naming the offending entry
 rather than an AttributeError from three frames down. Writes are always
 canonical, so a mapping-shaped file migrates the first time it is edited.
 """
+import hashlib
 import json
+import os
+import sys
+import time
 from pathlib import Path
 
 RESERVED = {"user"}          # addressable, but never a roster entry
@@ -175,6 +179,126 @@ def load(path) -> dict:
 
 
 def save(path, doc: dict) -> None:
-    """Write in canonical form, migrating any accepted shape on the way out."""
+    """Write in canonical form, migrating any accepted shape on the way out.
+
+    Recorded in the history first (see record_write), so a supervisor that
+    sees the new file also sees it was written here.
+    """
     path = Path(path)
-    path.write_text(json.dumps(normalize(doc, source=str(path)), indent=2) + "\n")
+    text = json.dumps(normalize(doc, source=str(path)), indent=2) + "\n"
+    record_write(path, text.encode("utf-8"))
+    # Whole or not at all: a reader between a truncate and a write saw an
+    # empty roster, and a supervisor reverted it as a change nobody made.
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# --- who changed the roster ------------------------------------------------
+#
+# Every permission an agent has is in roster.json, and an agent with a shell
+# runs as the same user who wrote it. The supervisor keeps the roster it
+# accepted and reverts a change it cannot account for (Supervisor
+# _guard_roster): one made while an agent's turn was running, that this
+# module did not write. Each write through save() is recorded here first,
+# by content hash, which is how a `lifecycle` command or the bus's roster
+# admin tools are told apart from an agent editing the file.
+#
+# This is detection, not a boundary. Anything agyteam can write, an agent
+# running as the same user can write too, this file included; the boundary
+# is an OS user or container that cannot write the team directory.
+
+HISTORY = "roster_history.jsonl"
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def record_write(path, data: bytes, by: str | None = None) -> None:
+    """Append {ts, sha256, by} for `data` about to become `path`. Never raises."""
+    path = Path(path)
+    entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "file": path.name,
+             "sha256": digest(data),
+             "by": by or f"{Path(sys.argv[0] or 'python').name} (pid {os.getpid()})"}
+    try:
+        with (path.parent / HISTORY).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def history_size(path) -> int:
+    """Where the history ends now; pass it to recorded_since later."""
+    try:
+        return (Path(path).parent / HISTORY).stat().st_size
+    except OSError:
+        return 0
+
+
+def recorded_since(path, offset: int) -> set[str]:
+    """sha256 of every write of `path` recorded after byte `offset`.
+
+    Since, not newest: two saves in quick succession must both be agyteam's.
+    And not ever: a roster agyteam wrote before the one now accepted is
+    exactly what an agent replaying a looser one would bring back.
+    """
+    try:
+        with (Path(path).parent / HISTORY).open("rb") as f:
+            f.seek(offset)
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return set()
+    out = set()
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("file") == Path(path).name and rec.get("sha256"):
+            out.add(rec["sha256"])
+    return out
+
+
+def last_recorded(path) -> str | None:
+    """The sha256 of the newest recorded write of `path`, or None."""
+    try:
+        lines = (Path(path).parent / HISTORY).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("file") == Path(path).name and rec.get("sha256"):
+            return rec["sha256"]
+    return None
+
+
+def changed_entries(before: bytes | None, after: bytes | None) -> list[str]:
+    """What differs, for a human: agent names, then other top-level keys."""
+    def parse(b):
+        try:
+            d = json.loads(b) if b else {}
+            return d if isinstance(d, dict) else {}
+        except ValueError:
+            return {"(unparseable)": True}
+    old, new = parse(before), parse(after)
+    try:
+        oa = {a["name"]: a for a in normalize(old).get("agents", [])} if old.get("agents") else {}
+        na = {a["name"]: a for a in normalize(new).get("agents", [])} if new.get("agents") else {}
+    except (RosterError, KeyError, TypeError):
+        oa, na = {}, {"(agents unreadable)": True}
+    out = sorted(n for n in set(oa) | set(na) if oa.get(n) != na.get(n))
+    out += sorted(k for k in (set(old) | set(new)) - {"agents"} if old.get(k) != new.get(k))
+    return out

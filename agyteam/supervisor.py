@@ -47,13 +47,14 @@ def repetition_ratio(text: str) -> float:
     return len(raw) / max(len(zlib.compress(raw, 6)), 1)
 
 
-def _rewrite(path: Path, text: str) -> None:
+def _rewrite(path: Path, text: str | bytes) -> None:
     """Replace `path` whole, so a concurrent reader sees old or new, never half."""
     import tempfile
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with (os.fdopen(fd, "wb") if isinstance(text, bytes)
+              else os.fdopen(fd, "w", encoding="utf-8")) as f:
             f.write(text)
         os.replace(tmp, path)
     except BaseException:
@@ -660,6 +661,12 @@ class Supervisor:
         self._heartbeat_at = 0.0
         self._step_lock = threading.RLock()
         self._load_ledger()
+        # The roster as last accepted, and who has had a turn end since the
+        # roster was last checked; see _guard_roster.
+        self._roster_path = self.team_dir / "roster.json"
+        self._roster_pin = self._read_roster()
+        self._roster_history_at = roster_lib.history_size(self._roster_path)
+        self._roster_touched: set[str] = set()
 
     def _user_mail_count(self) -> int | None:
         """How much mail the user is holding. None if peek is unsupported."""
@@ -1041,7 +1048,109 @@ class Supervisor:
             self._log(f"[supervisor] {self.stopped}; not starting a second one")
             return False
         self._team_lock = f
+        self._pin_roster()
         return True
+
+    # --- the roster is the operator's -------------------------------------
+    #
+    # Every permission an agent has is in roster.json, and an agent with a
+    # shell runs as the same user who wrote it. Downstream, a test agent that
+    # had been refused an edit built the roster's path in pieces, rewrote the
+    # roster to grant itself access, and finished its task with it. No rule
+    # in this process can stop that write. What the supervisor can do is not
+    # let it stand: it keeps the roster it accepted, and a change it cannot
+    # account for -- made while an agent's turn was running, and not written
+    # by agyteam's own roster.save -- is put back, kept aside, recorded, and
+    # reported to the operator. Changes made while no turn runs are the
+    # operator's and are adopted.
+    #
+    # Detection, not a boundary: it cannot undo what a turn did with a
+    # permission while it held it, and an agent can forge anything agyteam
+    # writes. The boundary is an OS user or container that cannot write the
+    # team directory.
+
+    def _read_roster(self) -> bytes | None:
+        try:
+            return self._roster_path.read_bytes()
+        except OSError:
+            return None
+
+    def _pin_roster(self) -> None:
+        """Accept the roster as it is now: the operator just started us."""
+        self._roster_pin = self._read_roster()
+        self._roster_touched = set()
+        if (self._roster_pin is not None and roster_lib.last_recorded(self._roster_path)
+                != roster_lib.digest(self._roster_pin)):
+            roster_lib.record_write(self._roster_path, self._roster_pin,
+                                    by="supervisor: as found at start")
+        self._roster_history_at = roster_lib.history_size(self._roster_path)
+
+    def _guard_roster(self) -> None:
+        """Adopt a roster change that can be accounted for; revert any other."""
+        busy = sorted(set(self.inflight) | self._roster_touched)
+        self._roster_touched = set()
+        cur, pin = self._read_roster(), self._roster_pin
+        if cur == pin:
+            return
+        if pin is None:
+            self._roster_pin = cur          # nothing was accepted to defend
+            return
+        if cur is not None and roster_lib.digest(cur) in roster_lib.recorded_since(
+                self._roster_path, self._roster_history_at):
+            self._roster_pin = cur          # written by roster.save
+            self._roster_history_at = roster_lib.history_size(self._roster_path)
+            return
+        if not busy:                        # the operator's
+            if cur is not None:
+                roster_lib.record_write(self._roster_path, cur,
+                                        by="supervisor: changed while no turn was running")
+            self._roster_pin = cur
+            self._roster_history_at = roster_lib.history_size(self._roster_path)
+            return
+
+        changed = roster_lib.changed_entries(pin, cur)
+        kept = None
+        if cur is not None:
+            kept = self.team_dir / f"roster.rejected-{time.strftime('%Y%m%d-%H%M%S')}.json"
+            try:
+                kept.write_bytes(cur)
+            except OSError:
+                kept = None
+        try:
+            _rewrite(self._roster_path, pin)
+        except OSError as e:
+            self._log(f"[WARNING: roster.json changed during a turn and could not "
+                      f"be put back: {e}]")
+            return
+        who = ", ".join(busy)
+        what = ", ".join(changed) or "the file"
+        try:
+            self.observer.record_event("roster_reverted", agents=busy, changed=changed,
+                                       rejected=str(kept) if kept else None)
+        except Exception:
+            pass
+        self._log(f"[WARNING: roster.json changed while {who} had a turn running "
+                  f"({what}); put back]")
+        text = (f"roster.json was changed while {who} had a turn running, and "
+                f"agyteam did not write the change, so it has been put back. "
+                f"Changed: {what}. "
+                + (f"The rejected version is kept at {kept}. " if kept else "")
+                + "If the change was yours, make it again while no turn is "
+                  "running, or with `python -m agyteam.lifecycle`. If it was "
+                  "not, an agent rewrote its own permissions: check what that "
+                  "turn did with them.")
+        try:
+            bus = load_transport("supervisor")
+            try:
+                bus.send_kind("user", text, kind="blocker")
+            finally:
+                if hasattr(bus, "close"):
+                    bus.close()
+            # A notice from the supervisor is not the team answering the user.
+            if self._user_mail_at_start is not None:
+                self._user_mail_at_start += 1
+        except Exception:
+            pass
 
     def _release_team(self) -> None:
         f = getattr(self, "_team_lock", None)
@@ -1350,6 +1459,7 @@ class Supervisor:
 
     def _finish(self, agent: str, turn: dict, reply: str) -> None:
         """Acknowledge or requeue, account, and judge one ended turn."""
+        self._roster_touched.add(agent)
         msgs = turn["msgs"]
         dur = time.monotonic() - turn["started"]
         failed = reply.startswith("[error:")
@@ -1545,6 +1655,7 @@ class Supervisor:
                 self._log(f"[supervisor] team stopped via lifecycle: {reason}")
                 return [], 0
 
+            self._guard_roster()
             roster_path = self.team_dir / "roster.json"
             if roster_path.exists():
                 try:
@@ -1726,6 +1837,11 @@ class Supervisor:
                     continue
                 self.stopped = "team went idle"
                 break
+        # The turns that ended the episode were reaped after the last pass
+        # checked the roster; a change one of them made is judged now, while
+        # it can still be attributed to them.
+        with self._step_lock:
+            self._guard_roster()
         if not self.stopped.startswith("hop budget"):
             self._log(f"[done after {total} turns — {self.stopped}]")
         self._log_pending_reminders()
@@ -1834,6 +1950,7 @@ class Supervisor:
 
     def _finish_distill(self, agent: str, before_snap: dict, reply: str) -> tuple[int, int, bool]:
         """Log and count one distillation; shared by distill and distill_all."""
+        self._roster_touched.add(agent)
         failed = reply.startswith("[error:")
         if failed:
             self._log(f"    {agent}: {reply[:200]}")
