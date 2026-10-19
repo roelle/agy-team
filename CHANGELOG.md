@@ -7,6 +7,17 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+### Fixed
+- **Review gate window**: an author's work now counts from the start of the
+  episode in progress, or of the one that just finished when no new one has
+  begun. It used to count only from the end of the last finished episode,
+  so a review recorded after an episode could not name work done in it, and
+  passed only when the work and the episode's end fell in the same second.
+  Work from before that episode still does not count. The supervisor records
+  an `episode_start` event in `events.jsonl` to mark where the window opens.
+  For episodes recorded before this change, the start is worked out from
+  their `duration_s`.
+
 ## [3.0.0] - 2026-10-18
 
 The first release under semantic versioning. `v1.0` and `v2.0` were
