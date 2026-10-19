@@ -5,7 +5,9 @@ began), task closure (every collaborator must have worked since the task was
 created), and anything else that must not take an agent's word for it.
 """
 import json
+import math
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -30,15 +32,45 @@ def jsonl(path: Path) -> list[dict]:
 
 
 def episode_start(team_dir: Path) -> str:
-    """Timestamp of the last completed episode, or "" for the whole history.
+    """When the episode a review recorded now belongs to began; "" for all history.
 
-    Reviews are scoped to the episode in progress. Without a boundary the
-    only available question is "has this agent ever done anything", which a
-    long-lived team answers yes to forever.
+    Reviews are scoped to an episode. Without a boundary the only available
+    question is "has this agent ever done anything", which a long-lived team
+    answers yes to forever.
+
+    The episode is the one in progress if there is one, otherwise the one
+    that just finished. This used to be the *end* of the last completed
+    episode, which left a review recorded after an episode -- the operator
+    asking qa to look once the run is over -- unable to name any work done in
+    it: everything the author did came before the boundary. It passed only
+    when the work and the episode's end fell in the same second.
+
+    The supervisor records "episode_start" when an episode begins and
+    "episode" when it ends; events.jsonl is append-only, so which came last is
+    read from file order, not from second-resolution timestamps that a start
+    and the previous end can share. An episode recorded before starts were
+    marked has its start derived from its duration, rounded earlier; with no
+    duration either, its end is the boundary, which is strict rather than
+    open-ended.
     """
-    eps = [e.get("ts") or "" for e in jsonl(team_dir / "events.jsonl")
-           if e.get("event") == "episode"]
-    return max(eps) if eps else ""
+    marks = [e for e in jsonl(team_dir / "events.jsonl")
+             if e.get("event") in ("episode_start", "episode")]
+    if not marks:
+        return ""
+    last = marks[-1]
+    if last.get("event") == "episode_start":
+        return last.get("ts") or ""
+    if len(marks) > 1 and marks[-2].get("event") == "episode_start":
+        return marks[-2].get("ts") or ""
+    end = (last.get("ts") or "").replace("T", " ").replace("Z", "")
+    dur = last.get("duration_s")
+    if end and isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur >= 0:
+        try:
+            began = datetime.strptime(end, "%Y-%m-%d %H:%M:%S") - timedelta(seconds=math.ceil(dur))
+            return began.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    return end
 
 
 def author_activity(team_dir: Path, author: str, since: str) -> tuple[bool, list[str]]:

@@ -934,7 +934,14 @@ class Supervisor:
             has_conversation = bool(getattr(self.runner, "conversation_id",
                                             lambda a: None)(agent))
             distilled = False
-            if has_conversation and self._worked_since_cycle(agent):
+            if getattr(self.runner, "switches_model_in_conversation", False) is True:
+                # This runtime takes the model per turn and keeps the
+                # conversation across a switch (measured on the agy CLI: a
+                # conversation resumed on another model still knew what it
+                # had been told). Cycling would throw that away for nothing.
+                self._log(f"[supervisor] {agent}: model {was_on[0] or 'default'} -> "
+                          f"{now_on[0] or 'default'} from its next turn, same conversation")
+            elif has_conversation and self._worked_since_cycle(agent):
                 self._log(f"[supervisor] {agent}: model {was_on[0] or 'default'} -> "
                           f"{now_on[0] or 'default'}; distilling, then a fresh conversation")
                 self.cycle(agent)
@@ -1011,6 +1018,40 @@ class Supervisor:
             except Exception:
                 pass
 
+    # --- one driver per team ----------------------------------------------
+    #
+    # Two supervisors on one team both dispatch every agent's mail, so every
+    # turn can run twice, and each overwrote the other's heartbeat. The
+    # driving loops take an exclusive lock on <team_dir>/supervisor.lock for
+    # as long as they run; the kernel drops it if the process dies.
+
+    def _claim_team(self) -> bool:
+        if getattr(self, "_team_lock", None) is not None:
+            return True
+        path = self.team_dir / "supervisor.lock"
+        f = open(path, "a+")
+        try:
+            if filelock.fcntl:
+                filelock.fcntl.flock(f.fileno(), filelock.fcntl.LOCK_EX | filelock.fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            beat = heartbeat.running(self.team_dir) or {}
+            who = f"pid {beat.get('pid')}" if beat.get("pid") else "another process"
+            self.stopped = f"another supervisor ({who}) is already driving this team"
+            self._log(f"[supervisor] {self.stopped}; not starting a second one")
+            return False
+        self._team_lock = f
+        return True
+
+    def _release_team(self) -> None:
+        f = getattr(self, "_team_lock", None)
+        if f is not None:
+            try:
+                f.close()
+            except OSError:
+                pass
+            self._team_lock = None
+
     def _stale_turn(self, turn: dict) -> str:
         """How long ago a ledger turn began, if too long to resume; else ''.
 
@@ -1045,6 +1086,10 @@ class Supervisor:
         if now - self._heartbeat_at < 5 and mode == "running":
             return
         self._heartbeat_at = now
+        if getattr(self, "_team_lock", None) is None:
+            other = heartbeat.running(self.team_dir)
+            if other and other.get("pid") not in (os.getpid(), None):
+                return              # another live supervisor's; leave it
         try:
             _rewrite(self.heartbeat_path, json.dumps({
                 "pid": os.getpid(), "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1325,6 +1370,12 @@ class Supervisor:
                         transport.requeue(agent, msgs)
                 elif self.inbox_pull:
                     self._restore_pulled_mail(agent, transport, turn)
+            elif self.inbox_pull:
+                # Under inbox_pull the agent reads with check_inbox, a page at
+                # a time, and that call marks read exactly what it returned.
+                # Acknowledging the whole batch here deleted every page the
+                # agent never opened. What it left is still waiting.
+                pass
             elif hasattr(transport, "acknowledge") and callable(transport.acknowledge):
                 try:
                     transport.acknowledge(msgs)
@@ -1348,7 +1399,9 @@ class Supervisor:
 
         if failed:
             self._fail_streak[agent] = self._fail_streak.get(agent, 0) + 1
-            if runner_lib.is_retryable(reply):
+            # A timeout is an agent that was working too long, not a broken
+            # conversation: two slow turns retired a working agent's context.
+            if runner_lib.is_retryable(reply) or "timed out" in reply.lower():
                 self._hard_streak.pop(agent, None)
             else:
                 self._hard_streak[agent] = self._hard_streak.get(agent, 0) + 1
@@ -1569,6 +1622,8 @@ class Supervisor:
         one approved review early on made every later unreviewed answer read
         as reviewed.
         """
+        if not self._claim_team():
+            return 0
         t0 = time.monotonic()
         total = 0
         bounced = False
@@ -1576,6 +1631,13 @@ class Supervisor:
         self.hops = 0
         self._user_mail_at_start = self._user_mail_count()
         self._approved_reviews_at_start = self._approved_reviews_count()
+        # Where the review gate's window opens (activity.episode_start).
+        # Taken from the episode's end instead, it opened after all the work
+        # the episode did, so none of that work could be reviewed.
+        try:
+            self.observer.record_event("episode_start")
+        except Exception:
+            pass
         while True:
             begun, reaped = self._pass()
             total += len(begun)
@@ -1685,6 +1747,8 @@ class Supervisor:
     def run_forever(self, stop: threading.Event | None = None) -> None:
         """React to mail as it arrives, indefinitely."""
         stop = stop or threading.Event()
+        if not self._claim_team():
+            return
         self._log(f"supervising {', '.join(self.agents)} "
                   f"via {self.runner.label} — Ctrl+C to stop")
         while not stop.is_set():
@@ -2520,10 +2584,15 @@ class Supervisor:
                 except Exception:
                     pass
         self._save_ledger()
+        # Only our own heartbeat: a supervisor that was refused the team must
+        # not erase the live one's.
         try:
-            self.heartbeat_path.unlink()
-        except OSError:
+            beat = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+            if beat.get("pid") in (os.getpid(), None):
+                self.heartbeat_path.unlink()
+        except (OSError, ValueError):
             pass
+        self._release_team()
         self.runner.close()
         for t in self.transports.values():
             if hasattr(t, "close") and callable(t.close):

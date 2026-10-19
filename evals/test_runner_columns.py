@@ -182,6 +182,14 @@ def test_the_review_gate_behaves_the_same_in_both_columns(team, column):
     sup.run_until_idle()
     sup.close()
 
+    # Recorded after the episode, so its window is the episode that just
+    # ended: it opened when that episode began, before coder said anything.
+    # Opened at the episode's end, this passed only when coder's message and
+    # the end fell in the same second.
+    from agyteam.activity import episode_start, jsonl
+    sent = [e["ts"] for e in jsonl(team / "bus.jsonl") if e.get("from") == "coder"]
+    assert sent and episode_start(team) <= min(sent), (episode_start(team), sent)
+
     proof = team / "proof.py"
     proof.write_text("def test_ok():\n    assert 1 == 1\n")
     args = {"what": "the build", "author": "coder", "verdict": "approved",

@@ -58,6 +58,11 @@ class AgyRunner(Runner):
     # read by the introspection server and by nothing that enforces it.
     supports_audit = False
     supports_containment = False
+    # Each turn is `agy --conversation <id> --model <m>`, and the CLI keeps
+    # the conversation across a change: measured, a conversation started on
+    # gemini-3.8-flash and resumed on claude-sonnet-5-5 recalled what it had
+    # been told and reported being Claude.
+    switches_model_in_conversation = True
     supports_capability_scoping = False
 
     def __init__(self, config=None, observer=None):

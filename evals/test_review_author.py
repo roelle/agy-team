@@ -127,6 +127,65 @@ def test_activity_before_the_last_episode_does_not_count(team):
     assert out.startswith("[error:") and "since 2026-09-14 13:00:00" in out
 
 
+
+def mark(team, ts, event, **fields):
+    with (team / "events.jsonl").open("a") as f:
+        f.write(json.dumps({"ts": ts, "event": event, **fields}) + "\n")
+
+
+def test_work_in_the_episode_that_just_ended_counts(team):
+    """A review recorded after the episode it verifies -- the operator asking
+    qa to look once the run is over. The window used to open at the episode's
+    end, after everything coder did in it, so this was refused unless the work
+    and the end fell in the same second."""
+    mark(team, "2026-09-14 11:59:00", "episode_start")
+    activate(team, "coder")                      # at TS, 12:00:00
+    mark(team, "2026-09-14 12:01:00", "episode", turns=2,
+         stopped_reason="team went idle", duration_s=120.0)
+    out = review(team, author="coder")
+    assert out.startswith("[review recorded:"), out
+
+
+def test_once_the_next_episode_begins_the_last_ones_work_no_longer_counts(team):
+    """The episode in progress is the window. Naming an agent who worked last
+    episode but not in this one is the measured forgery, one episode later."""
+    mark(team, "2026-09-14 11:59:00", "episode_start")
+    activate(team, "coder")
+    mark(team, "2026-09-14 12:01:00", "episode", turns=2,
+         stopped_reason="team went idle", duration_s=120.0)
+    mark(team, "2026-09-14 12:05:00", "episode_start")
+    out = review(team, author="coder")
+    assert out.startswith("[error:") and "since 2026-09-14 12:05:00" in out
+
+
+def test_work_before_the_episode_began_does_not_count(team):
+    activate(team, "coder")                      # at TS, 12:00:00
+    mark(team, "2026-09-14 12:30:00", "episode_start")
+    mark(team, "2026-09-14 13:00:00", "episode", turns=4,
+         stopped_reason="answered", duration_s=1800.0)
+    out = review(team, author="coder")
+    assert out.startswith("[error:") and "since 2026-09-14 12:30:00" in out
+
+
+def test_an_unmarked_episode_starts_where_its_duration_says(team):
+    """Episodes recorded before starts were marked: derived, rounded earlier."""
+    from agyteam.activity import episode_start
+    mark(team, "2026-09-14 12:10:00", "episode", turns=3,
+         stopped_reason="answered", duration_s=600.4)
+    assert episode_start(team) == "2026-09-14 11:59:59"
+    activate(team, "coder")                      # at TS, inside it
+    assert review(team, author="coder").startswith("[review recorded:")
+
+
+def test_the_last_marker_in_the_file_decides_not_the_clock(team):
+    """An episode can end and the next begin in the same second."""
+    from agyteam.activity import episode_start
+    mark(team, "2026-09-14 12:00:00", "episode_start")
+    mark(team, "2026-09-14 12:00:07", "episode", turns=1,
+         stopped_reason="team went idle", duration_s=7.0)
+    mark(team, "2026-09-14 12:00:07", "episode_start")
+    assert episode_start(team) == "2026-09-14 12:00:07"
+
 # --- cannot look is not the same as nothing to find -------------------------
 
 def test_unverifiable_author_is_recorded_as_unverified_not_refused(tmp_path,

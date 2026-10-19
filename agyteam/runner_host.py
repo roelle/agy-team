@@ -97,6 +97,8 @@ class HostRunner(Runner):
         self.supports_audit = bool(caps.get("supports_audit", False))
         self.supports_containment = bool(caps.get("supports_containment", False))
         self.supports_capability_scoping = bool(caps.get("supports_capability_scoping", False))
+        # A host whose deliver command can carry the model for that turn says so.
+        self.switches_model_in_conversation = bool(caps.get("switches_model_in_conversation", False))
         self.inbox_pull = bool(c.get("inbox_pull", False))
         # A host that compacts its own conversations should not have them
         # reset: "distill_only" (see config.AUTO_CYCLE_MODE).

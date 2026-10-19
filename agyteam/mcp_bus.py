@@ -87,9 +87,10 @@ TOOLS = [
     tool("record_review",
          "Record a verification review of a feature, change, or task. "
          "Must specify what was reviewed, who authored the work, verdict "
-         "('approved' or 'changes_requested'), proof_file (path to test file "
-         "containing executable assertions), and findings. You cannot review "
-         "your own work.",
+         "('approved' or 'changes_requested'), and findings, plus the evidence: "
+         "for code, proof_file (a test file with executable assertions); for a "
+         "document, deliverable and criteria (each requirement matched to a "
+         "quoted passage). You cannot review your own work.",
          {"what": string("What was reviewed (feature, branch, PR, or task)"),
           "author": string("Agent whose work this review verifies (not you)"),
           "verdict": string("Verdict: 'approved' or 'changes_requested'"),
@@ -97,8 +98,17 @@ TOOLS = [
           "findings": string("Observations, defect analysis, or behavior notes"),
           "task_id": string("The task this review verifies, if it has one; a task "
                             "that requires_review closes only on an approved "
-                            "review naming it")},
-         ["what", "author", "verdict", "proof_file"]),
+                            "review naming it"),
+          "deliverable": string("For a document (report, plan, doc) instead of code: "
+                                "its path. Pass criteria with it; proof_file is then "
+                                "not needed"),
+          "criteria": {"type": "array", "description":
+                       "For a document: one entry per thing the work was asked to "
+                       "do -- {requirement, quote} with a sentence copied verbatim "
+                       "from the deliverable that meets it, or {requirement, met: "
+                       "false, why}. Every quote is checked against the file.",
+                       "items": {"type": "object"}}},
+         ["what", "author", "verdict"]),
     tool("list_reviews",
          "List durable verification reviews recorded for this team, newest "
          "first. A long history is cut short with a count of what was left "
@@ -362,9 +372,24 @@ def _record_review(t: Transport, a: dict) -> str:
     if verdict not in ("approved", "changes_requested"):
         return f"[error: verdict must be 'approved' or 'changes_requested', got {verdict!r}]"
 
+    # A document is reviewed against what was asked for, not by a test: each
+    # requirement is matched to a passage the reviewer quotes from the
+    # deliverable, and the gate checks every quote is really there. The proof
+    # gate alone could only show facts were right, never that the report
+    # answered the question it was meant to.
+    fit = None
+    if a.get("criteria") is not None or a.get("deliverable"):
+        fit = _check_fit(a, team_dir, verdict)
+        if isinstance(fit, str):
+            return fit
     proof_file = a.get("proof_file")
+    if fit is not None and (proof_file is None or (isinstance(proof_file, str)
+                                                   and not proof_file.strip())):
+        return _write_fit_review(t, a, team_dir, author, author_verified, what,
+                                 verdict, fit)
     if proof_file is None:
-        return "[error: proof_file is required and cannot be empty]"
+        return ("[error: proof_file is required and cannot be empty -- or, for a "
+                "document, pass deliverable and criteria instead]")
     if not isinstance(proof_file, str) or not proof_file.strip():
         return "[error: proof_file is required and cannot be empty]"
     proof_file = proof_file.strip()
@@ -467,20 +492,28 @@ def _record_review(t: Transport, a: dict) -> str:
     # The verdict reaches the author as one message of kind "review", and
     # the task's creator if that is someone else -- instead of the reviewer
     # spending a turn to forward it and the author a turn to acknowledge.
-    notice = (f"Review of '{what}': {verdict}."
-              + (f" Findings: {findings_str}" if findings_str else "")
+    told = _notify_review(t, entry)
+    told_note = f" [{', '.join(told)} notified]" if told else ""
+    return (f"[review recorded: {verdict} for '{what}' with proof "
+            f"{proof_file}]{caveat}{told_note}")
+
+
+def _notify_review(t: Transport, entry: dict) -> list[str]:
+    """Send the verdict to the author, and to the task's creator if someone
+    else, as one message of kind "review"; return who was told."""
+    task_id, findings = entry.get("task_id"), entry.get("findings") or ""
+    notice = (f"Review of '{entry['what']}': {entry['verdict']}."
+              + (f" Findings: {findings}" if findings else "")
               + (f" (task {task_id})" if task_id else ""))
     told = []
-    for who in dict.fromkeys([author, _task_creator(t, task_id)]):
+    for who in dict.fromkeys([entry["author"], _task_creator(t, task_id)]):
         if who and who not in (t.me, "user"):
             try:
                 t.send_kind(who, notice, kind="review", task_id=task_id)
                 told.append(who)
             except Exception:
                 pass
-    told_note = f" [{', '.join(told)} notified]" if told else ""
-    return (f"[review recorded: {verdict} for '{what}' with proof "
-            f"{proof_file}]{caveat}{told_note}")
+    return told
 
 
 def _task_creator(t: Transport, task_id: str | None) -> str | None:
@@ -563,6 +596,90 @@ def _list_channels(t: Transport) -> str:
         return "[you are in no channels]"
     return "\n".join(f"- #{n}: {', '.join(c.get('members', []))}"
                      + (f" -- {c['topic']}" if c.get("topic") else "") for n, c in mine)
+
+
+def _resolve_deliverable(raw: str, team_dir: Path) -> Path | None:
+    p = Path(raw).expanduser()
+    for cand in ([p] if p.is_absolute() else [Path.cwd() / p, team_dir / p, _REPO_ROOT / p]):
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def _norm_text(text: str) -> str:
+    return " ".join((text or "").replace("\u2019", "'").replace("\u201c", '"')
+                    .replace("\u201d", '"').split()).lower()
+
+
+def _check_fit(a: dict, team_dir: Path, verdict: str):
+    """Check a document-fit review. Returns [checked criteria] or an error."""
+    raw = a.get("deliverable")
+    if not isinstance(raw, str) or not raw.strip():
+        return "[error: a criteria review needs deliverable: the path of the document reviewed]"
+    path = _resolve_deliverable(raw.strip(), team_dir)
+    if path is None:
+        return f"[error: deliverable not found or not a file: '{raw.strip()}']"
+    criteria = a.get("criteria")
+    if isinstance(criteria, str):
+        try:
+            criteria = json.loads(criteria)
+        except ValueError:
+            return "[error: criteria must be a list of {requirement, quote} (or {requirement, met: false, why})]"
+    if not isinstance(criteria, list) or not criteria:
+        return ("[error: criteria is required: one {requirement, quote} per thing the "
+                "work was asked to do, the quote copied from the deliverable]")
+    try:
+        body = _norm_text(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return f"[error: could not read deliverable: {e}]"
+    checked, unmet = [], []
+    for i, c in enumerate(criteria, 1):
+        if not isinstance(c, dict) or not str(c.get("requirement") or "").strip():
+            return f"[error: criterion {i} needs a requirement]"
+        req = str(c["requirement"]).strip()
+        if c.get("met") is False:
+            if not str(c.get("why") or "").strip():
+                return f"[error: criterion {i} ({req[:60]}) is marked unmet; say why]"
+            unmet.append(req)
+            checked.append({"requirement": req, "met": False, "why": str(c["why"]).strip()})
+            continue
+        quote = str(c.get("quote") or "").strip()
+        if len(quote) < 12:
+            return (f"[error: criterion {i} ({req[:60]}) needs a quote: copy at least a "
+                    f"sentence from the deliverable that meets it]")
+        if _norm_text(quote) not in body:
+            return (f"[error: verification failed: criterion {i} ({req[:60]}) quotes text "
+                    f"that is not in {path.name}: {quote[:80]!r}]")
+        checked.append({"requirement": req, "met": True, "quote": quote})
+    if verdict == "approved" and unmet:
+        return f"[error: approved with unmet criteria: {'; '.join(unmet)[:200]}]"
+    if verdict == "changes_requested" and not unmet:
+        return ("[error: changes_requested needs at least one criterion marked "
+                "met: false, with why]")
+    return {"deliverable": str(path), "criteria": checked}
+
+
+def _write_fit_review(t: Transport, a: dict, team_dir: Path, author: str,
+                      author_verified: bool, what: str, verdict: str, fit: dict) -> str:
+    findings = a.get("findings", "")
+    task_id = a.get("task_id") if isinstance(a.get("task_id"), str) else ""
+    entry = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": "work", "reviewer": t.me,
+        "author": author, "task_id": task_id.strip() or None,
+        "author_verified": author_verified, "what": what, "verdict": verdict,
+        "proof_file": None, "deliverable": fit["deliverable"], "criteria": fit["criteria"],
+        "cases_tried": f"{sum(1 for c in fit['criteria'] if c['met'])} of "
+                       f"{len(fit['criteria'])} requirements matched to quoted passages",
+        "findings": findings.strip() if isinstance(findings, str) else str(findings),
+    }
+    path = _reviews_path(t)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    told = _notify_review(t, entry)
+    return (f"[review recorded: {verdict} for '{what}' by {t.me}; "
+            f"{entry['cases_tried']} in {Path(fit['deliverable']).name}]"
+            + (f" [{', '.join(told)} notified]" if told else ""))
 
 
 def _list_retros(t: Transport) -> str:

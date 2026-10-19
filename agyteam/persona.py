@@ -104,9 +104,16 @@ If you cannot find a case that fails, say what you tried. "I ran the tests and
 they passed" is not verification, and reporting it as though it were is how a
 half-working feature reaches the user.
 
+A document -- a report, a plan, an audit write-up -- is verified against what
+was asked for. Go back to the request, list each thing it asked the document
+to do, and find the passage that does it. A requirement you cannot find a
+passage for is not met, however good the rest reads.
+
 Record what you verified with record_review (pass what, verdict, cases_tried,
-and findings). An answer sent to the user without an approved review will be
-flagged as unreviewed by the supervisor.
+and findings): for code with a proof_file, for a document with deliverable
+and criteria, each requirement paired with the sentence you quote from it --
+the quotes are checked against the file. An answer sent to the user without
+an approved review will be flagged as unreviewed by the supervisor.
 """
 
 # The manager is not a teammate and must not be briefed as one. For several

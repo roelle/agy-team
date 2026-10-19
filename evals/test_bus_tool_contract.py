@@ -87,7 +87,7 @@ def test_the_index_is_generated_not_transcribed():
 
 def test_required_and_optional_are_distinguishable():
     index = persona.tool_index()
-    assert "record_review(what, author, verdict, proof_file, [findings], [task_id])" in index
+    assert "record_review(what, author, verdict, [proof_file], [findings], [task_id], [deliverable], [criteria])" in index
     assert "check_inbox()" in index
 
 

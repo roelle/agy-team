@@ -140,6 +140,12 @@ class Runner(ABC):
     #: rather than imply a guarantee it is not making.
     supports_containment = False
 
+    #: True if this runner takes the model per turn and keeps a conversation
+    #: across a model change, so a switch needs no cycle. False (the
+    #: default) means the model is bound when a conversation starts, and the
+    #: supervisor distills and starts a fresh conversation to switch.
+    switches_model_in_conversation = False
+
     #: True if this runner enforces roster capability scoping -- `tools_off`
     #: and `workers` -- by withholding the tool schema from the model. This is
     #: the load-bearing half of "roles are enforced by capability, not
