@@ -63,6 +63,9 @@ class Message:
     thread: str | None = None
     author: str | None = None
     quiet: bool = False
+    # Set by the supervisor, never by a sender: a turn that read this
+    # failed before it finished, and this is what that turn had done.
+    redelivered: str | None = None
 
     @property
     def wakes(self) -> bool:
@@ -77,7 +80,8 @@ class Message:
         where = f" in #{self.channel}" if self.channel else ""
         ids = f" [id {self.id}" + (f", thread {self.thread}" if self.thread else "") + "]" \
             if self.id is not None else ""
-        return f"[{self.ts}] from {who}{where}{tag}{task}{ids}:\n{self.content}"
+        again = f"[redelivered: {self.redelivered}]\n" if self.redelivered else ""
+        return f"{again}[{self.ts}] from {who}{where}{tag}{task}{ids}:\n{self.content}"
 
     def as_dict(self) -> dict:
         d = {"ts": self.ts, "from": self.sender, "to": self.to,
@@ -90,6 +94,8 @@ class Message:
             v = getattr(self, k)
             if v:
                 d[k] = v
+        if self.redelivered:
+            d["redelivered"] = self.redelivered
         return d
 
     @classmethod
@@ -98,7 +104,8 @@ class Message:
                    to=d.get("to", ""), content=d.get("content", ""), id=d.get("id"),
                    kind=d.get("kind") or "work", task_id=d.get("task_id"),
                    channel=d.get("channel"), thread=d.get("thread"),
-                   author=d.get("author"), quiet=bool(d.get("quiet")))
+                   author=d.get("author"), quiet=bool(d.get("quiet")),
+                   redelivered=d.get("redelivered") or None)
 
 
 class Transport(ABC):

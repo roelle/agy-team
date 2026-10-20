@@ -193,6 +193,13 @@ def _check_inbox(t: Transport) -> str:
                          f"text is in {saved}]\n" + blocks[0])
     text, shown = fit(blocks, "[{n} more unread: call check_inbox again]")
     if hasattr(t, "acknowledge") and callable(t.acknowledge):
+        # Receipt first: if this turn fails, the supervisor gives back what
+        # it took -- including mail that arrived after the turn began.
+        try:
+            from . import receipts
+            receipts.record(_team_dir(t), t.me, msgs[:shown])
+        except Exception:
+            pass
         t.acknowledge(msgs[:shown])
     return text
 

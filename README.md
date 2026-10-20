@@ -493,7 +493,12 @@ fails is retried with exponential backoff rather than at process speed, every
 failure is an event, and three in a row send one message to the manager.
 `--inbox-pull` wakes an agent with a one-line summary and lets it read its
 mail with `check_inbox`, for hosts that would rather not see every message
-body pasted into a prompt.
+body pasted into a prompt. `check_inbox` marks mail read as it returns it,
+so during a supervised turn it first writes a receipt
+(`receipts/<agent>.jsonl`). If the turn fails, everything it took and that
+is no longer waiting goes back once, including mail that arrived mid-turn.
+Each message is marked `redelivered`, with what the failed turn had already
+sent, so the agent can tell what is done from what is not.
 
 ```bash
 export AGYTEAM_RUNNER=agyteam.runner_sdk:SdkRunner
@@ -1248,7 +1253,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.2.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.3.0"
 python -m agyteam.supervisor --version
 ```
 

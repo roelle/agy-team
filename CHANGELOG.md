@@ -7,6 +7,27 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-19
+
+### Fixed
+- **Under `--inbox-pull`, mail pulled mid-turn is no longer lost when the
+  turn fails.** Reported downstream: an agent sends an early progress note,
+  a teammate's mail arrives while the turn runs, and the agent's
+  `check_inbox` marks it read; if the turn then crashed, that mail was
+  gone. The supervisor restored only the batch it had woken the agent with,
+  and only if the turn had sent nothing. Now `check_inbox` writes a receipt
+  before marking anything read during a supervised turn. A failed turn gives
+  back everything on its receipt that is no longer in the inbox, once, and
+  a successful turn discards the receipt.
+
+### Added
+- `Message.redelivered` (`"redelivered"` in the inbox record): set on mail a
+  failed turn took, saying what that turn had already sent, and shown first
+  when the agent reads it, so a turn that answered before it died is not
+  simply redone.
+- `receipts/<agent>.jsonl` in the team directory: one exists only while a
+  supervised pull-mode turn is open, so an agent run by hand keeps none.
+
 ## [3.2.0] - 2026-10-19
 
 ### Added
@@ -138,7 +159,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/roelle/agy-team/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/roelle/agy-team/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/roelle/agy-team/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/roelle/agy-team/compare/v2.0...v3.0.0

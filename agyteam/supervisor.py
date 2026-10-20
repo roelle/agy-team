@@ -75,6 +75,7 @@ from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
+from . import receipts
 from . import tasks as tasks_lib
 from .transport import Message, wakes
 from .transport import load as load_transport
@@ -1295,20 +1296,29 @@ class Supervisor:
             pass
 
     def _restore_pulled_mail(self, agent: str, transport, turn: dict) -> int:
-        """Put back mail a failed turn pulled but never acted on.
+        """Give back the mail a failed turn took and did not finish with.
 
         Under inbox_pull the agent takes its mail with check_inbox, which
-        marks it read, so the supervisor leaves a failed turn's mail alone:
-        re-queueing a turn that answered and then timed out handed it the
-        same work twice. But a turn that pulled its mail and then failed
-        before sending anything -- a 503 mid-research, a timeout -- lost
-        that mail outright. A turn that sent nothing has not acted on it, so
-        whatever of it has left the inbox goes back. At-least-once, as
-        everywhere else.
+        marks it read as it goes, and writes a receipt for it first. A turn
+        that then failed -- a crash, a 503, a timeout -- had lost that mail,
+        including anything that arrived while it ran and that it pulled
+        mid-turn; and once the turn had sent anything at all (an early
+        "on it"), nothing was put back. Now everything on the receipt that
+        is no longer in the inbox goes back, once, marked as redelivered
+        with what the failed turn had already sent, so the agent can tell
+        what is done from what is not. At-least-once, as everywhere else.
+
+        Mail taken some other way than check_inbox leaves no receipt; from
+        the wake's own batch, that goes back only when the turn sent
+        nothing, as before.
         """
-        if any(self._sent_during(agent, turn["ts"]).values()):
-            return 0
-        if not (hasattr(transport, "requeue") and callable(transport.requeue)):
+        taken = receipts.taken(self.team_dir, agent)
+        sent = self._sent_during(agent, turn.get("ts", ""))
+        candidates = list(taken)
+        if not any(sent.values()):
+            candidates += list(turn.get("msgs") or [])
+        receipts.close_turn(self.team_dir, agent)
+        if not candidates or not (hasattr(transport, "requeue") and callable(transport.requeue)):
             return 0
         try:
             waiting = transport.peek()
@@ -1317,15 +1327,27 @@ class Supervisor:
         if waiting is None:
             return 0            # cannot tell what is missing; do not duplicate
         key = lambda m: (m.ts, m.sender, m.kind, m.content)      # noqa: E731
-        present = {key(m) for m in waiting}
-        missing = [m for m in turn["msgs"] if key(m) not in present]
-        if missing:
-            try:
-                transport.requeue(missing)
-            except TypeError:
-                transport.requeue(agent, missing)
-            self._log(f"    {agent}: turn failed before acting; "
-                      f"{len(missing)} pulled message(s) restored to its inbox")
+        seen = {key(m) for m in waiting}
+        missing = []
+        for m in candidates:
+            if key(m) not in seen:
+                seen.add(key(m))
+                missing.append(m)
+        if not missing:
+            return 0
+        did = ", ".join(f"{n} {k}" for k, n in sorted(sent.items()) if n)
+        note = (f"a turn that read this at {turn.get('ts') or 'an earlier wake'} failed "
+                f"before it finished" + (f", after sending {did} message(s); check "
+                                         f"what you already did before redoing it"
+                                         if did else ", having sent nothing"))
+        for m in missing:
+            m.redelivered = note
+        try:
+            transport.requeue(missing)
+        except TypeError:
+            transport.requeue(agent, missing)
+        self._log(f"    {agent}: turn failed; {len(missing)} pulled message(s) "
+                  f"restored to its inbox")
         return len(missing)
 
     def _budget_exhausted(self, reply: str) -> bool:
@@ -1427,6 +1449,8 @@ class Supervisor:
                     "trigger": trigger, "failures_before": self._failure_count()}
             if deferred:
                 turn["deferred"] = deferred
+            if self.inbox_pull:
+                receipts.open_turn(self.team_dir, agent)
             try:
                 turn["handle"] = self.runner.begin(agent, self.wake_prompt(msgs, deferred))
             except Exception as e:          # the runner could not even start it
@@ -1490,8 +1514,9 @@ class Supervisor:
                 # Under inbox_pull the agent reads with check_inbox, a page at
                 # a time, and that call marks read exactly what it returned.
                 # Acknowledging the whole batch here deleted every page the
-                # agent never opened. What it left is still waiting.
-                pass
+                # agent never opened. What it left is still waiting; what it
+                # took is done with.
+                receipts.close_turn(self.team_dir, agent)
             elif hasattr(transport, "acknowledge") and callable(transport.acknowledge):
                 try:
                     transport.acknowledge(msgs)
