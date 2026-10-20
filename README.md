@@ -592,6 +592,22 @@ live session and are firmly in the second category.
 
 ### Long-running work: tasks, projects, and time-based check-ins
 
+Statuses: `icebox`, `queued`, `claimed`, `running`, `blocked`, `review`,
+`done`, `failed`, `cancelled`.
+- `icebox` is parked: agents cannot claim it, its reminders wait, and only
+  the operator takes it back out.
+- `review` is done and waiting on an approved review. `complete_task` still
+  needs that review where the task requires one.
+
+A task may name the `channel` it is discussed in (`create_task(...,
+channel=...)`, `update_task(..., channel="")` to unlink). The link lives on
+the task only, and a status change on a linked task is noted in the channel
+as a quiet `status` line. `rank` orders tasks within a board column. The
+operator may change any task through `actions.create_task` and
+`actions.update_task`. The owner is told: quietly, except when the change
+means stop (iced or cancelled while they were on it) or start (handed to
+them), which wakes them.
+
 An agent running a sim that takes hours does not need to poll it, and it does
 not need to schedule an external cron job to poke itself later either — that
 just moves the schedule somewhere nothing here can see it. Instead:
@@ -848,7 +864,24 @@ A name can drop its team prefix and its case: `@Ada` wakes `at-Ada`, and
 `send_to_teammate(to="Ada")` reaches it too, provided exactly one agent is
 named `Ada` (ignoring case) or ends in `-Ada`, `_Ada` or `.Ada`. An exact name
 always wins; a handle two agents could answer to reaches neither, so add the
-prefix.
+prefix. An agent's roster `alias` works the same way, for any nickname, and
+clients show it in place of the name. The roster's `operator` names you:
+
+```json
+{"operator": {"name": "Matt", "handles": ["roellem"]}, "agents": [...]}
+```
+
+Agents are told who that is. `send_to_teammate(to="Matt")` reaches `user`,
+and `@Matt` in a channel is recorded as a mention of the user without waking
+anyone. You stay `user` on the bus, which the review gate and the episode
+logic key on. A name, an alias and an operator handle must each mean one
+thing, ignoring case; the roster refuses one that would mean two.
+
+**Archive and delete.** `actions.archive_channel` makes a channel read-only
+and takes it out of every agent's `list_channels`. `actions.delete_channel`
+also hides its history from clients. The messages stay in `bus.jsonl`,
+because that is the team's record, and a deleted name cannot be reused.
+`actions.restore_channel` undoes either.
 
 ### Building a client: the record and operator actions
 
@@ -1253,7 +1286,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.4.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.5.0"
 python -m agyteam.supervisor --version
 ```
 

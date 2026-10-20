@@ -170,8 +170,16 @@ ADMIN_TOOLS = [
 
 
 def _list_teammates(t: Transport) -> str:
-    rows = [f"- {a['name']}: {a.get('role', '')}" for a in t.teammates()]
-    return "\n".join(rows + ["- user: the human you work for"])
+    rows = [f"- {a['name']}" + (f" (also '{a['alias']}')" if a.get("alias") else "")
+            + f": {a.get('role', '')}" for a in t.teammates()]
+    try:
+        from . import channels
+        op = roster_lib.operator(channels._roster_doc(_team_dir(t)))
+    except Exception:
+        op = {"name": "", "handles": []}
+    handles = " or ".join(f"'{h}'" for h in op.get("handles") or [])
+    who = f" -- {op['name']}; to={handles} reaches them too" if op.get("name") else ""
+    return "\n".join(rows + [f"- user: the human you work for{who}"])
 
 
 def _check_inbox(t: Transport) -> str:
@@ -545,8 +553,12 @@ def _send(t: Transport, a: dict) -> str:
         return (f"[error: kind must be one of {', '.join(KINDS)}, not {kind!r}]")
     task_id = a.get("task_id").strip() if isinstance(a.get("task_id"), str) else None
     if to != "user":
+        # A handle -- "Ada" for at-Ada, an alias, or the operator's own
+        # name, which means the user.
         from . import channels
-        to = roster_lib.resolve_name(to, channels._roster_agents(_team_dir(t))) or to
+        doc = channels._roster_doc(_team_dir(t))
+        to = roster_lib.resolve_name(to, channels._roster_agents(_team_dir(t)),
+                                     roster_lib.aliases(doc)) or to
     refusal = policy.check_tool_policy(t.me, "send_to_teammate", {"to": to, "content": content},
                                        team_dir=_team_dir(t), check_paths=False)
     if refusal:
@@ -601,7 +613,7 @@ def _post_to_channel(t: Transport, a: dict) -> str:
 
 def _list_channels(t: Transport) -> str:
     from . import channels
-    chans = channels.load(_team_dir(t))
+    chans = channels.active(_team_dir(t))
     mine = [(n, c) for n, c in sorted(chans.items()) if t.me in c.get("members", [])]
     if not mine:
         return "[you are in no channels]"

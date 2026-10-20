@@ -7,6 +7,47 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-20
+
+### Added
+- **Channels can be archived, deleted and restored**
+  (`actions.archive_channel` / `delete_channel` / `restore_channel`,
+  `channels.archive` / `delete` / `restore`).
+  - Archived: read-only, and out of every agent's `list_channels` and
+    channel membership.
+  - Deleted: archived, and hidden from clients (`Record.search` skips it).
+    Its messages stay in `bus.jsonl`, the team's record, and the name cannot
+    be reused until it is restored.
+  - `channels.active()` lists the open ones.
+- **Tasks name the channel they are discussed in** (`channel=` on
+  `create_task` / `update_task`, the tools included; `""` unlinks). A status
+  change on a linked task is noted in that channel as a quiet `status`
+  line.
+- **Board statuses.** `icebox` is parked work: not claimable, reminders
+  paused, and only the operator takes it back out. `review` means done and
+  waiting on an approved review; `complete_task` still requires the review.
+  Common spellings map to them (`backlog`, `in_review`, ...). `rank` orders a
+  task within a column.
+- **The operator moves any card**: `actions.create_task` and
+  `actions.update_task` (status, owner, title, project, note, channel,
+  deadline, rank); `tasks.update(by="user")` is no longer limited to unowned
+  tasks. The owner is told, waking them when they should stop (iced or
+  cancelled mid-work) or start (handed the task).
+- **Aliases.** An agent's roster `alias` resolves wherever a name is taken
+  (`send_to_teammate`, @mentions), is shown in the brief and in
+  `list_teammates`, and is for clients to display. `roster.aliases()`, and
+  `resolve_name(..., aliases)`.
+- **The operator's handle.** The roster's `operator: {"name", "handles"}`
+  tells agents who the user is. `send_to_teammate(to="Matt")` reaches the
+  user, and `@Matt` in a channel is recorded in the post's `mentions` as
+  `user` without waking anyone. The user stays `user` on the bus.
+  `Record.operator()`.
+
+### Changed
+- The roster refuses a name, alias or operator handle that would mean two
+  things (ignoring case), and an alias that is not a handle.
+- @mentions may contain a dot inside the name (`@a.b`), not at its end.
+
 ## [3.4.0] - 2026-10-20
 
 ### Added
@@ -190,7 +231,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/roelle/agy-team/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/roelle/agy-team/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/roelle/agy-team/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/roelle/agy-team/compare/v3.1.0...v3.2.0

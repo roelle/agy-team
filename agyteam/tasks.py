@@ -43,6 +43,19 @@ or the call fails with a sentence saying what would have worked. A value that
 still cannot be read (written by an older version, or by hand) fires at the
 next sweep rather than never: early and noisy beats silent.
 
+## Statuses a board needs
+
+`icebox` is parked work: nobody picks it up, its reminders wait, and only
+the operator takes it back out. `review` is work that is done and waiting on
+an approved review; complete_task still needs that review where the task
+requires one. A task may name the `channel` its discussion happens in --
+the link is stored on the task only, and a channel's tasks are the ones that
+name it -- and carries a `rank` for its order within a column. A change of
+status on a linked task is noted in its channel, quietly.
+
+The operator ("user") may change any task, owned or not: that is what moving
+a card on a board is.
+
 ## Why no separate project file
 
 A project is a grouping string on a task, not a second record with its own
@@ -63,8 +76,12 @@ from . import filelock
 
 FILENAME = "tasks.jsonl"
 
-STATUSES = {"queued", "claimed", "running", "blocked", "done", "failed", "cancelled"}
+STATUSES = {"icebox", "queued", "claimed", "running", "blocked", "review",
+            "done", "failed", "cancelled"}
 TERMINAL = {"done", "failed", "cancelled"}
+#: Not finished, but nothing happens to it: no claims, no reminders.
+PAUSED = {"icebox"}
+OPERATOR = "user"
 
 _KIND_CREATED = "created"
 _KIND_UPDATED = "updated"
@@ -74,7 +91,7 @@ _KIND_SWEPT = "swept"
 # `kind`, `ts` and `by` describe the log entry, not the task.
 _MUTABLE_FIELDS = ("project", "title", "owner", "status", "note", "check_after",
                    "collaborators", "requires_review", "evidence", "until",
-                   "poll_every", "deadline")
+                   "poll_every", "deadline", "channel", "rank")
 
 # What an agent may call a status and what it is here. The allowed set was
 # discoverable only by trial -- update_task(status="in_progress") was refused
@@ -84,7 +101,12 @@ STATUS_ALIASES = {"in_progress": "running", "in-progress": "running",
                   "waiting": "blocked", "paused": "blocked",
                   "complete": "done", "completed": "done", "finished": "done",
                   "closed": "done", "canceled": "cancelled", "todo": "queued",
-                  "open": "queued", "pending": "queued"}
+                  "open": "queued", "pending": "queued",
+                  "backlog": "icebox", "parked": "icebox", "someday": "icebox",
+                  "ice": "icebox", "iced": "icebox",
+                  "in_review": "review", "in-review": "review",
+                  "awaiting_review": "review", "needs_review": "review",
+                  "reviewing": "review"}
 
 
 def normalize_status(raw: str | None) -> str | None:
@@ -268,7 +290,7 @@ def snapshot(team_dir: Path | str) -> dict[str, dict]:
                           ("id", "project", "title", "owner", "status",
                            "created_by", "note", "check_after", "collaborators",
                            "requires_review", "evidence", "until", "poll_every",
-                           "deadline")}
+                           "deadline", "channel", "rank")}
             state[tid]["created_at"] = rec.get("ts")
             state[tid]["updated_at"] = rec.get("ts")
         elif tid in state:
@@ -291,14 +313,20 @@ def create(team_dir: Path | str, project: str, title: str,
            note: str = "", check_after: str | None = None,
            collaborators: list[str] | None = None, requires_review: bool = False,
            until: dict | None = None, poll_every: str | None = None,
-           deadline: str | None = None) -> dict:
-    """Append a new task and return its current state."""
+           deadline: str | None = None, channel: str | None = None,
+           status: str | None = None, rank: float | None = None) -> dict:
+    """Append a new task and return its current state. `status` may start
+    it in the icebox; anything else starts queued."""
     if not project or not project.strip():
         raise TaskError("project is required")
     if not title or not title.strip():
         raise TaskError("title is required")
     if until:
         validate_until(until)
+    status = normalize_status(status) or "queued"
+    if status not in ("queued", "icebox"):
+        raise TaskError(f"a new task starts queued or in the icebox, not {status!r}")
+    channel = _check_channel(team_dir, channel)
     entry = {
         "id": "task_" + uuid.uuid4().hex[:8],
         "kind": _KIND_CREATED,
@@ -306,7 +334,7 @@ def create(team_dir: Path | str, project: str, title: str,
         "project": project.strip(),
         "title": title.strip(),
         "owner": owner,
-        "status": "queued",
+        "status": status,
         "created_by": created_by,
         "note": note.strip() if note else "",
         "check_after": parse_when(check_after) if check_after else None,
@@ -316,6 +344,8 @@ def create(team_dir: Path | str, project: str, title: str,
         "until": until or None,
         "poll_every": parse_duration(poll_every) if poll_every else None,
         "deadline": parse_when(deadline) if deadline else None,
+        "channel": channel,
+        "rank": _rank(rank),
     }
     if until and not entry["check_after"]:
         # A condition is checked from the next sweep on, not left to wait
@@ -323,7 +353,10 @@ def create(team_dir: Path | str, project: str, title: str,
         entry["check_after"] = _now()
     with filelock.locked(path(team_dir)):
         _append(team_dir, entry)
-    return get(team_dir, entry["id"])
+    t = get(team_dir, entry["id"])
+    if channel:
+        _notice(team_dir, t, created_by or OPERATOR, "created")
+    return t
 
 
 def claim(team_dir: Path | str, task_id: str, agent: str) -> dict | None:
@@ -340,6 +373,9 @@ def claim(team_dir: Path | str, task_id: str, agent: str) -> dict | None:
             raise TaskError(f"task {task_id} is already owned by "
                             f"'{current['owner']}'; they can hand it to you "
                             f"with update_task(owner='{agent}')")
+        if current.get("status") in PAUSED and agent != OPERATOR:
+            raise TaskError(f"task {task_id} is in the icebox: the operator has "
+                            f"parked it. Ask them before working on it")
         _append(team_dir, {"id": task_id, "kind": _KIND_UPDATED, "ts": _now(),
                            "by": agent, "owner": agent, "status": "claimed"})
     return get(team_dir, task_id)
@@ -351,11 +387,14 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
            note: str | None = None, evidence: str | None = None,
            collaborators: list[str] | None = None,
            until: dict | None = None, poll_every: str | None = None,
-           deadline: str | None = None) -> dict | None:
+           deadline: str | None = None, channel: str | None = None,
+           rank: float | None = None, title: str | None = None,
+           project: str | None = None) -> dict | None:
     """Append a mutation by `by`. None if task_id is unknown.
 
-    Only the owner may change an owned task, and passing `owner` is how they
-    hand it to someone else. `check_after=None` leaves any reminder alone;
+    Only the owner -- or the operator -- may change an owned task, and
+    passing `owner` is how they hand it to someone else. `channel=""`
+    unlinks the task from its channel. `check_after=None` leaves any reminder alone;
     `clear_check_after=True` removes it. Finishing a task removes its reminder,
     because a reminder on finished work would only ever wake someone to read
     that it was finished.
@@ -369,13 +408,23 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
         validate_until(until)
     every = parse_duration(poll_every) if poll_every else None
     due_by = parse_when(deadline) if deadline else None
+    if channel is not None:
+        channel = _check_channel(team_dir, channel) if channel.strip() else ""
+    if title is not None and not title.strip():
+        raise TaskError("a task's title cannot be empty")
+    if project is not None and not project.strip():
+        raise TaskError("a task's project cannot be empty")
     with filelock.locked(path(team_dir)):
         current = snapshot(team_dir).get(task_id)
         if current is None:
             return None
-        if current.get("owner") and current["owner"] != by:
+        if current.get("owner") and current["owner"] != by and by != OPERATOR:
             raise TaskError(f"task {task_id} is owned by '{current['owner']}', "
                             f"not '{by}'")
+        if (current.get("status") in PAUSED and status is not None
+                and status not in PAUSED and by != OPERATOR):
+            raise TaskError(f"task {task_id} is in the icebox: the operator "
+                            f"parked it, and only they take it back out")
         final_status = status or current.get("status")
         if when and final_status in TERMINAL:
             raise TaskError(f"task {task_id} is {final_status}; a reminder on "
@@ -403,8 +452,55 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
             entry["poll_every"] = every
         if due_by:
             entry["deadline"] = due_by
+        if channel is not None:
+            entry["channel"] = channel or None
+        if rank is not None:
+            entry["rank"] = _rank(rank)
+        if title is not None:
+            entry["title"] = title.strip()
+        if project is not None:
+            entry["project"] = project.strip()
         _append(team_dir, entry)
-    return get(team_dir, task_id)
+    t = get(team_dir, task_id)
+    if t and t.get("channel"):
+        if channel and channel != current.get("channel"):
+            _notice(team_dir, t, by, "linked to this channel")
+        elif status is not None and status != current.get("status"):
+            _notice(team_dir, t, by, f"{current.get('status')} \u2192 {status}")
+    return t
+
+
+def _check_channel(team_dir, channel: str | None) -> str | None:
+    """A channel a task can be linked to, or a TaskError naming the choices."""
+    if channel is None or not str(channel).strip():
+        return None
+    from . import channels as channels_lib
+    name = str(channel).strip().lstrip("#").lower()
+    live = channels_lib.active(team_dir)
+    if name not in live:
+        raise TaskError(f"no open channel #{name}; channels: "
+                        f"{', '.join('#' + c for c in sorted(live)) or 'none'}")
+    return name
+
+
+def _rank(rank) -> float | None:
+    if rank is None:
+        return None
+    try:
+        return float(rank)
+    except (TypeError, ValueError):
+        raise TaskError(f"rank is a number, not {rank!r}") from None
+
+
+def _notice(team_dir, t: dict, by: str, what: str) -> None:
+    from . import channels as channels_lib
+    from . import roster as roster_lib
+    who = by
+    if by == OPERATOR:
+        who = roster_lib.operator(channels_lib._roster_doc(team_dir)).get("name") or "the operator"
+    channels_lib.notice(team_dir, t["channel"], by,
+                        f"Task {t['id']} \u201c{t.get('title')}\u201d: {what} "
+                        f"({who}; owner {t.get('owner') or 'nobody'})", task_id=t["id"])
 
 
 def complete(team_dir: Path | str, task_id: str, by: str, note: str,
@@ -521,7 +617,7 @@ def list_tasks(team_dir: Path | str, project: str | None = None,
 def reminders(team_dir: Path | str) -> list[dict]:
     """Unfinished tasks that carry a reminder, due or not."""
     return [r for r in snapshot(team_dir).values()
-            if r.get("status") not in TERMINAL and r.get("check_after")]
+            if r.get("status") not in TERMINAL | PAUSED and r.get("check_after")]
 
 
 def unreadable(task: dict) -> bool:
@@ -533,7 +629,7 @@ def _due_in(state: dict[str, dict], now: str) -> list[dict]:
     # Canonical UTC timestamps sort lexically in time order, so this is a
     # string comparison. Anything not canonical fires now rather than never.
     return [r for r in state.values()
-            if r.get("status") not in TERMINAL and r.get("check_after")
+            if r.get("status") not in TERMINAL | PAUSED and r.get("check_after")
             and (unreadable(r) or r["check_after"] <= now)]
 
 
@@ -661,7 +757,7 @@ def sweep(team_dir: Path | str, send, owners=None,
                                    "ts": now, "check_after": None})
                 delivered.setdefault(owner, []).append(t)
         remaining = [r for r in snapshot(team_dir).values()
-                     if r.get("status") not in TERMINAL and r.get("check_after")]
+                     if r.get("status") not in TERMINAL | PAUSED and r.get("check_after")]
         if not remaining:
             earliest = None
         elif any(unreadable(r) for r in remaining):

@@ -25,9 +25,13 @@ from . import scope
 from . import tasks as tasks_lib
 
 _STATUS = {"type": "string", "enum": sorted(tasks_lib.STATUSES),
-           "description": "queued, claimed, running, blocked, done, failed or "
-                          "cancelled (in_progress, waiting, completed and the like "
-                          "are accepted and mapped)"}
+           "description": "queued, claimed, running, blocked, review (done, "
+                          "waiting on an approved review), done, failed, "
+                          "cancelled, or icebox (parked: only the operator takes "
+                          "a task back out). in_progress, waiting, completed and "
+                          "the like are accepted and mapped"}
+_CHANNEL = string("The channel this task is discussed in, e.g. 'billing'; its "
+                  "status changes are noted there. '' unlinks it")
 
 TOOLS = [
     tool("create_task",
@@ -53,7 +57,8 @@ TOOLS = [
                                   "recorded activity since it was created"),
           "requires_review": string("'true' if this task may not close, and its "
                                     "result may not go to the user, without an "
-                                    "approved review naming it")},
+                                    "approved review naming it"),
+          "channel": _CHANNEL},
          ["project", "title"]),
     tool("claim_task",
          "Take ownership of a task nobody owns yet. Refuses if a teammate "
@@ -76,7 +81,8 @@ TOOLS = [
           "owner": string("Hand the task to this teammate"),
           "collaborators": string("Comma-separated teammates whose work this needs"),
           "evidence": string("Where the result can be checked: a path, or a review"),
-          "note": string("Replace the task's note with this")},
+          "note": string("Replace the task's note with this"),
+          "channel": _CHANNEL},
          ["task_id"]),
     tool("complete_task",
          "Close a task you own. The note is required and replaces the old one: "
@@ -181,6 +187,8 @@ def _blocks(rows: list[dict], team_dir: Path | None = None) -> list[str]:
             extra.append(f"with {', '.join(t['collaborators'])}")
         if t.get("requires_review"):
             extra.append("requires review")
+        if t.get("channel"):
+            extra.append(f"discussed in #{t['channel']}")
         tail = f" ({'; '.join(extra)})" if extra else ""
         lines.append(f"- {t['id']} [{t.get('status')}] ({t.get('project')}) "
                      f"{t.get('title')} — owner: {t.get('owner') or 'unclaimed'}{tail}")
@@ -233,15 +241,16 @@ def _create_task(agent: str, team_dir: Path, a: dict) -> str:
         return refusal
     try:
         until = tasks_lib.parse_until(_text(a, "until")) if _text(a, "until") else None
+        t = tasks_lib.create(team_dir, project, title, owner=owner, created_by=agent,
+                             note=_text(a, "note"),
+                             check_after=_text(a, "check_after") or None,
+                             collaborators=collaborators,
+                             requires_review=_text(a, "requires_review").lower() in ("true", "yes", "1"),
+                             until=until, poll_every=_text(a, "poll_every") or None,
+                             deadline=_text(a, "deadline") or None,
+                             channel=_text(a, "channel") or None)
     except tasks_lib.TaskError as e:
         return f"[error: {e}]"
-    t = tasks_lib.create(team_dir, project, title, owner=owner, created_by=agent,
-                         note=_text(a, "note"),
-                         check_after=_text(a, "check_after") or None,
-                         collaborators=collaborators,
-                         requires_review=_text(a, "requires_review").lower() in ("true", "yes", "1"),
-                         until=until, poll_every=_text(a, "poll_every") or None,
-                         deadline=_text(a, "deadline") or None)
     return _with_delivery(team_dir, t, f"[task created: {t['id']}]\n{_render([t])}")
 
 
@@ -275,6 +284,7 @@ def _update_task(agent: str, team_dir: Path, a: dict) -> str:
     except tasks_lib.TaskError as e:
         return f"[error: {e}]"
     t = tasks_lib.update(team_dir, task_id, agent,
+                         channel=a.get("channel") if isinstance(a.get("channel"), str) else None,
                          status=_text(a, "status") or None,
                          owner=owner,
                          check_after=None if clear or not raw else raw,

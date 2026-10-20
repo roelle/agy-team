@@ -26,6 +26,7 @@ canonical, so a mapping-shaped file migrates the first time it is edited.
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -120,6 +121,13 @@ def normalize_agents(raw, source: str = "roster") -> list[dict]:
         seen.add(name)
         e["name"] = name
         e.setdefault("role", "")
+        if e.get("alias") is not None:
+            alias = e["alias"]
+            if not isinstance(alias, str) or not _HANDLE.match(alias.strip()):
+                raise RosterError(
+                    f"{source}: {name}.alias must be a handle like 'Ada' (letters, "
+                    f"digits, - _ .), got {alias!r}")
+            e["alias"] = alias.strip()
         if "workspaces" in e:
             e["workspaces"] = normalize_workspaces(
                 e["workspaces"], source=f"{source}: {name}.workspaces"
@@ -137,33 +145,119 @@ def normalize(doc: dict, source: str = "roster") -> dict:
             doc.get("workspaces"), source=f"{source}: workspaces"
         )
     out["agents"] = normalize_agents(doc.get("agents"), source)
+    if doc.get("operator") is not None:
+        out["operator"] = _normalize_operator(doc["operator"], source)
+    _check_handles(out, source)
     return out
+
+
+# --- what people call each other ----------------------------------------------
+#
+# An agent's `alias` is what the team calls it: "Ada" for "at-Ada", or any
+# nickname. It is shown in clients, offered by @-autocomplete, and resolves
+# to the agent wherever a name is taken (send_to_teammate, @mentions).
+#
+# The roster's `operator` names the human the team works for:
+#
+#     "operator": {"name": "Matt", "handles": ["Matt", "roellem"]}
+#
+# They stay "user" on the bus -- the review gate and the episode logic key on
+# it -- but agents are told who that is, can address them by a handle, and an
+# @handle in a channel is recorded as a mention of the user.
+
+_HANDLE = re.compile(r"^[A-Za-z0-9][\w.-]{0,39}$")
+_WORDS = {"user", "here", "all", "everyone", "channel"}
+
+
+def _normalize_operator(raw, source: str) -> dict:
+    if isinstance(raw, str):
+        raw = {"name": raw}
+    if not isinstance(raw, dict):
+        raise RosterError(f"{source}: \"operator\" must be an object like "
+                          f"{{\"name\": \"Matt\", \"handles\": [\"Matt\"]}}")
+    name = str(raw.get("name") or "").strip()
+    handles = raw.get("handles") or []
+    if isinstance(handles, str):
+        handles = [handles]
+    out = []
+    for h in list(handles) + ([name] if name and _HANDLE.match(name) else []):
+        h = str(h).strip().lstrip("@")
+        if not _HANDLE.match(h):
+            raise RosterError(f"{source}: operator handle {h!r} is not a handle "
+                              f"(letters, digits, - _ .)")
+        if h.lower() not in (x.lower() for x in out):
+            out.append(h)
+    return {**raw, "name": name or (out[0] if out else ""), "handles": out}
+
+
+def _check_handles(doc: dict, source: str) -> None:
+    """No handle may mean two things: a name, an alias or an operator handle."""
+    owner: dict[str, str] = {}
+
+    def claim(handle: str, who: str):
+        low = handle.lower()
+        if low in _WORDS and who != "user":
+            raise RosterError(f"{source}: {handle!r} is reserved")
+        if low in owner and owner[low] != who:
+            raise RosterError(f"{source}: {handle!r} would mean both {owner[low]!r} "
+                              f"and {who!r}; names, aliases and operator handles "
+                              f"must be unique, ignoring case")
+        owner[low] = who
+    for a in doc.get("agents", []):
+        claim(a["name"], a["name"])
+    for a in doc.get("agents", []):
+        if a.get("alias"):
+            claim(a["alias"], a["name"])
+    for h in (doc.get("operator") or {}).get("handles", []):
+        claim(h, "user")
+
+
+def aliases(doc: dict) -> dict[str, str]:
+    """{handle, lowercased: who}: agent aliases, and operator handles -> "user"."""
+    out = {}
+    for a in doc.get("agents", []) if isinstance(doc, dict) else []:
+        if isinstance(a, dict) and isinstance(a.get("alias"), str) and a.get("name"):
+            out[a["alias"].lower()] = a["name"]
+    for h in operator(doc).get("handles", []):
+        out[h.lower()] = "user"
+    return out
+
+
+def operator(doc: dict) -> dict:
+    """{"name", "handles"} for the human this team works for; empty if unset."""
+    op = doc.get("operator") if isinstance(doc, dict) else None
+    try:
+        return _normalize_operator(op, "roster") if op else {"name": "", "handles": []}
+    except RosterError:
+        return {"name": "", "handles": []}
 
 
 _SEPARATORS = "-_."
 
 
-def resolve_name(handle: str, names) -> str | None:
+def resolve_name(handle: str, names, aliases: dict[str, str] | None = None) -> str | None:
     """The agent a handle means: the agent named exactly that; else the one
-    whose name matches ignoring case; else the one whose name ends in it
-    after a team prefix ("Ada" -> "at-Ada", "at_ada", "at.Ada"). Two
-    candidates at any step is no match -- a handle that could wake either
-    of two agents wakes neither, rather than the wrong one."""
+    whose name matches ignoring case; else the one with that alias (from
+    roster.aliases, where an operator handle means "user"); else the one
+    whose name ends in it after a team prefix ("Ada" -> "at-Ada", "at_ada",
+    "at.Ada"). Two candidates at any step is no match -- a handle that could
+    wake either of two agents wakes neither, rather than the wrong one."""
     names = list(names)
     if not handle:
         return None
     if handle in names:
         return handle
     low = handle.lower()
-    for candidates in (
-            [n for n in names if n.lower() == low],
-            [n for n in names if len(n) > len(low) and n.lower().endswith(low)
-             and n[-len(low) - 1] in _SEPARATORS]):
-        if len(candidates) == 1:
-            return candidates[0]
-        if candidates:
-            return None
-    return None
+    exact = [n for n in names if n.lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+    if aliases and low in aliases:
+        return aliases[low]
+    suffix = [n for n in names if len(n) > len(low) and n.lower().endswith(low)
+              and n[-len(low) - 1] in _SEPARATORS]
+    return suffix[0] if len(suffix) == 1 else None
 
 
 def load(path) -> dict:

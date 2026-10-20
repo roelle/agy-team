@@ -10,6 +10,8 @@ mechanism is undocumented, routes through agy's subagent machinery, and strips
 every builtin tool, so agents defined that way could message each other but
 could not write a file. Roles are defined here, in terms both runtimes share.
 """
+import json
+import os
 from pathlib import Path
 
 from . import scope
@@ -286,10 +288,17 @@ def team_overrides(team_dir: Path | str | None = None, scopes=None) -> dict[str,
     return out
 
 
-def roster_lines(agent: str, agents: list[dict]) -> str:
-    peers = [f"- {a['name']}: {a.get('role', '')}"
-             for a in agents if a["name"] != agent]
-    peers.append("- user: the human. Final results and questions go to 'user'.")
+def roster_lines(agent: str, agents: list[dict], operator: dict | None = None) -> str:
+    peers = [f"- {a['name']}" + (f" (also '{a['alias']}')" if a.get("alias") else "")
+             + f": {a.get('role', '')}" for a in agents if a["name"] != agent]
+    op = operator or {}
+    if op.get("name"):
+        handles = ", ".join("@" + h for h in op.get("handles") or [])
+        peers.append(f"- user: the human, {op['name']}. Final results and questions "
+                     f"go to 'user'; {handles} reach them too, and an @{op['name']} "
+                     f"in a channel shows them the post (it wakes nobody).")
+    else:
+        peers.append("- user: the human. Final results and questions go to 'user'.")
     return "\n".join(peers)
 
 
@@ -342,12 +351,26 @@ def tool_index(admin: bool = False) -> str:
     return "\n".join(lines)
 
 
-def identity(agent: str, agents: list[dict]) -> str:
+def identity(agent: str, agents: list[dict], operator: dict | None = None) -> str:
     """Who this agent is and who it works with."""
     spec = next((a for a in agents if a["name"] == agent), {})
-    return (f"You are '{agent}', a persistent member of an engineering team.\n"
+    also = f" (the team calls you '{spec['alias']}')" if spec.get("alias") else ""
+    return (f"You are '{agent}'{also}, a persistent member of an engineering team.\n"
             f"Your role: {spec.get('role', '')}\n\n"
-            f"## Your teammates\n{roster_lines(agent, agents)}")
+            f"## Your teammates\n{roster_lines(agent, agents, operator)}")
+
+
+def _operator(team_dir=None, scopes=None) -> dict:
+    """The roster's operator, for the brief; empty if none or unreadable."""
+    from . import roster as roster_lib
+    td = team_dir or (scopes.team_dir() if scopes is not None else None) \
+        or os.environ.get("AGYTEAM_TEAM_DIR")
+    if not td:
+        return {}
+    try:
+        return roster_lib.operator(json.loads((Path(td) / "roster.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return {}
 
 
 def brief(
@@ -385,7 +408,7 @@ def brief(
                 ("contract", CONTRACT), ("continuity", CONTINUITY),
                 ("consistency", CONSISTENCY), ("verification", VERIFICATION),
                 ("accountability", ACCOUNTABILITY)]
-    parts = [identity(agent, agents), tool_index()]
+    parts = [identity(agent, agents, _operator(team_dir, scopes)), tool_index()]
     parts += [over.get(name, default) for name, default in sections]
     if over.get(agent):
         parts.append(over[agent])

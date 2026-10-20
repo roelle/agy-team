@@ -19,7 +19,14 @@ Membership lives in <team_dir>/channels.json. A team with no channels file
 has one implicit channel, "general", with every roster agent in it.
 
 The user is not a member: the user reads every channel from the record
-(bus.jsonl), and is never woken.
+(bus.jsonl), and is never woken. An @handle of the operator's (roster
+`operator`) is recorded in the post's `mentions` as "user", so a client can
+show it as a mention; it wakes nobody.
+
+A channel can be archived -- read-only, out of every agent's list, kept --
+and restored. Deleting one is archiving it and hiding its history from
+clients: its messages stay in bus.jsonl, which is the team's record, and a
+deleted name cannot be reused until it is restored.
 """
 import json
 import os
@@ -34,7 +41,7 @@ from . import roster as roster_lib
 FILE = "channels.json"
 DEFAULT = "general"
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
-_MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9][\w-]*)")
+_MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9](?:[\w-]|\.(?=\w))*)")
 
 
 class ChannelError(ValueError):
@@ -45,12 +52,27 @@ def path(team_dir) -> Path:
     return Path(team_dir) / FILE
 
 
-def _roster_agents(team_dir) -> list[str]:
+def _roster_doc(team_dir) -> dict:
     try:
         doc = json.loads((Path(team_dir) / "roster.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _roster_agents(team_dir) -> list[str]:
+    doc = _roster_doc(team_dir)
     return [a["name"] for a in doc.get("agents", []) if isinstance(a, dict) and a.get("name")]
+
+
+def closed(chan: dict) -> str | None:
+    """"deleted" or "archived" if the channel is either, else None."""
+    return "deleted" if chan.get("deleted") else "archived" if chan.get("archived") else None
+
+
+def active(team_dir) -> dict[str, dict]:
+    """The channels agents can see and post to: not archived, not deleted."""
+    return {n: c for n, c in load(team_dir).items() if not closed(c)}
 
 
 def load(team_dir) -> dict[str, dict]:
@@ -97,7 +119,9 @@ def create(team_dir, name: str, members: list[str] | None = None, topic: str = "
 
     def do(chans):
         if name in chans:
-            raise ChannelError(f"#{name} already exists")
+            state = closed(chans[name])
+            raise ChannelError(f"#{name} already exists" + (
+                f" ({state}; restore it, or pick another name)" if state else ""))
         chans[name] = {"members": sorted(set(members or [])), "topic": topic.strip(),
                        "created": time.strftime("%Y-%m-%d %H:%M:%S")}
         return chans[name]
@@ -127,23 +151,64 @@ def set_topic(team_dir, name: str, topic: str) -> None:
     _edit(team_dir, do)
 
 
+def archive(team_dir, name: str, by: str = "user") -> dict:
+    """Read-only and out of every list; reversible with restore()."""
+    def do(chans):
+        if name not in chans:
+            raise ChannelError(f"no channel #{name}")
+        chans[name]["archived"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        chans[name]["archived_by"] = by
+        return chans[name]
+    return _edit(team_dir, do)
+
+
+def delete(team_dir, name: str, by: str = "user") -> dict:
+    """Archive, and hide the history from clients. The messages stay in
+    bus.jsonl: that is the team's record, and reviews and reports read it."""
+    def do(chans):
+        if name not in chans:
+            raise ChannelError(f"no channel #{name}")
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        chans[name].setdefault("archived", now)
+        chans[name]["deleted"] = now
+        chans[name]["deleted_by"] = by
+        return chans[name]
+    return _edit(team_dir, do)
+
+
+def restore(team_dir, name: str) -> dict:
+    def do(chans):
+        if name not in chans:
+            raise ChannelError(f"no channel #{name}")
+        for k in ("archived", "archived_by", "deleted", "deleted_by"):
+            chans[name].pop(k, None)
+        return chans[name]
+    return _edit(team_dir, do)
+
+
 def members(team_dir, name: str) -> list[str]:
     chans = load(team_dir)
-    if name not in chans:
+    if name not in chans or chans[name].get("deleted"):
+        live = active(team_dir)
         raise ChannelError(f"no channel #{name}; channels: "
-                           f"{', '.join('#' + c for c in sorted(chans))}")
+                           f"{', '.join('#' + c for c in sorted(live)) or 'none'}")
+    if chans[name].get("archived"):
+        raise ChannelError(f"#{name} is archived and takes no posts; ask the "
+                           f"operator to restore it if it is still needed")
     return list(chans[name].get("members", []))
 
 
 def of(team_dir, agent: str) -> list[str]:
-    """The channels `agent` is a member of."""
-    return sorted(n for n, c in load(team_dir).items() if agent in c.get("members", []))
+    """The open channels `agent` is a member of."""
+    return sorted(n for n, c in active(team_dir).items() if agent in c.get("members", []))
 
 
-def mentioned(content: str, channel_members: list[str], roster: list[str]) -> set[str]:
-    """Who a post wakes: named agents on the roster, @here, @all. A name
-    may drop the team prefix or its case (@Ada wakes at-Ada) when that
-    leaves exactly one agent it can mean."""
+def mentioned(content: str, channel_members: list[str], roster: list[str],
+              aliases: dict[str, str] | None = None) -> set[str]:
+    """Who a post mentions: named agents on the roster, @here, @all, and
+    "user" for an operator handle. A name may drop the team prefix or its
+    case (@Ada wakes at-Ada) when that leaves exactly one agent it can mean,
+    or be an agent's alias. "user" is never woken; the caller sees to that."""
     out: set[str] = set()
     known = set(roster)
     for name in _MENTION.findall(content or ""):
@@ -153,7 +218,7 @@ def mentioned(content: str, channel_members: list[str], roster: list[str]) -> se
         elif low in ("all", "everyone", "channel"):
             out |= known
         else:
-            agent = roster_lib.resolve_name(name, roster)
+            agent = roster_lib.resolve_name(name, roster, aliases)
             if agent:
                 out.add(agent)
     return out
@@ -174,10 +239,36 @@ def post(transport, team_dir, channel: str, content: str, kind: str = "work",
     if who != "user" and who not in chan_members:
         raise ChannelError(f"{who} is not in #{chan}; members: "
                            f"{', '.join(chan_members) or 'nobody'}")
+    doc = _roster_doc(team_dir)
     roster = _roster_agents(team_dir)
-    woke = mentioned(content, chan_members, roster) - {who}
-    recipients = sorted((set(chan_members) | woke) - {who})
-    post_id = transport.post(chan, recipients, content, kind=kind, mentioned=woke,
+    named = mentioned(content, chan_members, roster, roster_lib.aliases(doc)) - {who}
+    woke = named - {"user"}
+    recipients = sorted((set(chan_members) | woke) - {who, "user"})
+    post_id = transport.post(chan, recipients, content, kind=kind, mentioned=named,
                              task_id=task_id, thread=thread, author=author)
     return {"id": post_id, "channel": chan, "woke": sorted(woke),
-            "delivered_to": recipients}
+            "delivered_to": recipients, "mentions_user": "user" in named}
+
+
+def notice(team_dir, channel: str, who: str, content: str,
+           task_id: str | None = None) -> str | None:
+    """A quiet line in a channel about something done elsewhere -- a task
+    linked to it changed. Logged as `who`, copied to members as "status",
+    so it wakes nobody; skipped for a closed channel. Never raises: a note
+    about a change must not undo the change."""
+    try:
+        c = load(team_dir).get(channel)
+        if not c or closed(c):
+            return None
+        from .transport import load as load_transport
+        from .transport_file import FileTransport
+        t = (load_transport(who) if os.environ.get("AGYTEAM_BUS_TRANSPORT")
+             else FileTransport(who, {"team_dir": str(team_dir)}))
+        try:
+            return t.post(channel, [m for m in c.get("members", []) if m != who],
+                          content, kind="status", task_id=task_id)
+        finally:
+            if hasattr(t, "close"):
+                t.close()
+    except Exception:
+        return None

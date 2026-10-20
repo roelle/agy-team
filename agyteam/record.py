@@ -62,7 +62,14 @@ class Record:
         return [a["name"] for a in self.roster().get("agents", []) if a.get("name")]
 
     def channels(self) -> dict[str, dict]:
+        """Every channel, archived and deleted ones included and flagged as
+        such ("archived", "deleted"); a client decides what to show."""
         return channels_lib.load(self.team_dir)
+
+    def operator(self) -> dict:
+        """{"name", "handles"}: the human this team works for, if named."""
+        from . import roster as roster_lib
+        return roster_lib.operator(self.roster())
 
     # --- what was said -----------------------------------------------------------
 
@@ -198,8 +205,9 @@ class Record:
         if not q:
             return []
         hits = []
+        gone = {n for n, c in self.channels().items() if c.get("deleted")}
         for r in reversed(self.bus()):
-            if r.get("from") in PLUMBING_SENDERS:
+            if r.get("from") in PLUMBING_SENDERS or r.get("channel") in gone:
                 continue
             if q in (r.get("content") or "").lower():
                 hits.append({"type": "message", "item": r})
