@@ -182,11 +182,12 @@ class Record:
             # available: False means the configured runner will refuse it,
             # None that it cannot say (or that the runner's default is used).
             out[a["name"]] = {"model": m, "effort": e, "source": src,
-                              "available": runner_lib.model_available(m, e),
+                              "available": runner_lib.model_available(
+                                  m, e, team_dir=self.team_dir),
                               # what an override falls back to when it expires
                               "roster_model": a.get("model"),
                               "roster_available": runner_lib.model_available(
-                                  a.get("model"), a.get("effort"))}
+                                  a.get("model"), a.get("effort"), team_dir=self.team_dir)}
         return out
 
     # --- search ------------------------------------------------------------------------------

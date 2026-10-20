@@ -114,7 +114,7 @@ def my_capabilities(agent: str, scopes: scope.Scopes | None = None, team_dir: Pa
     # entry that only described a boundary.
     try:
         from .runner import capabilities
-        scoped = capabilities().get("supports_capability_scoping")
+        scoped = capabilities(team_dir=team_dir).get("supports_capability_scoping")
     except Exception:
         scoped = None
     enforcement = {

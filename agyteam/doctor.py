@@ -59,9 +59,14 @@ class Report:
             print(f"        {ln}")
 
 
-def check_runner(r: Report) -> dict:
-    caps = capabilities()
-    r.line(OK if caps["error"] is None else BAD, f"runner: {caps['spec']}")
+def check_runner(r: Report, team_dir: Path | None = None) -> dict:
+    """The team's runner (the roster's supervisor block, else the
+    environment): what its supervisor will run on, not what this shell has."""
+    from .runner import team_runner
+    spec, _, where = team_runner(team_dir)
+    caps = capabilities(spec)
+    caps["source"] = where
+    r.line(OK if caps["error"] is None else BAD, f"runner: {caps['spec']} (from {where})")
     if caps["error"]:
         r.detail(caps["error"])
         return caps
@@ -427,7 +432,7 @@ def check_models(r: Report, team_dir: Path) -> None:
     except Exception as e:
         r.line(WARN, f"could not read the agents' models: {e}")
         return
-    if runner_lib.list_models() is None:
+    if runner_lib.list_models(team_dir=team_dir) is None:
         r.line(WARN, "the configured runner cannot list its models, so agents' "
                      "models were not checked")
         return
@@ -582,7 +587,7 @@ def main(argv=None) -> int:
     print(f"agent:  {agent}\n")
 
     r = Report()
-    caps = check_runner(r)
+    caps = check_runner(r, team_dir)
     print()
     check_reply_text(r, agent)
     print()

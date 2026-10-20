@@ -617,8 +617,9 @@ class Supervisor:
                  max_hops: int = 32, poll: float = 1.0, quiet: bool = False,
                  stop_on_answer: bool = True, observer=None,
                  require_review: bool = True, manager: str | None = None,
-                 inbox_pull: bool | None = None):
+                 inbox_pull: bool | None = None, inspect_only: bool = False):
         self.agents = agents
+        self.inspect_only = inspect_only
         self.runner = runner
         self.max_hops = max_hops
         self.poll = poll
@@ -661,7 +662,17 @@ class Supervisor:
         self._distilled_above: dict[str, str] = {}
         self._heartbeat_at = 0.0
         self._step_lock = threading.RLock()
-        self._load_ledger()
+        # inflight.json is the driving supervisor's: loading it cancels,
+        # resumes or writes off every turn in it and saves what is left. It
+        # was loaded by every Supervisor built, so `--status` -- built with a
+        # runner that resumes nothing -- recorded each live turn as died in
+        # a restart and saved an empty ledger over the live supervisor's;
+        # `--distill` and a supervisor refused the team did the same. Now
+        # only one that can own the team reads it here, and one that
+        # cannot leaves it alone and takes it up if it later claims the team.
+        self._owns_ledger = not inspect_only and not self._team_driven_elsewhere()
+        if self._owns_ledger:
+            self._load_ledger()
         # The roster as last accepted, and who has had a turn end since the
         # roster was last checked; see _guard_roster.
         self._roster_path = self.team_dir / "roster.json"
@@ -827,6 +838,8 @@ class Supervisor:
         return heartbeat.path(self.team_dir)
 
     def _save_ledger(self) -> None:
+        if not self._owns_ledger:
+            return                  # another supervisor's, or none of ours
         doc = {}
         for agent, turn in self.inflight.items():
             doc[agent] = {"handle": turn["handle"], "ts": turn["ts"],
@@ -975,7 +988,7 @@ class Supervisor:
         stale roster pin, say. It is not blocked: the runner's list can lag."""
         from . import runner as runner_lib
         try:
-            ok = runner_lib.model_available(now_on[0], now_on[1])
+            ok = runner_lib.model_available(now_on[0], now_on[1], team_dir=self.team_dir)
         except Exception:
             ok = None
         if ok is not False:
@@ -1033,7 +1046,26 @@ class Supervisor:
     # driving loops take an exclusive lock on <team_dir>/supervisor.lock for
     # as long as they run; the kernel drops it if the process dies.
 
+    def _team_driven_elsewhere(self) -> bool:
+        """Does another supervisor hold this team's lock right now?"""
+        if not filelock.fcntl:
+            return False
+        try:
+            f = open(self.team_dir / "supervisor.lock", "a+")
+        except OSError:
+            return False
+        try:
+            filelock.fcntl.flock(f.fileno(), filelock.fcntl.LOCK_EX | filelock.fcntl.LOCK_NB)
+        except OSError:
+            return True
+        finally:
+            f.close()               # releases it, if we took it
+        return False
+
     def _claim_team(self) -> bool:
+        if self.inspect_only:
+            self.stopped = "inspect-only: this supervisor does not drive the team"
+            return False
         if getattr(self, "_team_lock", None) is not None:
             return True
         path = self.team_dir / "supervisor.lock"
@@ -1049,6 +1081,9 @@ class Supervisor:
             self._log(f"[supervisor] {self.stopped}; not starting a second one")
             return False
         self._team_lock = f
+        if not self._owns_ledger:
+            self._owns_ledger = True
+            self._load_ledger()
         self._pin_roster()
         return True
 
@@ -3352,31 +3387,18 @@ def team_settings(team_dir) -> dict:
 
 
 def apply_team_settings(team_dir, runner_flag: str | None = None) -> dict:
-    """Resolve the runner for this process: --runner, else the roster's,
-    else AGYTEAM_RUNNER (the machine-wide default), else the default runner.
-    The roster beats the environment because the environment belongs to
-    whoever started the process, and the roster belongs to the team.
-
-    The runner's config travels with it: the roster's runner_config when it
-    gives one; the environment's only when it was set for the same runner.
-    """
+    """Make the team's runner (runner.team_runner) this process's: exported
+    as AGYTEAM_RUNNER / AGYTEAM_RUNNER_CONFIG for runner.load() and for the
+    agents' processes it starts."""
     settings = team_settings(team_dir) if team_dir is not None else {}
-    env_runner = os.environ.get("AGYTEAM_RUNNER")
-    source = {}
-    chosen, where = None, None
-    if runner_flag:
-        chosen, where = runner_flag, "--runner"
-    elif settings.get("runner"):
-        chosen, where = str(settings["runner"]), "roster"
-    if chosen:
-        if "runner_config" in settings and chosen == settings.get("runner"):
-            os.environ["AGYTEAM_RUNNER_CONFIG"] = json.dumps(settings["runner_config"])
-        elif chosen != env_runner:
+    spec, config, where = runner_lib.team_runner(team_dir, runner_flag)
+    if where in ("--runner", "roster"):
+        os.environ["AGYTEAM_RUNNER"] = spec
+        if config:
+            os.environ["AGYTEAM_RUNNER_CONFIG"] = json.dumps(config)
+        else:
             os.environ.pop("AGYTEAM_RUNNER_CONFIG", None)
-        os.environ["AGYTEAM_RUNNER"] = chosen
-        source["runner"] = where
-    else:
-        source["runner"] = "AGYTEAM_RUNNER" if env_runner else "default"
+    source = {"runner": where}
     if settings.get("manager"):
         source["manager"] = "roster"
     settings["_source"] = source
@@ -3506,15 +3528,23 @@ def main(argv=None, runner=None):
 
     if args.status:
         # peek(), never fetch() — reporting on the queue must not empty it.
-        sup = Supervisor(agents, _InspectOnly(), team_dir=team_dir, quiet=True)
+        sup = Supervisor(agents, _InspectOnly(), team_dir=team_dir, quiet=True,
+                         inspect_only=True)
         try:
+            try:        # read, never loaded: loading acts on it
+                running = json.loads(sup.ledger_path.read_text(encoding="utf-8"))
+                running = running if isinstance(running, dict) else {}
+            except (OSError, ValueError):
+                running = {}
             for agent, msgs in sup.pending().items():
+                turn = (f", turn running since {running[agent].get('ts', '?')}"
+                        if isinstance(running.get(agent), dict) else "")
                 if msgs is None:
-                    print(f"  {agent}: (transport cannot report queue depth)")
+                    print(f"  {agent}: (transport cannot report queue depth){turn}")
                 else:
                     senders = ", ".join(sorted({m.sender for m in msgs}))
-                    print(f"  {agent}: {len(msgs)} waiting from {senders}"
-                          if msgs else f"  {agent}: idle")
+                    print(f"  {agent}: {len(msgs)} waiting from {senders}{turn}"
+                          if msgs else f"  {agent}: {'busy' if turn else 'idle'}{turn}")
         finally:
             sup.close()
         return

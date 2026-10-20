@@ -349,7 +349,7 @@ Flags: `-w WORKSPACE` (default `workspace/`), `-m MODEL`
 ```bash
 python -m agyteam.supervisor --say "manager: <task>" # run until idle
 python -m agyteam.supervisor --daemon               # stay up, react as mail arrives
-python -m agyteam.supervisor --status               # who has mail waiting (non-destructive)
+python -m agyteam.supervisor --status               # who has mail waiting, whose turn is running (read-only)
 ```
 
 ### Role-scoped tools (why agents collaborate)
@@ -441,7 +441,7 @@ same way a message from you does.
 ```bash
 python -m agyteam.supervisor --say "manager: get X built and verified"   # until idle
 python -m agyteam.supervisor --daemon        # stay up, react as mail arrives
-python -m agyteam.supervisor --status        # who has mail waiting (non-destructive)
+python -m agyteam.supervisor --status        # who has mail waiting, whose turn is running (read-only)
 ```
 
 Verified with real agents (`evals/test_reactive.py`, which uses a three-agent
@@ -1253,7 +1253,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.3.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.4.0"
 python -m agyteam.supervisor --version
 ```
 

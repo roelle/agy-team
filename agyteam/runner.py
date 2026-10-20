@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 # The default must be the runner that works everywhere. runner_sdk needs
 # google-antigravity, which the plugin deliberately excludes to stay
@@ -495,8 +496,65 @@ CAPABILITIES = ("supports_audit", "supports_containment",
 _MODEL_CACHE: dict[str, tuple[float, list | None]] = {}
 
 
-def runner_class(spec: str | None = None):
+def team_runner(team_dir=None, runner_flag: str | None = None) -> tuple[str, dict, str]:
+    """(spec, config, source): the runner this team runs on, and from where.
+
+    --runner, else the roster's "supervisor" block, else AGYTEAM_RUNNER,
+    else the default. The roster beats the environment because the
+    environment belongs to whoever started the process, and the roster
+    belongs to the team. The config travels with the runner: the roster's
+    runner_config when it gives one for that runner; the environment's only
+    when it was set for the same runner.
+
+    The one resolver. The supervisor's own start-up used it, and everything
+    that only asked about the runner -- which models it offers, for the
+    chat app's picker, Record.models(), doctor and `agyteam.models` --
+    read the environment instead, so from any process without the
+    launcher's exports they described the default runner, or nothing.
+    """
+    block = {}
+    if team_dir is not None:
+        try:
+            doc = json.loads((Path(team_dir) / "roster.json").read_text(encoding="utf-8"))
+            block = doc.get("supervisor") if isinstance(doc, dict) else None
+            block = block if isinstance(block, dict) else {}
+        except (OSError, ValueError):
+            block = {}
+    env_spec = os.environ.get("AGYTEAM_RUNNER")
+
+    def env_config() -> dict:
+        try:
+            c = json.loads(os.environ.get("AGYTEAM_RUNNER_CONFIG") or "{}")
+        except ValueError:
+            return {}
+        return c if isinstance(c, dict) else {}
+
+    if runner_flag:
+        spec, source = runner_flag, "--runner"
+    elif block.get("runner"):
+        spec, source = str(block["runner"]), "roster"
+    else:
+        return (env_spec or DEFAULT_RUNNER, env_config(),
+                "AGYTEAM_RUNNER" if env_spec else "default")
+    if "runner_config" in block and spec == block.get("runner"):
+        config = block["runner_config"] if isinstance(block["runner_config"], dict) else {}
+    elif spec == env_spec:
+        config = env_config()
+    else:
+        config = {}
+    return spec, config, source
+
+
+def _resolve(spec, config, team_dir):
+    if spec is None and team_dir is not None:
+        spec, team_config, _ = team_runner(team_dir)
+        return spec, config if config is not None else team_config
+    return spec, config
+
+
+def runner_class(spec: str | None = None, team_dir=None):
     """The configured runner's class, without constructing it (or None)."""
+    spec, _ = _resolve(spec, None, team_dir)
     spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
     try:
         mod_name, _, cls_name = spec.partition(":")
@@ -507,11 +565,13 @@ def runner_class(spec: str | None = None):
 
 
 def list_models(spec: str | None = None, config: dict | None = None,
-                max_age: float = 600) -> list[dict] | None:
+                max_age: float = 600, team_dir=None) -> list[dict] | None:
     """The configured runner's models (see Runner.list_models), cached for
-    `max_age` seconds: the CLI fetches its list over the network."""
+    `max_age` seconds: the CLI fetches its list over the network. With
+    `team_dir` and no `spec`, the team's runner (team_runner)."""
     if os.environ.get("AGYTEAM_MODEL_CHECK", "1").strip().lower() in ("0", "false", "no", "off"):
         return None                 # asked not to query the runtime
+    spec, config = _resolve(spec, config, team_dir)
     spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
     if config is None:
         try:
@@ -532,12 +592,14 @@ def list_models(spec: str | None = None, config: dict | None = None,
 
 
 def model_available(model: str | None, effort: str | None = None,
-                    spec: str | None = None) -> bool | None:
-    """Can the configured runner run (model, effort)? None if it cannot say,
-    or if no model is chosen (the runner's default)."""
+                    spec: str | None = None, team_dir=None) -> bool | None:
+    """Can the configured runner -- the team's, given `team_dir` -- run
+    (model, effort)? None if it cannot say, or if no model is chosen (the
+    runner's default)."""
     if not model:
         return None
-    models = list_models(spec)
+    spec, config = _resolve(spec, None, team_dir)
+    models = list_models(spec, config)
     if models is None:
         return None
     cls = runner_class(spec)
@@ -550,7 +612,7 @@ def model_available(model: str | None, effort: str | None = None,
                for m in models)
 
 
-def capabilities(spec: str | None = None) -> dict:
+def capabilities(spec: str | None = None, team_dir=None) -> dict:
     """What the configured runner declares, without constructing it.
 
     Returns each flag as True, False, or None for "could not tell" -- the
@@ -566,6 +628,7 @@ def capabilities(spec: str | None = None) -> dict:
     Reading the class attribute also avoids building a client, opening a
     session or requiring an API key to answer a question about a declaration.
     """
+    spec, _ = _resolve(spec, None, team_dir)
     spec = spec or os.environ.get("AGYTEAM_RUNNER") or DEFAULT_RUNNER
     out = {"spec": spec, "error": None}
     out.update({flag: None for flag in CAPABILITIES})

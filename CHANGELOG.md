@@ -7,6 +7,37 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-10-20
+
+### Added
+- `runner.team_runner(team_dir, runner_flag=None)` -> `(spec, config,
+  source)`: the one resolver for which runner a team runs on (`--runner`,
+  then the roster's `supervisor` block, then `AGYTEAM_RUNNER`, then the
+  default). `list_models`, `model_available`, `runner_class` and
+  `capabilities` take `team_dir=` to answer for that team.
+- `Supervisor(..., inspect_only=True)`: a supervisor that reports and never
+  drives the team or touches its ledger.
+- `--status` also shows whose turn is running, read from `inflight.json`
+  without loading it.
+
+### Fixed
+- **`--status` wiped `inflight.json`.** It builds a Supervisor to peek at
+  the queues, and `Supervisor.__init__` loaded the ledger with a runner that
+  resumes nothing, before anything asked whether this process drives the
+  team. Every live turn was recorded as a failure ("supervisor restarted
+  mid-turn") and an empty ledger was saved over the live supervisor's.
+  `--distill`, a retro, and a supervisor about to be refused the team did
+  the same. A Supervisor now loads and saves the ledger only when no other
+  process holds the team's lock, or once it claims the team itself.
+- **Which models the team's runner offers was asked of the environment.**
+  `Record.models()`, `agyteam.doctor`, `agyteam.models` (`available`,
+  `list`, and the check on `set`), `lifecycle status` and `my_capabilities`
+  never read the roster's `supervisor` block. From any process without
+  `AGYTEAM_RUNNER` / `AGYTEAM_RUNNER_CONFIG` exported, such as a chat
+  client, they described the default runner or nothing, and a model change
+  was checked against the wrong runner. They now use `team_runner`, and
+  doctor prints where the runner came from.
+
 ## [3.3.0] - 2026-10-19
 
 ### Fixed
@@ -159,7 +190,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/roelle/agy-team/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/roelle/agy-team/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/roelle/agy-team/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/roelle/agy-team/compare/v3.0.0...v3.1.0

@@ -210,7 +210,7 @@ def start_team(team_dir: str | Path | None = None) -> dict:
     }
 
 
-def runner_capabilities() -> dict:
+def runner_capabilities(team_dir=None) -> dict:
     """Which documented guarantees the configured runner actually provides.
 
     All three are runner-provided, not core. An operator who reads "workspace
@@ -225,7 +225,7 @@ def runner_capabilities() -> dict:
     key, a session, or a working configuration.
     """
     from .runner import capabilities
-    out = capabilities()
+    out = capabilities(team_dir=team_dir)
     out["audit_log"] = os.environ.get("AGYTEAM_AUDIT_LOG") or None
     if out.get("error") is None:
         out.pop("error")
@@ -236,8 +236,8 @@ def runner_capabilities() -> dict:
                                         "supports_containment",
                                         "supports_capability_scoping")):
         try:
-            from .runner import load as load_runner
-            r = load_runner(out["spec"])
+            from .runner import load as load_runner, team_runner
+            r = load_runner(out["spec"], team_runner(team_dir)[1] if team_dir is not None else None)
             for flag in ("supports_audit", "supports_containment",
                          "supports_capability_scoping"):
                 if out.get(flag) is None:
@@ -289,7 +289,7 @@ def team_status(team_dir: str | Path | None = None) -> dict:
         "stop_reason": stop_reason,
         "workspaces": doc.get("workspaces", []),
         "agents": doc.get("agents", []),
-        "runner": runner_capabilities(),
+        "runner": runner_capabilities(td),
     }
     try:
         from .git_hygiene import check_git_hygiene

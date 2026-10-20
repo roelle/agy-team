@@ -107,7 +107,8 @@ def _operator_only(by: str | None) -> str:
     return (by or os.environ.get("USER") or "operator").strip()
 
 
-def check_available(model: str, effort: str | None = None, spec: str | None = None) -> None:
+def check_available(model: str, effort: str | None = None, spec: str | None = None,
+                    team_dir=None) -> None:
     """Refuse a model the configured runner says it cannot run.
 
     A name one runtime knows and another does not fails every turn: the
@@ -115,9 +116,9 @@ def check_available(model: str, effort: str | None = None, spec: str | None = No
     the runner cannot say what it offers, nothing is refused.
     """
     from . import runner as runner_lib
-    if runner_lib.model_available(model, effort, spec) is False:
-        offered = [m["id"] for m in runner_lib.list_models(spec) or []]
-        cls = runner_lib.runner_class(spec)
+    if runner_lib.model_available(model, effort, spec, team_dir=team_dir) is False:
+        offered = [m["id"] for m in runner_lib.list_models(spec, team_dir=team_dir) or []]
+        cls = runner_lib.runner_class(spec, team_dir=team_dir)
         raise ModelError(f"{model!r} is not a model the configured runner "
                          f"({getattr(cls, 'label', 'runner')}) can run; it offers: "
                          f"{', '.join(offered[:20])}{' ...' if len(offered) > 20 else ''}")
@@ -136,7 +137,7 @@ def set_model(team_dir, agent: str, model: str, effort: str | None = None,
     if not (model or "").strip():
         raise ModelError("give the model to switch to (clear removes an override)")
     if check:
-        check_available(model.strip(), effort)
+        check_available(model.strip(), effort, team_dir=team_dir)
     when = None
     if until:
         from .tasks import TaskError, parse_when
@@ -299,8 +300,8 @@ def main(argv=None) -> int:
             print(f"{a.agent}: override cleared; back to the roster's model")
         elif a.command == "available":
             from . import runner as runner_lib
-            offered = runner_lib.list_models()
-            cls = runner_lib.runner_class()
+            offered = runner_lib.list_models(team_dir=td)
+            cls = runner_lib.runner_class(team_dir=td)
             if offered is None:
                 print(f"the configured runner ({getattr(cls, 'label', '?')}) cannot list its models")
             for m in offered or []:
@@ -310,7 +311,7 @@ def main(argv=None) -> int:
             roster = {x["name"]: x for x in _roster(td).get("agents", []) if isinstance(x, dict)}
             for name, spec in roster.items():
                 model, effort, source = resolve(td, name, spec.get("model"), spec.get("effort"))
-                ok = runner_lib.model_available(model, effort)
+                ok = runner_lib.model_available(model, effort, team_dir=td)
                 flag = "   ** not offered by the configured runner **" if ok is False else ""
                 print(f"  {name:10} {model or '(runner default)'}"
                       f"{'-' + effort if effort else ''}   [{source}]{flag}")
