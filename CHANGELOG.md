@@ -7,6 +7,14 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-10-20
+
+### Fixed
+- The implicit `#general` (a team with no `channels.json`) was written down
+  as a fixed member list the first time any channel changed, so agents added
+  after that were not in it. It is now saved as an `everyone` channel and
+  keeps following the roster.
+
 ## [3.7.0] - 2026-10-20
 
 ### Added
@@ -305,7 +313,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.7.1...HEAD
+[3.7.1]: https://github.com/roelle/agy-team/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/roelle/agy-team/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/roelle/agy-team/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/roelle/agy-team/compare/v3.4.0...v3.5.0

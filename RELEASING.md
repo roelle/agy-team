@@ -36,5 +36,5 @@ in a minor release and removed in the next major.
 Downstream code should pin a tag, not `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.7.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.7.1"
 ```

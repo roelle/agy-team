@@ -110,7 +110,9 @@ def _edit(team_dir, fn):
     with filelock.locked(path(team_dir)):
         chans = {k: v for k, v in load(team_dir).items()}
         for v in chans.values():
-            v.pop("implicit", None)
+            # The implicit #general is everyone; written down, it stays so.
+            if v.pop("implicit", None):
+                v["everyone"] = True
         out = fn(chans)
         _save(team_dir, chans)
         return out

@@ -49,6 +49,12 @@ def test_an_everyone_channel_follows_the_roster(team):
     assert "ops" in channels.members(team, "all-hands")
 
 
+def test_the_implicit_general_stays_everyone_once_written_down(team):
+    actions.add_agent(team, "qa")                     # writes channels.json
+    actions.add_agent(team, "ops", channels=None)
+    assert "ops" in channels.members(team, "general")
+
+
 def test_a_new_agent_joins_every_open_channel_by_default(team):
     actions.create_channel(team, "billing", ["coder"])
     actions.create_channel(team, "old", ["coder"])
