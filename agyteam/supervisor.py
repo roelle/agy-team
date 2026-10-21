@@ -75,6 +75,7 @@ from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
+from . import distill_queue
 from . import receipts
 from . import tasks as tasks_lib
 from .transport import Message, wakes
@@ -1022,10 +1023,14 @@ class Supervisor:
         except Exception:
             return
         for a in alerts:
+            saved = self._distill_before_allowance(a)
             text = (f"{a['model']} has used {a['percent']}% of its weekly allowance "
                     f"({a['used']:,} of {a['allowance']:,} tokens). Nothing has been "
                     f"switched. To move agents off it: python -m agyteam.models set "
-                    f"<agent|*> <model> --until <when>.")
+                    f"<agent|*> <model> --until <when>."
+                    + (f" Distilled {', '.join(saved)} while it lasts, so what they "
+                       f"learned on it is in memory; their conversations are kept."
+                       if saved else ""))
             try:
                 bus = load_transport("supervisor")
                 try:
@@ -1038,6 +1043,38 @@ class Supervisor:
                 self._log(f"[supervisor] {text}")
             except Exception:
                 pass
+
+    def _distill_before_allowance(self, alert: dict) -> list[str]:
+        """At the first allowance warning, distill the agents working on that
+        model, keeping their conversations. A distill needs the model it
+        distills on: left until the allowance or the account ran out, it
+        failed exactly when it was needed -- before a model change, or for
+        good. Roster policy "distill_before_allowance": false turns it off."""
+        if alert.get("threshold", 100) >= 100:
+            return []
+        try:
+            policy = (json.loads(self._roster_path.read_text(encoding="utf-8"))
+                      .get("policy") or {})
+        except (OSError, ValueError, AttributeError):
+            policy = {}
+        if policy.get("distill_before_allowance") is False:
+            return []
+        last_model: dict[str, str] = {}
+        try:
+            for ev in self.observer.events("turn"):
+                if ev.get("agent") and ev.get("model"):
+                    last_model[ev["agent"]] = ev["model"]
+        except Exception:
+            return []
+        on_it = [a for a in self.agents if last_model.get(a) == alert["model"]
+                 and a not in self.inflight and a not in self._purged_agents
+                 and self._worked_since_cycle(a)]
+        if not on_it:
+            return []
+        self._log(f"[supervisor] {alert['model']} is at {alert['percent']}% of its "
+                  f"allowance; distilling {', '.join(on_it)} while it lasts")
+        self.distill_all(on_it)
+        return [a for a in on_it if a not in getattr(self, "distill_failed", set())]
 
     # --- one driver per team ----------------------------------------------
     #
@@ -1755,6 +1792,7 @@ class Supervisor:
             self._model_allowance_alerts()
             self._sweep_due_tasks()
             reaped = self._reap()
+            self._serve_distill_requests()
             begun = self._begin_turns(respect_backoff)
             return begun, reaped
 
@@ -1983,8 +2021,15 @@ class Supervisor:
 
         Returns (before_count, after_count).
         """
+        if self._driver_elsewhere():
+            return self._delegate("distill", [agent]).get(agent, (0, 0))
         if agent in self._purged_agents:
             self._log(f"    {agent}: distillation bypassed (agent context was purged due to anomaly)")
+            before = self._memory_count(agent)
+            return (before, before)
+        if agent in self.inflight:
+            self._log(f"    {agent}: not distilled (a turn is in flight)")
+            self._last_distill_failed = True
             before = self._memory_count(agent)
             return (before, before)
 
@@ -2012,7 +2057,19 @@ class Supervisor:
         """Log and count one distillation; shared by distill and distill_all."""
         self._roster_touched.add(agent)
         failed = reply.startswith("[error:")
-        if failed:
+        if failed and self._budget_exhausted(reply):
+            # Out of quota, the distill cannot run, and nothing is lost by
+            # that: a failed distill never retires the conversation, so what
+            # the agent learned is still in it for when the quota is back.
+            self._log(f"    {agent}: not distilled -- the account is out of quota. Its "
+                      f"conversation is kept, so nothing it learned is lost; distill it "
+                      f"once there is quota again")
+            try:
+                self.observer.record_event("distill_deferred", agent=agent,
+                                           error=reply[:300])
+            except Exception:
+                pass
+        elif failed:
             self._log(f"    {agent}: {reply[:200]}")
         elif not self.quiet:
             first = reply.strip().splitlines()[0] if reply.strip() else ""
@@ -2050,6 +2107,8 @@ class Supervisor:
         `self.distill_failed` afterwards.
         """
         targets = [a for a in (agents if agents is not None else self.agents)]
+        if self._driver_elsewhere():
+            return self._delegate("distill", targets)
         out: dict[str, tuple[int, int]] = {}
         self.distill_failed: set[str] = set()
         running: dict[str, tuple[dict, dict, float]] = {}
@@ -2184,6 +2243,10 @@ class Supervisor:
         sweep is recorded (event "distill_sweep") before it runs, under a
         lock, so two supervisors on one team cannot both start it.
         """
+        if not dry_run and not scheduled and self._driver_elsewhere():
+            opts = {"force": force, "min_turns": min_turns}
+            return self._delegate("sweep", [None], **opts).get(None) or {
+                "ran": False, "reason": "still queued for the supervisor driving this team"}
         cfg = self.distill_schedule()
         if cfg is None:
             if scheduled:
@@ -2237,6 +2300,86 @@ class Supervisor:
         except Exception as e:
             self._log(f"[supervisor] distill sweep failed: {type(e).__name__}: {e}")
 
+    # --- distills asked from outside the driving supervisor ----------------
+
+    def _driver_elsewhere(self) -> bool:
+        """Is the team driven by a supervisor other than this one?"""
+        return getattr(self, "_team_lock", None) is None and self._team_driven_elsewhere()
+
+    def _delegate(self, action: str, agents: list, **options) -> dict:
+        """Ask the driving supervisor to `action` each agent, and wait for it.
+
+        Returns {agent: (before, after)} -- for a sweep, {None: its result}
+        -- for what it finished within AGYTEAM_DISTILL_WAIT_S; anything
+        still queued then is in self.distill_failed, and it still runs.
+        """
+        ids = {distill_queue.add(self.team_dir, action, a, **options): a for a in agents}
+        who = heartbeat.running(self.team_dir) or {}
+        names = ", ".join(a for a in agents if a) or "the team"
+        self._log(f"  → a supervisor (pid {who.get('pid', '?')}) is driving this team; "
+                  f"asked it to {action} {names} between turns")
+        deadline = time.monotonic() + config.DISTILL_REQUEST_WAIT_S
+        done: dict[str, dict] = {}
+        while True:
+            try:
+                for ev in self.observer.events("distill_request_done"):
+                    if ev.get("id") in ids:
+                        done[ev["id"]] = ev
+            except Exception:
+                pass
+            if len(done) == len(ids) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        out: dict = {}
+        self.distill_failed = set()
+        for rid, agent in ids.items():
+            ev = done.get(rid)
+            if ev is None:
+                self._log(f"    {agent or action}: still queued; the driving supervisor "
+                          f"will run it when {agent or 'the team'} is between turns")
+                self.distill_failed.add(agent)
+            elif action == "sweep":
+                out[None] = ev.get("result") or {}
+            else:
+                out[agent] = (ev.get("before", 0), ev.get("after", 0))
+                if ev.get("failed"):
+                    self.distill_failed.add(agent)
+                self._log(f"    {agent}: {action} " + (f"failed ({ev.get('reason')})"
+                          if ev.get("failed") else
+                          f"done ({ev.get('before', 0)} → {ev.get('after', 0)} memories)"))
+        self._last_distill_failed = bool(self.distill_failed)
+        return out
+
+    def _serve_distill_requests(self) -> int:
+        """Run what other processes asked of this driver, for agents that
+        are between turns. Blocks the pass while it runs, as the sweep does;
+        turns already running carry on."""
+        if not distill_queue.path(self.team_dir).exists():
+            return 0
+        rows = distill_queue.take(
+            self.team_dir,
+            lambda r: (not self.inflight) if r.get("action") == "sweep"
+            else r.get("agent") not in self.inflight)
+        for r in rows:
+            agent, action = r.get("agent"), r.get("action")
+            ev = {"id": r.get("id"), "action": action, "agent": agent, "by": r.get("by")}
+            if action == "sweep":
+                res = self.distill_sweep(force=bool(r.get("force")), min_turns=r.get("min_turns"))
+                ev["result"] = {k: v for k, v in res.items() if k != "results"}
+            elif agent not in self.agents:
+                ev.update(failed=True, reason="not on the roster")
+            else:
+                before, after = (self.cycle if action == "cycle" else self.distill)(agent)
+                failed = bool(getattr(self, "_last_distill_failed", False))
+                ev.update(before=before, after=after, failed=failed)
+                if failed:
+                    ev["reason"] = "the distill failed; see the supervisor's log"
+            try:
+                self.observer.record_event("distill_request_done", **ev)
+            except Exception:
+                pass
+        return len(rows)
+
     def _worked_since_cycle(self, agent: str) -> bool:
         """Has `agent` taken a turn since its conversation was last retired?"""
         try:
@@ -2255,6 +2398,8 @@ class Supervisor:
 
     def cycle_all(self, agents: list[str] | None = None) -> dict[str, tuple[int, int]]:
         """distill_all, then a fresh conversation for each agent that distilled."""
+        if self._driver_elsewhere():
+            return self._delegate("cycle", list(agents if agents is not None else self.agents))
         counts = self.distill_all(agents)
         for agent in counts:
             if agent in self.distill_failed:
@@ -2272,6 +2417,8 @@ class Supervisor:
         Cycling without distilling first is not permitted.
         Returns (before_count, after_count).
         """
+        if self._driver_elsewhere():
+            return self._delegate("cycle", [agent]).get(agent, (0, 0))
         if agent in self._purged_agents:
             self._log(f"    {agent}: cycle aborted (agent context was purged due to anomaly)")
             before = self._memory_count(agent)

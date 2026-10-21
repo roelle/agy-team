@@ -15,23 +15,46 @@ It is two things at once, and it is worth being honest about which is which:
 
 ## How to train your team (read this before installing)
 
-The team does not arrive perfect; it arrives **trainable**. Out of the box the
-first runs may cut corners — one agent doing everything, work approved by the
-person who wrote it. That is normal, and the system corrects it, but only if
-the loop runs: **tell the manager what you liked and didn't, in plain chat**
-("qa never saw that — why?"), then run `--retro` and `--cycle-all`. Learnings
-become team norms and durable memories, and behaviour measurably changes on
-the next task.
+The team does not arrive perfect; it arrives **trainable**, and you train it
+by talking to it. Out of the box the first runs may cut corners: one agent
+doing everything, or work approved by the agent who wrote it. When that
+happens, **say so in plain chat, to the agent it concerns** ("qa never saw
+that — why?"). That sentence is the training. Where it goes:
 
-Check `<team_dir>/NORMS.md` after your first retro. If it was not written, the
-loop did not close and the next task will look like the last one — the retro
-report says which half was empty.
+- **Memories, which is where most training lands.** Each agent keeps its
+  own memories (`~/agy-teams/<team>/agents/<agent>/memory/`). An agent told
+  something durable, such as a preference, a correction or a lesson from a
+  mistake, is instructed to `save_memory` on the spot, and to fix a memory
+  you have just shown is wrong. Whatever it did not write down is caught when
+  it is *distilled*. That happens automatically: when its conversation grows
+  long and is cycled, before a model change that needs a fresh conversation,
+  ahead of a model's weekly allowance running out, and once a day if you turn
+  that on (see [Session lifecycle](#session-lifecycle-cycling-and-distillation)).
+  Memories belong to one agent: what you tell the manager is the manager's
+  memory. Say it to the agent concerned (a direct message, or `@qa` in a
+  channel), or ask the manager to pass it on.
+- **Norms, the rules for the whole team.** `<team_dir>/NORMS.md` is part of
+  every agent's brief. It is written by a retrospective (`--retro`) or by
+  you, by hand; agents cannot write it. A brief is read when a conversation
+  starts, so after a retro or an edit, `--cycle-all` gives every agent a
+  fresh conversation that has the new norms.
+
+**You do not need `--retro` to train a team**, and most teams will not run
+it. What it produces is a norm, not memories: each participant answers what
+went well, what did not and what to change, and the leader turns that into one
+change to `NORMS.md` (or a reasoned "no change"). The answers are kept
+(`list_retros`), but `NORMS.md` is what changes behaviour. A retro does not
+cycle anyone; that is the `--cycle-all` above. It is worth a turn from every
+participant when what went wrong is how the team works together rather than
+one agent's habit, for example the same failure from different agents or a
+step everyone skips. Its report, `<team_dir>/retro.md`, says what came of it,
+including when no norm was written.
 
 You never need to read logs to see how the work happened: **every answer ends
 with a brief "how we worked" note** — who did the work, who reviewed it and
 their verdict, anything skipped. If the same name wrote and approved something,
 or nobody was delegated to, that note is where you'll see it. Say so to the
-manager; that sentence is the training.
+agent responsible; that is the training.
 
 The note is a convenience, not the safeguard. Underneath it, a review must
 name an agent who is on the roster, is not the reviewer, and has actually
@@ -39,10 +62,12 @@ worked this episode — checked against the bus, the event log and the audit
 log, none of which an agent can edit. We added the author field first and
 watched a manager defeat it by typing a different name.
 
-Measured, not promised: a team started from zero went from solo, self-approved
-work to a full delegate-implement-review pipeline — at lower cost — after one
-retro-and-cycle. Reproduce it on your own hardware with
-`bench/convergence.py` (spends real money; see `bench/README.md`).
+What has been measured is the retro route, because it is the one a script can
+drive. A team started from zero went from solo, self-approved work to a full
+delegate-implement-review pipeline, at lower cost, after one retro and cycle.
+Reproduce it on your own hardware with `bench/convergence.py` (it spends real
+money; see `bench/README.md`). Training through conversation is how the team
+is meant to be used, and it has no benchmark yet.
 
 ## Quick Start (Zero-Friction Launcher)
 
@@ -91,7 +116,7 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 
 ### Upfront Cost Transparency
 
-- **Offline Testing is 100% Free**: Running `./run test` (over 400 contract and behavioral tests, about a minute) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
+- **Offline Testing is 100% Free**: Running `./run test` (about 700 contract and behavioral tests, under two minutes) executes against local SQLite fixtures and mocked transports — zero API tokens, zero cost.
 - **Key Validation is Zero Tokens**: The setup probe validates your API key via `models.list` metadata — zero model inference tokens.
 - **Estimated Live Team Cost**: With every agent on the default model (`gemini-3.8-flash`) on the SDK runner, a delegated task has typically cost 10¢–30¢ and a day of continuous operation about $11. Putting `manager` and `qa` on a Pro model, as recommended below, costs more than that; the figures in the eval tables below are Flash-priced as well. Treat all of them as rough: they depend on the model and on how much each agent reads. `--cost` shows what was actually recorded, and says "unknown" rather than $0 for a model it has no price for.
 
@@ -148,8 +173,9 @@ Useful while it runs, or after:
 --report          who did what, from the record rather than from memory
 --cost            spend per agent
 --status          who has mail waiting
---retro           the team reflects on recent work and writes team norms
+--distill <agent> have an agent write what it has learned into memory
 --cycle <agent>   distil an agent's context into memory, then start fresh
+--retro           optional: the team reflects and writes one team norm
 --daemon          stay up and react to mail as it arrives
 ```
 
@@ -519,7 +545,7 @@ rank:
 - **SDK runner**: enforces `tools_off` for real (an agent given it reports `NO TOOLS`
   and cannot write a file) and supports compaction/tool hooks.
 - **agy CLI runner**: routes through Antigravity's backend to reach models the API
-  key cannot (e.g. `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.1-pro-high`),
+  key cannot (Claude models among them; `python -m agyteam.models available` lists them),
   trading capability-enforced tools for broader model availability.
 
 This allows roles like `qa` to use a frontier model on the CLI while implementers
@@ -702,13 +728,38 @@ field the same way `note` was.
 
 ## Session lifecycle: cycling and distillation
 
-Distillation (sweeping unsaved learnings into memory files) fires on `/quit`,
-after one-shot runs, on `/cycle` (single agent) / `cycle <agent>` (team), and —
-wired but see quirks — when the harness reports a compaction event. Cycling is
-cheap by design: memory is on disk, so a fresh session reboots with the full
-index. Let sessions live for days; cycle weekly-ish or when a session feels
-off. Primary safety net is the contract's save-as-you-go rule, which evals
-confirm fires unprompted.
+**Distilling** an agent asks it to write down, with `save_memory`, what it has
+learned that is not yet in memory. **Cycling** distills and then retires the
+conversation, so the agent's next wake starts fresh with its memories and the
+current `NORMS.md`. A distill that fails never retires a conversation: what
+the agent learned is still in it. That includes a distill that fails because
+the account is out of quota; the log says so.
+
+With a team, it happens:
+
+- **when a conversation grows long**: past `AGYTEAM_CYCLE_THRESHOLD` tokens
+  (100,000 by default). `AGYTEAM_AUTO_CYCLE_MODE` is `cycle`, `distill_only`
+  (for a host that compacts its own conversations) or `off`;
+- **before a model change** on a runtime that cannot switch models inside a
+  conversation. The agy CLI can, and keeps the conversation;
+- **ahead of an allowance running out**: at the first warning that a model is
+  near its weekly `model_allowance`, the agents working on it distill and keep
+  their conversations, because a distill needs the model it distills on. Turn
+  it off with `"policy": {"distill_before_allowance": false}`;
+- **once a day**, if the roster has `nightly_distill`;
+- **when you ask**: `--distill <agent>`, `--cycle <agent>`, `--distill-all`,
+  `--cycle-all`, `--nightly-distill`. While a supervisor is driving the team,
+  these are handed to it and run when the agent is between turns, never
+  alongside one; the command waits for the result (up to
+  `AGYTEAM_DISTILL_WAIT_S`, 900 s by default) and what is not done by then
+  still runs.
+
+A single agent (`agyteam.sdk_cli`) distills on `/quit`, after a one-shot run,
+on `/cycle`, and, on a best-effort basis (see quirks), when the harness
+reports a compaction. Cycling is cheap by design: memory is on disk, so a
+fresh conversation starts with all of it. Let conversations live for days.
+The main safety net is not distillation but the contract's save-as-you-go
+rule, which evals confirm agents follow unprompted.
 
 ## Memory over MCP (swappable storage)
 
@@ -907,7 +958,8 @@ The roster's `model` is each agent's default. When the strong model is scarce
 and the weaker one is not, move agents between them as the work changes:
 
 ```bash
-python -m agyteam.models set qa gemini-3.1-pro-preview --until 3d --reason "release week"
+python -m agyteam.models available # what the team's runner offers; a model it lacks is refused
+python -m agyteam.models set qa gemini-4-argon-high --until 3d --reason "release week"
 python -m agyteam.models set '*' gemini-3.8-flash --until 2026-10-24T00:00:00Z
 python -m agyteam.models clear qa
 python -m agyteam.models list      # each agent's model, and whether it is the roster's or an override
@@ -1286,7 +1338,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.5.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.6.0"
 python -m agyteam.supervisor --version
 ```
 

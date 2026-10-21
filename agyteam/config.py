@@ -225,3 +225,8 @@ AUTO_CYCLE_MODE = os.environ.get("AGYTEAM_AUTO_CYCLE_MODE", "cycle").strip().low
 # stays unread in the inbox for check_inbox. Without it, an agent in a busy
 # channel was woken with every post since its last turn in its prompt.
 WAKE_PROMPT_BYTES = int(os.environ.get("AGYTEAM_WAKE_PROMPT_BYTES", 24_000))
+
+# How long `--distill`, `--cycle` and friends wait for the supervisor driving
+# the team to run what they asked of it. What is not done by then stays
+# queued and still runs.
+DISTILL_REQUEST_WAIT_S = float(os.environ.get("AGYTEAM_DISTILL_WAIT_S", "900"))

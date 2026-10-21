@@ -7,6 +7,48 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-10-20
+
+### Added
+- **Distills asked from outside go through the driving supervisor.**
+  `--distill`, `--cycle`, `--distill-all`, `--cycle-all` and
+  `--nightly-distill` (and `agyteam.supervisor.distill`/`cycle`) queue the
+  request (`distill_requests.jsonl`) when another supervisor drives the
+  team. That supervisor runs it when the agent is between turns and records
+  `distill_request_done`. The command waits for the result, up to
+  `AGYTEAM_DISTILL_WAIT_S` (900 s); anything not done by then still runs.
+- **Distill ahead of an allowance running out.** At the first warning that a
+  model is near its weekly `model_allowance`, the agents working on it
+  distill and keep their conversations, while the model can still run a
+  distill. Turn it off with roster `"policy": {"distill_before_allowance": false}`.
+- `boolean` arguments in the tool servers, with `mcp_base.flag` and
+  `mcp_base.check_args`.
+
+### Changed
+- `create_task`'s `requires_review` is declared a boolean. The words for one
+  (`"true"`, `"no"`, ...) are still accepted.
+- Tool arguments are checked against their declared types before a handler
+  sees them. A number or boolean sent for a text field becomes its text,
+  rather than being dropped as if it were absent.
+
+### Fixed
+- **`--distill` ran into a live turn.** While a daemon drove the team, it
+  woke the agent in a second process alongside the daemon's turn, because it
+  checked only its own process's turns. `distill` also never checked for a
+  turn in flight at all; now it skips the agent.
+- **`requires_review: true` made an ungated task.** A JSON boolean, or a typo
+  like `"ttur"`, was read as false without a word. Now `true` is true, and
+  anything that is not a yes or a no is an error the agent sees.
+- A distill that fails because the account is out of quota says so: the
+  conversation is kept, so nothing is lost, and a `distill_deferred` event
+  records it.
+- README: training is described as it works. Most of it is conversation that
+  lands in each agent's memories; a retro writes only norms and is optional.
+  The distillation triggers are listed in full. Model examples no longer use
+  names the CLI refuses.
+- The brief no longer tells agents their memory index is "below"; they read
+  it with `memory_index`.
+
 ## [3.5.0] - 2026-10-20
 
 ### Added
@@ -231,7 +273,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.6.0...HEAD
+[3.6.0]: https://github.com/roelle/agy-team/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/roelle/agy-team/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/roelle/agy-team/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/roelle/agy-team/compare/v3.2.0...v3.3.0

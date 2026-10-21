@@ -26,9 +26,9 @@ CONTRACT = """\
    first or say you don't know.
 2. If a tool fails or returns nothing, report that plainly. Never invent plausible
    output or pretend a tool ran.
-3. Facts about the user or past sessions must come from your memory files (index
-   below, read_memory for details). If memory doesn't cover it, say "I don't have
-   that in memory" — do not guess.
+3. Facts about the user or past sessions must come from your memory files
+   (memory_index lists them, read_memory for details). If memory doesn't cover
+   it, say "I don't have that in memory" — do not guess.
 4. Wrong answers are worse than no answers. "I don't know, here's how I'd find
    out" is always an acceptable reply.
 

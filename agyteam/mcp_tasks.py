@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from .mcp_base import fit, serve, string, tool
+from .mcp_base import ArgError, boolean, fit, flag, serve, string, tool
 from . import heartbeat, policy
 from . import roster as roster_lib
 from . import scope
@@ -55,9 +55,9 @@ TOOLS = [
           "collaborators": string("Comma-separated teammates whose work this task "
                                   "also needs; it cannot close until each has "
                                   "recorded activity since it was created"),
-          "requires_review": string("'true' if this task may not close, and its "
-                                    "result may not go to the user, without an "
-                                    "approved review naming it"),
+          "requires_review": boolean("true if this task may not close, and its "
+                                     "result may not go to the user, without an "
+                                     "approved review naming it"),
           "channel": _CHANNEL},
          ["project", "title"]),
     tool("claim_task",
@@ -245,7 +245,7 @@ def _create_task(agent: str, team_dir: Path, a: dict) -> str:
                              note=_text(a, "note"),
                              check_after=_text(a, "check_after") or None,
                              collaborators=collaborators,
-                             requires_review=_text(a, "requires_review").lower() in ("true", "yes", "1"),
+                             requires_review=flag(a, "requires_review"),
                              until=until, poll_every=_text(a, "poll_every") or None,
                              deadline=_text(a, "deadline") or None,
                              channel=_text(a, "channel") or None)
@@ -360,7 +360,7 @@ def main(agent: str, team_dir: Path | None = None):
                     f"{', '.join(sorted(handlers))}]")
         try:
             return fn(args)
-        except tasks_lib.TaskError as e:
+        except (tasks_lib.TaskError, ArgError) as e:
             return f"[error: {e}]"
 
     serve(f"agy-team-tasks:{agent}", TOOLS, dispatch)

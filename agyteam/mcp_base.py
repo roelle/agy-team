@@ -72,6 +72,62 @@ def string(description: str) -> dict:
     return {"type": "string", "description": description}
 
 
+def boolean(description: str) -> dict:
+    return {"type": "boolean", "description": description}
+
+
+_TRUE = ("true", "yes", "1", "on")
+_FALSE = ("false", "no", "0", "off", "")
+
+
+class ArgError(ValueError):
+    pass
+
+
+def flag(args: dict, key: str, default: bool = False) -> bool:
+    """A yes/no argument: JSON true/false, or the words for them. Anything
+    else is an error, not a quiet false -- "requires_review": true (a JSON
+    boolean where a string was declared) and "ttur" both used to read as
+    false, and the task was made without the gate it asked for."""
+    v = args.get(key)
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str) and v.strip().lower() in _TRUE:
+        return True
+    if isinstance(v, str) and v.strip().lower() in _FALSE:
+        return False if v.strip() else default
+    raise ArgError(f"{key} must be true or false, not {v!r}")
+
+
+def check_args(tools: list[dict], name: str, args: dict) -> dict:
+    """Hold a call's arguments to the types its tool declares, before the
+    handler sees them. A model sends what it thinks a field is: a number for
+    an id, a JSON boolean for a flag. Handlers that read strings only used to
+    drop those silently. Numbers and booleans for a string become their
+    text; a boolean takes the words for one; what cannot be read raises."""
+    spec = next((t.get("inputSchema", {}) for t in tools if t.get("name") == name), {})
+    props = spec.get("properties", {}) or {}
+    out = dict(args)
+    for key, v in args.items():
+        typ = (props.get(key) or {}).get("type")
+        if v is None and typ in ("string", "boolean"):
+            del out[key]
+        elif typ == "boolean":
+            out[key] = flag(args, key)
+        elif typ == "string" and not isinstance(v, str):
+            if isinstance(v, bool):
+                out[key] = "true" if v else "false"
+            elif isinstance(v, (int, float)):
+                out[key] = str(v)
+            else:
+                raise ArgError(f"{key} must be text, not {type(v).__name__} {v!r}")
+    return out
+
+
 def serve(server_name: str, tools: list[dict], dispatch) -> None:
     """Run the stdio loop. `dispatch(tool_name, args) -> str`."""
     def reply(msg_id, result=None, error=None):
@@ -101,7 +157,8 @@ def serve(server_name: str, tools: list[dict], dispatch) -> None:
         elif method == "tools/call":
             p = msg.get("params", {})
             try:
-                out = dispatch(p.get("name", ""), p.get("arguments", {}) or {})
+                name = p.get("name", "")
+                out = dispatch(name, check_args(tools, name, p.get("arguments", {}) or {}))
                 err = False
             except Exception as e:
                 out, err = f"[error: {e}]", True
