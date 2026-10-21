@@ -76,11 +76,20 @@ def active(team_dir) -> dict[str, dict]:
 
 
 def load(team_dir) -> dict[str, dict]:
-    """{name: {"members": [...], "topic": str, "created": ts}}."""
+    """{name: {"members": [...], "topic": str, "created": ts}}.
+
+    A channel with "everyone": true has the whole roster as members, kept
+    up to date: an agent added later is in it without anyone ticking a box.
+    """
     try:
         doc = json.loads(path(team_dir).read_text(encoding="utf-8"))
         chans = doc.get("channels", {}) if isinstance(doc, dict) else {}
         if isinstance(chans, dict) and chans:
+            if any(c.get("everyone") for c in chans.values() if isinstance(c, dict)):
+                roster = _roster_agents(team_dir)
+                for c in chans.values():
+                    if isinstance(c, dict) and c.get("everyone"):
+                        c["members"] = sorted(roster)
             return chans
     except (OSError, ValueError):
         pass
@@ -107,7 +116,8 @@ def _edit(team_dir, fn):
         return out
 
 
-def create(team_dir, name: str, members: list[str] | None = None, topic: str = "") -> dict:
+def create(team_dir, name: str, members: list[str] | None = None, topic: str = "",
+           everyone: bool = False) -> dict:
     name = (name or "").strip().lstrip("#").lower()
     if not _NAME.match(name):
         raise ChannelError("a channel name is lowercase letters, digits, - and _, "
@@ -122,13 +132,19 @@ def create(team_dir, name: str, members: list[str] | None = None, topic: str = "
             state = closed(chans[name])
             raise ChannelError(f"#{name} already exists" + (
                 f" ({state}; restore it, or pick another name)" if state else ""))
-        chans[name] = {"members": sorted(set(members or [])), "topic": topic.strip(),
+        chans[name] = {"members": sorted(roster if everyone else set(members or [])),
+                       "topic": topic.strip(),
                        "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if everyone:
+            chans[name]["everyone"] = True
         return chans[name]
     return _edit(team_dir, do)
 
 
-def set_members(team_dir, name: str, add=(), remove=()) -> list[str]:
+def set_members(team_dir, name: str, add=(), remove=(),
+                everyone: bool | None = None) -> list[str]:
+    """Add and remove members. Removing anyone from an "everyone" channel
+    makes its list explicit; everyone=True makes it follow the roster."""
     roster = set(_roster_agents(team_dir))
     unknown = sorted(set(add) - roster)
     if unknown:
@@ -137,6 +153,12 @@ def set_members(team_dir, name: str, add=(), remove=()) -> list[str]:
     def do(chans):
         if name not in chans:
             raise ChannelError(f"no channel #{name}")
+        if everyone:
+            chans[name]["everyone"] = True
+            chans[name]["members"] = sorted(roster)
+            return chans[name]["members"]
+        if remove or everyone is False:
+            chans[name].pop("everyone", None)
         members = (set(chans[name].get("members", [])) | set(add)) - set(remove)
         chans[name]["members"] = sorted(members)
         return chans[name]["members"]

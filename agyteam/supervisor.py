@@ -18,6 +18,7 @@ budget away), and a failing agent is logged and skipped rather than stopping
 the team.
 """
 import argparse
+import signal
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import time
 import zlib
 from pathlib import Path
 
+from . import __version__ as _VERSION
 from . import config
 from . import filelock
 from . import heartbeat
@@ -652,6 +654,9 @@ class Supervisor:
         self._user_mail_at_start = self._user_mail_count()
         self.hops = 0
         self.stopped = ""
+        self.draining: dict | None = None      # a restart request being honoured
+        self.restart_ready = False
+        self._started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._purged_agents: set[str] = set()
         self.inbox_pull = bool(inbox_pull if inbox_pull is not None
                                else getattr(runner, "inbox_pull", False))
@@ -1265,9 +1270,11 @@ class Supervisor:
         this file. Written at most every few seconds.
         """
         now = time.monotonic()
-        if now - self._heartbeat_at < 5 and mode == "running":
+        if now - self._heartbeat_at < 5 and mode in ("running", "draining") \
+                and mode == getattr(self, "_heartbeat_mode", mode):
             return
         self._heartbeat_at = now
+        self._heartbeat_mode = mode
         if getattr(self, "_team_lock", None) is None:
             other = heartbeat.running(self.team_dir)
             if other and other.get("pid") not in (os.getpid(), None):
@@ -1282,7 +1289,12 @@ class Supervisor:
                 "runner": getattr(self.runner, "label", type(self.runner).__name__),
                 "runner_class": f"{type(self.runner).__module__}:{type(self.runner).__name__}",
                 "manager": self._find_manager(),
-                "source": getattr(self, "settings_source", {})}) + "\n")
+                "source": getattr(self, "settings_source", {}),
+                "version": _VERSION, "started": self._started_at,
+                # Clients look for this before asking for a restart: a
+                # supervisor without it does not know the request.
+                "restartable": True,
+                "draining": self.draining is not None}) + "\n")
         except OSError:
             pass
 
@@ -1751,6 +1763,15 @@ class Supervisor:
                 self.stopped = f"team stopped via lifecycle: {reason}"
                 self._log(f"[supervisor] team stopped via lifecycle: {reason}")
                 return [], 0
+            if self._team_lock_held():
+                if self.draining is None:
+                    self._begin_drain()
+                if self.draining is not None:
+                    self._heartbeat("draining")
+                    reaped = self._reap()
+                    if not self.inflight:
+                        self._finish_drain()
+                    return [], reaped
 
             self._guard_roster()
             roster_path = self.team_dir / "roster.json"
@@ -1969,6 +1990,10 @@ class Supervisor:
         stop = stop or threading.Event()
         if not self._claim_team():
             return
+        try:
+            (self.team_dir / RESTART_FILE).unlink()     # this start is that restart
+        except OSError:
+            pass
         self._log(f"supervising {', '.join(self.agents)} "
                   f"via {self.runner.label} — Ctrl+C to stop")
         while not stop.is_set():
@@ -1989,6 +2014,82 @@ class Supervisor:
                 self.auto_cycle()
                 self._maybe_distill_sweep()
                 stop.wait(self.poll)
+
+    # --- graceful restart ----------------------------------------------
+    #
+    # Upgrading a live team used to mean waiting for every agent to be idle
+    # at once, which a team that keeps itself busy almost never is, or
+    # stopping it, which cancelled the turns in flight. A restart request
+    # (<team_dir>/.restart, written by actions.restart, `--restart`, `python
+    # -m agyteam.update` or SIGHUP) drains instead: no new turn begins, mail
+    # keeps queuing, the turns in flight finish, and then a supervisor
+    # started from the command line execs itself -- same pid, arguments and
+    # environment, new code. With "now", the turns in flight are cancelled
+    # and their mail goes back, as a turn that died in a restart's does.
+
+    def _team_lock_held(self) -> bool:
+        return getattr(self, "_team_lock", None) is not None
+
+    def _restart_request(self) -> dict | None:
+        try:
+            raw = (self.team_dir / RESTART_FILE).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        try:
+            req = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            req = {}
+        return req if isinstance(req, dict) else {}
+
+    def _begin_drain(self) -> None:
+        req = self._restart_request()
+        if req is None:
+            return
+        self.draining = req
+        waiting = ", ".join(sorted(self.inflight)) or "nobody"
+        self._log(f"[supervisor] restart requested by {req.get('by') or 'the operator'}: "
+                  f"no new turns; waiting for {waiting}"
+                  + (" (cancelling them now)" if req.get("now") else ""))
+        try:
+            self.observer.record_event("restart_requested", by=req.get("by"),
+                                       now=bool(req.get("now")),
+                                       inflight=sorted(self.inflight))
+        except Exception:
+            pass
+        if req.get("now"):
+            self._cancel_for_restart()
+
+    def _cancel_for_restart(self) -> None:
+        for agent, turn in list(self.inflight.items()):
+            try:
+                self.runner.cancel(turn["handle"])
+            except Exception:
+                pass
+            transport = self.transports.get(agent)
+            if transport is not None:
+                if self.inbox_pull:
+                    self._restore_pulled_mail(agent, transport, turn)
+                elif hasattr(transport, "requeue") and callable(transport.requeue):
+                    try:
+                        transport.requeue(turn["msgs"])
+                    except TypeError:
+                        transport.requeue(agent, turn["msgs"])
+            del self.inflight[agent]
+            self._log(f"    {agent}: turn cancelled for the restart; its mail is back in its inbox")
+        self._save_ledger()
+
+    def _finish_drain(self) -> None:
+        try:
+            (self.team_dir / RESTART_FILE).unlink()
+        except OSError:
+            pass
+        self.restart_ready = True
+        self.stopped = "restarting"
+        self._log("[supervisor] drained; restarting")
+        try:
+            self.observer.record_event("restart_drained", by=(self.draining or {}).get("by"))
+        except Exception:
+            pass
 
     def _memory_count(self, agent: str) -> int:
         store = memory_lib.load(agent)
@@ -3512,6 +3613,20 @@ def _agents_from_roster(team_dir: Path) -> list[str]:
     return [a["name"] for a in roster_lib.load(team_dir / "roster.json")["agents"]]
 
 
+RESTART_FILE = ".restart"
+
+
+def request_restart(team_dir, now: bool = False, by: str = "operator",
+                    reason: str = "") -> dict:
+    """Ask the supervisor driving this team to drain and restart (see
+    Supervisor._begin_drain). Returns what the heartbeat says about it."""
+    td = Path(team_dir)
+    _rewrite(td / RESTART_FILE, json.dumps({
+        "by": by, "now": bool(now), "reason": reason,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+    return {"requested": True, "supervisor": heartbeat.running(td)}
+
+
 def team_settings(team_dir) -> dict:
     """The roster's "supervisor" block: how this team is meant to be run.
 
@@ -3620,6 +3735,13 @@ def main(argv=None, runner=None):
     ap.add_argument("--manager", metavar="AGENT", default=None,
                     help="Agent acting as manager (default: the roster's "
                          "supervisor.manager, else auto-detect)")
+    ap.add_argument("--restart", action="store_true",
+                    help="Ask the supervisor driving this team to restart: it starts no "
+                         "new turns, lets the ones in flight finish, then restarts on "
+                         "the installed code. Mail keeps queuing meanwhile")
+    ap.add_argument("--now", action="store_true",
+                    help="With --restart: cancel the turns in flight instead of waiting; "
+                         "their mail goes back to the inbox")
     ap.add_argument("--runner", metavar="MODULE:CLASS", default=None,
                     help="Runner for this run (default: the roster's supervisor.runner, "
                          "else AGYTEAM_RUNNER, else the agy CLI)")
@@ -3643,6 +3765,21 @@ def main(argv=None, runner=None):
     # the whole story.
     team_dir = scope.team_dir(args.team_dir)
     os.environ["AGYTEAM_TEAM_DIR"] = str(team_dir)
+
+    if args.restart:
+        beat = heartbeat.running(team_dir)
+        if not beat:
+            sys.exit("no supervisor is running this team; start one with --daemon")
+        if not beat.get("restartable"):
+            sys.exit(f"the supervisor running this team (pid {beat.get('pid')}) predates "
+                     f"graceful restart and would not see the request. Use "
+                     f"`python -m agyteam.update` (it waits for a moment with no turn "
+                     f"in flight, then stops and starts it), or stop and start it yourself.")
+        request_restart(team_dir, now=args.now, by="operator")
+        waiting = ", ".join(beat.get("inflight") or []) or "no turns"
+        print(f"restart requested: pid {beat.get('pid')} starts no new turns and restarts "
+              f"when {waiting} {'are cancelled' if args.now else 'finish'}")
+        return
 
     if args.waive_review:
         try:
@@ -3770,6 +3907,10 @@ def main(argv=None, runner=None):
                 except TypeError:
                     user_t.acknowledge()
         elif args.daemon:
+            if hasattr(signal, "SIGHUP"):
+                # The conventional "reload": drain and restart, as a request does.
+                signal.signal(signal.SIGHUP, lambda *_: request_restart(
+                    team_dir, by="SIGHUP"))
             try:
                 sup.run_forever()
             except KeyboardInterrupt:
@@ -3778,6 +3919,14 @@ def main(argv=None, runner=None):
             sup.run_until_idle()
     finally:
         sup.close()
+    if args.daemon and sup.restart_ready:
+        # Same pid, arguments and environment; the new code. Locks and the
+        # files this process held are closed on exec, so the new image
+        # claims the team as any fresh supervisor does.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable, "-m", "agyteam.supervisor",
+                                  *(argv if argv is not None else sys.argv[1:])])
 
 
 class _InspectOnly(runner_lib.Runner):

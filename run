@@ -282,6 +282,9 @@ Commands:
   status           Show current team roster, workspaces, and running status
   stop             Stop the team by writing the lifecycle stop sentinel
   start            Resume/unpause team execution
+  update [args]    Update agy-team, reinstall the plugin, and restart running teams
+                   gracefully (turns in flight finish first); --check, --now, --help
+  restart [--now]  Restart this team's supervisor gracefully on the installed code
   export <bundle>  Export team configuration, state, and memory to archive (.tar.gz)
   import <bundle>  Import team configuration, state, and memory from archive (.tar.gz)
   setup            Configure and verify your GEMINI_API_KEY with zero token burn
@@ -321,6 +324,14 @@ case "$SUBCMD" in
     start)
         shift || true
         cmd_start "$@"
+        ;;
+    update)
+        shift || true
+        exec "$PYTHON_BIN" -m agyteam.update "$@"
+        ;;
+    restart)
+        shift || true
+        exec "$PYTHON_BIN" -m agyteam.supervisor --restart "$@"
         ;;
     export)
         shift || true

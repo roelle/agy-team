@@ -7,6 +7,38 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-10-20
+
+### Added
+- **Graceful restart.** A restart request (`./run restart`,
+  `python -m agyteam.supervisor --restart`, `actions.restart`, or SIGHUP)
+  makes the driving supervisor drain: it starts no new turns, mail keeps
+  queuing, and the turns in flight finish. Then a daemon restarts itself in
+  place (same pid, arguments and environment) on the installed code.
+  `--now` cancels the turns in flight instead, and their mail goes back. The
+  heartbeat now records `version`, `started`, `restartable` and `draining`.
+- **`python -m agyteam.update` / `./run update`**: one command that updates
+  agy-team where it is installed (a git checkout fast-forwards, a pip
+  install from git moves to the newest release tag), reinstalls the plugin,
+  and gracefully restarts every running team. For a supervisor from before
+  graceful restart, it waits for a moment with no turn in flight, then stops
+  and starts it. `--check`, `--to`, `--now`, `--no-code`, `--no-restart`,
+  `--no-wait`, `--team-dir`, `--json`.
+- **Channels that follow the roster**: `everyone=True` on `create_channel`
+  and `set_members`. An agent added later is a member without anyone adding
+  it.
+- **Admin actions** for clients: `add_agent` (which joins every open channel
+  by default), `update_agent` (role, model, effort, principal, tools_off,
+  aliases), `remove_agent` (which also removes it from channels), `norms` /
+  `set_norms` (recorded as a `norms_edited` event), and `memories` /
+  `save_memory` / `delete_memory` for one agent's store, opened for that
+  team. Roster edits go through the roster's history, so a running
+  supervisor adopts them instead of putting them back.
+
+### Changed
+- README: `./run stop` cancels the turns in flight; to keep them, use
+  restart or update.
+
 ## [3.6.0] - 2026-10-20
 
 ### Added
@@ -273,7 +305,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/roelle/agy-team/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/roelle/agy-team/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/roelle/agy-team/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/roelle/agy-team/compare/v3.3.0...v3.4.0

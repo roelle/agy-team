@@ -123,8 +123,32 @@ The offline tests need none of this: `./run test` runs with no key and no CLI.
 ### Stopping & Resuming Safely
 
 - To pause or cancel an active interactive turn: press **Ctrl+C**.
-- To cleanly stop background daemons and agent lifecycles: run **`./run stop`**.
+- To cleanly stop background daemons and agent lifecycles: run **`./run stop`**. A stop cancels the turns in flight (their mail is delivered again when the team starts); to restart without losing them, use `./run restart` or `./run update` below.
 - To resume the team anytime: run **`./run start`** or **`./run chat`**. All agent memory and durable workspace artifacts are automatically preserved on disk.
+
+### Updating a running team
+
+```bash
+./run update          # or: python -m agyteam.update
+```
+
+One command updates agy-team where it is installed (a git checkout
+fast-forwards; a pip install from git moves to the newest release tag),
+reinstalls the agy CLI plugin if there is one, and restarts every running
+team under `~/agy-teams` **gracefully**: each supervisor starts no new
+turns, lets the ones in flight finish, then restarts itself on the new
+code. Mail keeps queuing while it drains, so nothing is lost and you do not
+have to catch the team idle. `--check` says what would change, `--now`
+cancels the turns in flight instead of waiting (their mail goes back),
+`--no-code` only restarts, `--team-dir` picks teams. `./run restart` (or
+`python -m agyteam.supervisor --restart`, `actions.restart`, or `kill -HUP`
+on the daemon) restarts one team the same way without updating.
+
+A supervisor started before this existed does not know the request. For
+one of those, `update` waits for a moment when it has no turn in flight,
+stops it and starts it again as `--daemon --team-dir <team>`. Only the
+host runner can resume a turn across a restart; on the CLI and SDK runners
+a turn lives in the supervisor's process, which is why the restart drains.
 
 ### Troubleshooting for Non-Coders
 
@@ -911,6 +935,10 @@ has an `id`; a reply passes `thread=<id>` (direct messages too), and agents
 see the ids on what they receive. The post is logged to `bus.jsonl` once,
 addressed to `#<channel>`, with its mentions.
 
+A channel created with `everyone` (`actions.create_channel(..., everyone=True)`)
+has the whole roster as members and keeps it: an agent added later is in it.
+Removing someone from it makes its member list explicit.
+
 A name can drop its team prefix and its case: `@Ada` wakes `at-Ada`, and
 `send_to_teammate(to="Ada")` reaches it too, provided exactly one agent is
 named `Ada` (ignoring case) or ends in `-Ada`, `_Ada` or `.Ada`. An exact name
@@ -949,8 +977,11 @@ what has been appended since the last poll, never half a line.
 `agyteam.actions` is everything the operator can do -- post to a channel or
 message an agent as the user (with the person's name as `author`), create
 channels and change their members, set or clear a model, waive a review,
-stop and start the team -- each refused from inside an agent's session. A UI
-built on these two modules needs nothing else from agyteam.
+stop, start and gracefully restart the team, add, change and remove agents
+(through the roster's history, so a running supervisor adopts the change),
+replace `NORMS.md`, and read, write and delete an agent's memories -- each
+refused from inside an agent's session. A UI built on these two modules
+needs nothing else from agyteam.
 
 ### Choosing models without editing the roster
 
@@ -1338,7 +1369,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.6.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.7.0"
 python -m agyteam.supervisor --version
 ```
 
