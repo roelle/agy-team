@@ -135,6 +135,28 @@ class Record:
         except OSError:
             return ""
 
+    def memory_stats(self, agent: str) -> list[dict]:
+        """One agent's memories with their history: [{name, description,
+        created, saved, revisions, reads, last_read, known_since}]."""
+        from . import memory_log
+        store = memory_log.open_store(self.team_dir, agent)
+        try:
+            entries = memory_log.entries(store)
+        finally:
+            store.close()
+        st = memory_log.stats(self.team_dir, agent, entries)
+        return [{"name": e.name, "description": e.description, **st.get(e.name, {})}
+                for e in entries]
+
+    def memory_archive(self, agent: str) -> list[dict]:
+        from . import memory_log
+        return memory_log.archived(self.team_dir, agent)
+
+    def norm_candidates(self) -> list[dict]:
+        """The same lesson in several agents' memories: candidates for NORMS.md."""
+        from . import memory_log
+        return memory_log.norm_candidates(self.team_dir, memory_log.everything(self.team_dir))
+
     # --- who is doing what now ------------------------------------------------------------
 
     def supervisor(self) -> dict | None:

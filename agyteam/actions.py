@@ -14,6 +14,7 @@ through these functions, so the same checks apply whichever one is used:
     add_agent / update_agent / remove_agent      the roster
     norms / set_norms                            NORMS.md
     memories / save_memory / delete_memory       one agent's memories
+    archived_memories / restore_memory / review_memory
 
 Messages from here are sent as "user" -- the operator's identity on the bus,
 which the review gate and the episode logic depend on -- and carry the
@@ -395,21 +396,11 @@ def set_norms(team_dir, text: str, by: str = "user") -> dict:
 # --- memories -----------------------------------------------------------------
 
 def _memory_store(team_dir, agent: str):
-    """The agent's store, opened for this team whatever team this process
-    is pointed at: a client showing several teams has no one AGYTEAM_TEAM_DIR."""
-    from . import memory as memory_lib
-    from . import roster as roster_lib
-    names = [a["name"] for a in roster_lib.load(_roster_path(team_dir)).get("agents", [])]
-    if agent not in names:
-        raise OperatorError(f"no teammate named {agent!r}")
-    td = Path(team_dir)
-    durable = td.parent if td.name == "team" else td
+    from . import memory_log
     try:
-        config = json.loads(os.environ.get("AGYTEAM_MEMORY_CONFIG") or "{}")
-    except ValueError:
-        config = {}
-    config.setdefault("workspace", str(durable / "agents" / agent))
-    return memory_lib.load(agent, config=config)
+        return memory_log.open_store(team_dir, agent)
+    except LookupError as e:
+        raise OperatorError(str(e)) from None
 
 
 def memories(team_dir, agent: str) -> list[dict]:
@@ -434,22 +425,79 @@ def save_memory(team_dir, agent: str, name: str, content: str, description: str 
         raise OperatorError(str(e)) from None
     if not (content or "").strip():
         raise OperatorError("a memory needs content")
+    from . import memory_log
     store = _memory_store(team_dir, agent)
     try:
         new = store.save(key, (description or "").strip() or key, content,
                          why=f"written by the operator ({by})")
     finally:
         store.close()
+    memory_log.record(team_dir, agent, "save", key, new=bool(new), by=by)
     return {"agent": agent, "name": key, "created": bool(new)}
 
 
-def delete_memory(team_dir, agent: str, name: str) -> dict:
+def delete_memory(team_dir, agent: str, name: str, by: str = "user") -> dict:
+    """Delete one of an agent's memories; a copy goes to the archive."""
     _guard()
+    from . import memory_log
     store = _memory_store(team_dir, agent)
     try:
-        gone = store.delete(name)
+        content = store.read(name)
+        if content is None:
+            raise OperatorError(f"{agent} has no memory {name!r}")
+        desc = next((e.description for e in store.index() if e.name == name), "")
+        memory_log.archive(team_dir, agent, name, desc, content, reason="deleted", by=by)
+        store.delete(name)
     finally:
         store.close()
-    if not gone:
-        raise OperatorError(f"{agent} has no memory {name!r}")
-    return {"agent": agent, "name": name, "deleted": True}
+    memory_log.record(team_dir, agent, "delete", name, by=by)
+    return {"agent": agent, "name": name, "deleted": True, "archived": True}
+
+
+def archived_memories(team_dir, agent: str) -> list[dict]:
+    """What was deleted or merged away from an agent's memory, newest first."""
+    from . import memory_log
+    _memory_store(team_dir, agent).close()          # checks the agent
+    return memory_log.archived(team_dir, agent)
+
+
+def restore_memory(team_dir, agent: str, archive_id: str, by: str = "user") -> dict:
+    """Put an archived memory back. Refused if a memory of that name exists
+    now: read both and save the one you want instead."""
+    _guard()
+    from . import memory_log
+    store = _memory_store(team_dir, agent)
+    try:
+        doc = next((d for d in memory_log.archived(team_dir, agent)
+                    if d.get("id") == archive_id), None)
+        if doc is None:
+            raise OperatorError(f"nothing archived as {archive_id!r}")
+        if store.read(doc["name"]) is not None:
+            raise OperatorError(f"{agent} has a memory named {doc['name']!r} now; "
+                                f"delete or rename it first")
+        memory_log.take_archived(team_dir, agent, archive_id)
+        _, why, body = _provenance(doc.get("content") or "")
+        store.save(doc["name"], doc.get("description") or doc["name"], body or doc["content"],
+                   why=why or f"restored by the operator ({by})")
+    finally:
+        store.close()
+    memory_log.record(team_dir, agent, "save", doc["name"], new=True, by=by, restored=archive_id)
+    return {"agent": agent, "name": doc["name"], "restored": True}
+
+
+def _provenance(text: str):
+    from .memory import extract_provenance
+    return extract_provenance(text)
+
+
+def review_memory(team_dir, agent: str, by: str = "user") -> dict:
+    """Ask the supervisor driving the team to run a memory review for
+    `agent` between its turns. Refused when no supervisor runs."""
+    _guard()
+    from . import distill_queue, heartbeat
+    _memory_store(team_dir, agent).close()
+    if not heartbeat.running(team_dir):
+        raise OperatorError("no supervisor is running this team; a review is a turn, "
+                            "so start the team first")
+    rid = distill_queue.add(team_dir, "review", agent, by=by)
+    return {"queued": rid, "agent": agent}

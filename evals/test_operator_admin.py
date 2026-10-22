@@ -103,7 +103,9 @@ def test_an_agents_memories_can_be_read_written_and_deleted(team):
     mems = actions.memories(team, "coder")
     assert [m["name"] for m in mems] == ["deploy-host"]
     assert "box-2" in mems[0]["content"] and "operator" in mems[0]["content"]
-    assert (team.parent / "agents" / "coder" / "memory" / "deploy-host.md").exists(), \
+    from agyteam import memory as memory_lib
+    agents_own = memory_lib.load("coder")          # where the agent's server reads
+    assert (Path(agents_own.workspace) / "memory" / "deploy-host.md").exists(), \
         "written somewhere the agent will not read it"
     actions.delete_memory(team, "coder", "deploy-host")
     assert actions.memories(team, "coder") == []

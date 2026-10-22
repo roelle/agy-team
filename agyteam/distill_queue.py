@@ -18,7 +18,7 @@ from pathlib import Path
 from . import filelock
 
 FILE = "distill_requests.jsonl"
-ACTIONS = ("distill", "cycle", "sweep")
+ACTIONS = ("distill", "cycle", "sweep", "review")
 
 
 def path(team_dir) -> Path:

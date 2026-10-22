@@ -99,7 +99,7 @@ TEAM_TOOLS = {"send_to_teammate", "broadcast", "check_inbox", "list_teammates",
               "post_to_channel", "list_channels",
               "record_review", "list_reviews", "record_retro", "list_retros",
               "create_task", "claim_task", "update_task", "complete_task",
-              "list_tasks", "save_memory", "read_memory", "delete_memory",
+              "list_tasks", "save_memory", "read_memory", "delete_memory", "merge_memories",
               "memory_index", "review_memory", "whoami", "my_capabilities",
               "my_activity"}
 

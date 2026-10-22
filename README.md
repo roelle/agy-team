@@ -828,6 +828,37 @@ the same memory, register it in `~/.gemini/antigravity/mcp_config.json`:
   "env": {"PYTHONPATH": "/path/to/agy-team"}}}}
 ```
 
+### Keeping memory useful: history, review, and lessons in common
+
+Distill adds and updates memories, and nothing used to re-read them. In one
+six-week team, more than half had never been read back once. Three things
+now look after them:
+
+- **History.** The memory server writes every save, read, delete and merge
+  to `<team_dir>/memory_log.jsonl`, whatever store is behind it.
+  `Record.memory_stats(agent)` gives each memory's age, revisions, reads and
+  last read. For history from before the log, it takes the reads from the
+  event log.
+- **Review.** A memory review is a turn in which an agent goes over its own
+  memories with that history, and with `review_memory`'s flags. It merges
+  what overlaps (`merge_memories`, which keeps the sources' history), rewrites
+  what is stale and deletes what is dead. Nothing is destroyed: deleted and
+  merged memories go to `<team_dir>/memory_archive/<agent>/`, and
+  `actions.restore_memory` puts one back. The daemon queues a review when an
+  agent first has 10 memories, when it passes 25, 50, 100, 200, 400 or 800,
+  and weekly after that if anything changed. The review runs between that
+  agent's turns, never into one. Each review is recorded as a
+  `memory_review` event with what was removed, added and rewritten.
+  `--review-memory AGENT`, `--review-memory-all` and
+  `actions.review_memory` ask for one. Tune or turn it off in the roster:
+  `"memory_review": {"milestones": [...], "every_days": 7, "min_memories": 10}`,
+  or `false`.
+- **Lessons in common.** When three or more agents have each learned the
+  same lesson, that is a candidate for a team norm.
+  `Record.norm_candidates()` finds them, by wording, and a retro is shown
+  them. Adopting one is the operator's or the retro's call; nothing writes
+  `NORMS.md` on its own.
+
 ## agy CLI plugin (the installable form)
 
 The plugin supplies **tools**, not agents. Agents are defined in
@@ -1369,7 +1400,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.7.1"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.8.0"
 python -m agyteam.supervisor --version
 ```
 

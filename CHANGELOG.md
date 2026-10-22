@@ -7,6 +7,35 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-10-22
+
+### Added
+- **Memory history**: the memory server logs every save, read, delete and
+  merge to `memory_log.jsonl`, whatever the store. `Record.memory_stats(agent)`
+  gives age, revisions, reads and last read; for history from before the
+  log, it counts the event log's `read_memory` calls.
+- **`merge_memories`** (a memory tool): replaces several memories with one
+  the agent writes, archives the sources, and keeps their history.
+- **Memory archive**: `delete_memory` and merges copy what they remove to
+  `memory_archive/<agent>/`. `actions.archived_memories` and
+  `actions.restore_memory` list and restore them.
+- **Memory review turns**: an agent goes over its own memories with their
+  history and `review_memory`'s flags, and merges, rewrites and deletes. The
+  daemon queues one at an agent's first 10 memories, at 25/50/100/200/400/800,
+  and weekly after changes, and runs it between the agent's turns.
+  `--review-memory`, `--review-memory-all` and `actions.review_memory` ask
+  for one. Each is recorded as a `memory_review` event. Configure with
+  roster `memory_review` (or `false`).
+- **Norm candidates**: `Record.norm_candidates()` finds the same lesson in
+  three or more agents' memories, and retros are shown them.
+- `Record.memory_archive(agent)`; `memory_log.open_store(team_dir, agent)`.
+
+### Fixed
+- The operator's memory actions opened an agent's store by the default
+  layout. Where `AGYTEAM_DURABLE_DIR` puts agents elsewhere, they edited
+  memories the agent never reads. They now open the store the agent's own
+  server does.
+
 ## [3.7.1] - 2026-10-20
 
 ### Fixed
@@ -313,7 +342,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.7.1...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/roelle/agy-team/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/roelle/agy-team/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/roelle/agy-team/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/roelle/agy-team/compare/v3.5.0...v3.6.0

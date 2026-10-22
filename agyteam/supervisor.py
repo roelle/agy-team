@@ -121,6 +121,20 @@ Record durable, specific lessons — what surprised you, what you got wrong, wha
 
 Call save_memory now for each lesson (update existing memories rather than duplicating). If there is nothing durable to record that is not already in memory, do not save anything. Reply with what you saved, or confirm that nothing new needed saving."""
 
+MEMORY_REVIEW_PROMPT = """Review your own memories. You have {count}; below is each one with its history, and what review_memory flags.
+
+{table}
+
+{flags}
+
+Make your memory more useful to your next session, not shorter for its own sake:
+- Merge memories that say overlapping things with merge_memories. Keep every concrete detail of the sources -- commands, names, numbers, the reason each was learned. A merge that turns specific lessons into a general one loses what made them worth keeping.
+- Rewrite with save_memory one that is vague, wrong, or about a situation that has passed (the flags above point at some).
+- Delete with delete_memory one that is obsolete or that you never needed. Never read and long saved is a hint, not a verdict.
+- Leave the rest alone. Use only what is in your memories; do not invent.
+
+Deleted and merged memories are archived; the operator can restore them. Reply with what you merged, rewrote and deleted, and why, in a few lines."""
+
 TENSION_ACCOUNTABLE = (
     "a retro led by the person accountable for the outcome is a weaker retro, "
     "and that tension is worth naming rather than hiding."
@@ -1813,6 +1827,7 @@ class Supervisor:
             self._model_allowance_alerts()
             self._sweep_due_tasks()
             reaped = self._reap()
+            self._schedule_memory_reviews()
             self._serve_distill_requests()
             begun = self._begin_turns(respect_backoff)
             return begun, reaped
@@ -1994,6 +2009,7 @@ class Supervisor:
             (self.team_dir / RESTART_FILE).unlink()     # this start is that restart
         except OSError:
             pass
+        self._daemon = True         # scheduled work (memory reviews) runs only here
         self._log(f"supervising {', '.join(self.agents)} "
                   f"via {self.runner.label} — Ctrl+C to stop")
         while not stop.is_set():
@@ -2401,6 +2417,173 @@ class Supervisor:
         except Exception as e:
             self._log(f"[supervisor] distill sweep failed: {type(e).__name__}: {e}")
 
+    # --- memory review -------------------------------------------------------
+    #
+    # Distill adds and updates; nothing re-read what was stored. A memory
+    # review is a turn in which the agent goes over its own memories with
+    # their history (memory_log) and merges, rewrites and deletes, with
+    # everything removed archived. It runs at milestones of memory count and
+    # weekly, between the agent's turns, through the request queue.
+
+    REVIEW_DEFAULTS = {"milestones": [25, 50, 100, 200, 400, 800], "every_days": 7,
+                       "min_memories": 10}
+
+    def memory_review_policy(self) -> dict | None:
+        try:
+            doc = json.loads((self.team_dir / "roster.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            doc = {}
+        cfg = doc.get("memory_review", (doc.get("policy") or {}).get("memory_review", {}))
+        if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled") is False):
+            return None
+        return {**self.REVIEW_DEFAULTS, **(cfg if isinstance(cfg, dict) else {})}
+
+    def _review_state_path(self) -> Path:
+        return self.team_dir / "memory_review.json"
+
+    def _review_state(self) -> dict:
+        try:
+            return json.loads(self._review_state_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _memory_review_prompt(self, agent: str) -> str | None:
+        from . import memory_log
+        store = memory_lib.load(agent)
+        try:
+            entries = memory_log.entries(store)
+            flags = memory_lib.review_memories(store)
+        finally:
+            store.close()
+        if not entries:
+            return None
+        st = memory_log.stats(self.team_dir, agent, entries)
+        rows = []
+        for e in entries:
+            x = st.get(e.name, {})
+            since = x.get("created") or (f"before {x['known_since']}" if x.get("known_since") else "?")
+            rows.append(f"- [{e.name}] {e.description} | since {since} | saved {x.get('saved') or '?'}"
+                        f" | revisions {x.get('revisions', 0)} | reads {x.get('reads', 0)}"
+                        f" | last read {x.get('last_read') or 'never'}")
+        return MEMORY_REVIEW_PROMPT.format(count=len(entries), table="\n".join(rows),
+                                           flags=flags.strip())
+
+    def review_memory(self, agent: str, by: str = "operator") -> dict:
+        """One memory review turn for `agent`. Returns what changed."""
+        if self._driver_elsewhere():
+            self._delegate("review", [agent])
+            return {"delegated": True}
+        if agent in self.inflight:
+            self._log(f"    {agent}: memory review skipped (a turn is in flight)")
+            return {"skipped": "a turn is in flight"}
+        if agent in self._purged_agents:
+            return {"skipped": "context purged"}
+        prompt = self._memory_review_prompt(agent)
+        if prompt is None:
+            return {"skipped": "no memories"}
+        before = self._memory_snapshot(agent)
+        self._log(f"  → reviewing {agent}'s memories ({len(before)})")
+        t0 = time.monotonic()
+        try:
+            reply = self.runner.wake(agent, prompt)
+        except Exception as e:
+            reply = self._distill_raised(agent, e, time.monotonic() - t0)
+        after = self._memory_snapshot(agent)
+        out = {"agent": agent, "before": len(before), "after": len(after),
+               "removed": sorted(set(before) - set(after)),
+               "added": sorted(set(after) - set(before)),
+               "rewritten": sorted(k for k in set(before) & set(after) if before[k] != after[k]),
+               "failed": reply.startswith("[error:"), "by": by,
+               "summary": reply.strip()[:1500]}
+        self._log(f"    {agent}: memories {out['before']} → {out['after']}"
+                  f" ({len(out['removed'])} removed, {len(out['added'])} new,"
+                  f" {len(out['rewritten'])} rewritten)" if not out["failed"] else
+                  f"    {agent}: memory review failed: {reply[:200]}")
+        try:
+            self.observer.record_event("memory_review", **out)
+        except Exception:
+            pass
+        if not out["failed"]:
+            state = self._review_state()
+            pol = self.memory_review_policy() or self.REVIEW_DEFAULTS
+            passed = [m for m in pol["milestones"] if m <= len(before)]
+            state[agent] = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "count": len(after),
+                            "milestone": max(passed + [state.get(agent, {}).get("milestone", 0)])}
+            _rewrite(self._review_state_path(), json.dumps(state, indent=2) + "\n")
+        return out
+
+    def memory_reviews_due(self) -> dict[str, str]:
+        """{agent: why} for agents whose memory review is due."""
+        pol = self.memory_review_policy()
+        if pol is None:
+            return {}
+        from . import memory_log
+        state = self._review_state()
+        due = {}
+        now = time.time()
+        for agent in self.agents:
+            try:
+                store = memory_lib.load(agent)
+                try:
+                    count = len(store.index())
+                finally:
+                    store.close()
+            except Exception:
+                continue
+            if count < int(pol["min_memories"]):
+                continue
+            mine = state.get(agent, {})
+            done = int(mine.get("milestone", 0))
+            reached = [m for m in pol["milestones"] if done < m <= count]
+            if reached:
+                due[agent] = f"{count} memories (passed {max(reached)})"
+                continue
+            if not mine:
+                due[agent] = f"{count} memories, never reviewed"
+                continue
+            last = self._epoch(mine.get("ts", "")) if mine.get("ts") else None
+            if last is not None and now - last >= float(pol["every_days"]) * 86400 \
+                    and memory_lib_saves(self.team_dir, agent, mine.get("ts")):
+                due[agent] = f"{pol['every_days']} days since the last review"
+        return due
+
+    def _schedule_memory_reviews(self) -> None:
+        """Once a minute, queue a review for each agent that is due and not
+        already queued. The queue runs it between that agent's turns."""
+        now = time.monotonic()
+        if not getattr(self, "_daemon", False) or \
+                now - getattr(self, "_reviews_looked_at", 0.0) < 60:
+            return
+        self._reviews_looked_at = now
+        try:
+            due = self.memory_reviews_due()
+        except Exception:
+            return
+        if not due:
+            return
+        queued = {(r.get("action"), r.get("agent")) for r in distill_queue.pending(self.team_dir)}
+        for agent, why in due.items():
+            if ("review", agent) not in queued:
+                distill_queue.add(self.team_dir, "review", agent, by="schedule", why=why)
+                self._log(f"[supervisor] memory review queued for {agent}: {why}")
+
+    def _norm_candidates_text(self) -> str:
+        """For a retro: lessons several agents learned separately."""
+        try:
+            from . import memory_log
+            groups = memory_log.norm_candidates(self.team_dir, memory_log.everything(self.team_dir))
+        except Exception:
+            return ""
+        if not groups:
+            return ""
+        lines = ["", "## Lessons several of you learned separately",
+                 "Each group below is the same lesson in different agents' memories: a "
+                 "candidate for a team norm, if it is one."]
+        for g in groups[:5]:
+            lines.append("- " + "; ".join(f"{m['agent']}: {m['name']} ({m['description'][:90]})"
+                                          for m in g["memories"][:6]))
+        return "\n".join(lines) + "\n"
+
     # --- distills asked from outside the driving supervisor ----------------
 
     def _driver_elsewhere(self) -> bool:
@@ -2439,8 +2622,8 @@ class Supervisor:
                 self._log(f"    {agent or action}: still queued; the driving supervisor "
                           f"will run it when {agent or 'the team'} is between turns")
                 self.distill_failed.add(agent)
-            elif action == "sweep":
-                out[None] = ev.get("result") or {}
+            elif action in ("sweep", "review"):
+                out[agent] = ev.get("result") or {}
             else:
                 out[agent] = (ev.get("before", 0), ev.get("after", 0))
                 if ev.get("failed"):
@@ -2467,6 +2650,10 @@ class Supervisor:
             if action == "sweep":
                 res = self.distill_sweep(force=bool(r.get("force")), min_turns=r.get("min_turns"))
                 ev["result"] = {k: v for k, v in res.items() if k != "results"}
+            elif action == "review" and agent in self.agents:
+                res = self.review_memory(agent, by=r.get("by") or "operator")
+                ev.update(failed=bool(res.get("failed")), result={
+                    k: v for k, v in res.items() if k != "summary"})
             elif agent not in self.agents:
                 ev.update(failed=True, reason="not on the roster")
             else:
@@ -2817,6 +3004,7 @@ class Supervisor:
 
         rep = generate_report(self.team_dir)
         record_text = format_retro_record(rep, max_chars=max_transcript_chars)
+        record_text += self._norm_candidates_text()
 
         participants, omitted = self._select_retro_participants(leader, max_participants=max_participants)
         capped_note = None
@@ -3616,6 +3804,11 @@ def _agents_from_roster(team_dir: Path) -> list[str]:
 RESTART_FILE = ".restart"
 
 
+def memory_lib_saves(team_dir, agent: str, since: str | None) -> int:
+    from . import memory_log
+    return memory_log.saves_since(team_dir, agent, since)
+
+
 def request_restart(team_dir, now: bool = False, by: str = "operator",
                     reason: str = "") -> dict:
     """Ask the supervisor driving this team to drain and restart (see
@@ -3689,6 +3882,11 @@ def main(argv=None, runner=None):
                     help="Distill learnings for all agents on the roster, then exit")
     ap.add_argument("--cycle-all", action="store_true",
                     help="Distill and reset conversations for all agents on the roster, then exit")
+    ap.add_argument("--review-memory", metavar="AGENT", default=None,
+                    help="Have AGENT review its memories: merge, rewrite and delete, "
+                         "with everything removed archived")
+    ap.add_argument("--review-memory-all", action="store_true",
+                    help="Review every agent's memories")
     ap.add_argument("--nightly-distill", action="store_true",
                     help="Distill every agent with recent turns, at most once a day "
                          "(the roster's nightly_distill settings; --force to ignore "
@@ -3872,6 +4070,15 @@ def main(argv=None, runner=None):
             out = sup.distill_sweep(force=args.retro_force, dry_run=args.dry_run,
                                     min_turns=args.min_turns)
             print(json.dumps({k: v for k, v in out.items() if k != "results"}, indent=2))
+        elif args.review_memory or args.review_memory_all:
+            targets = agents if args.review_memory_all else [args.review_memory]
+            if not set(targets) <= set(agents):
+                sys.exit(f"unknown agent {args.review_memory!r}; roster has: {', '.join(agents)}")
+            if sup._driver_elsewhere():
+                sup._delegate("review", targets)
+            else:
+                for a in targets:
+                    print(json.dumps(sup.review_memory(a), indent=2))
         elif args.distill_all:
             sup.distill_all(agents)
         elif args.cycle_all:
