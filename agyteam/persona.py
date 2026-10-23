@@ -42,6 +42,10 @@ CONTRACT = """\
   when the environment is fixed, and without the reason you cannot tell.
 - Keep memories small and topical; update existing ones rather than piling up
   near-duplicates.
+- Write lessons that help on the next task: how to check, where to look, when
+  something applies. A value true only for this task (a size, a count) does
+  not; a command, a path or a limit that stays true does. The description
+  says when the memory applies: it is all you see when choosing what to read.
 """
 
 # Conversations now persist across wakes, so the old "you wake with no

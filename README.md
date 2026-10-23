@@ -853,6 +853,29 @@ now look after them:
   `actions.review_memory` ask for one. Tune or turn it off in the roster:
   `"memory_review": {"milestones": [...], "every_days": 7, "min_memories": 10}`,
   or `false`.
+- **Reviews look at outcomes.** A review is shown what happened to the
+  agent's work since its last one: reviews that asked it for changes (with
+  the findings), its tasks that failed or were cancelled, and what the
+  operator told it directly or with an @mention. So it can tell a lesson that
+  held from one that did not. Failed turns are left out on purpose: nearly
+  all are the runtime's (a timeout, a quota, a bad model name), and a lesson
+  drawn from one is about the plumbing, not the work.
+- **A stronger model for memory turns.** `"memory_model"` (and
+  `"memory_effort"`), on the roster or on one agent's entry, runs distill,
+  memory review and retro turns on that model while work turns stay on the
+  agent's own. Writing a memory is a small share of turns and the one every
+  later turn reads; a benchmark of memory writing (Letta's FrontierMemory,
+  October 2026) found models differ widely at it, and memories written by a
+  stronger model made a cheaper one do better. This needs a runtime that
+  switches models inside a conversation, as the agy CLI does; elsewhere memory
+  turns run on the agent's own model, and the supervisor says so once.
+- **Memories meant for the next task.** Distill and review prompts, the
+  brief and `save_memory`'s description all ask for lessons that transfer:
+  how to check, where to look, when something applies, rather than a value
+  true only for the task at hand. They also ask for a description that says
+  when the memory applies, which is all an agent sees when choosing what to
+  read. A memory never read may simply be unfindable, so a review fixes its
+  description before deciding it is useless.
 - **Lessons in common.** When three or more agents have each learned the
   same lesson, that is a candidate for a team norm.
   `Record.norm_candidates()` finds them, by wording, and a retro is shown
@@ -1400,7 +1423,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.8.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.9.0"
 python -m agyteam.supervisor --version
 ```
 

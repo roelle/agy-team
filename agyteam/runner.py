@@ -354,12 +354,26 @@ class Runner(ABC):
         from agyteam.models if one is in force, else what was passed in --
         the roster's choice. Every runner asks this, so an override means the
         same thing on all of them."""
+        turn = getattr(self, "_turn_models", {}).get(agent)
+        if turn:
+            return turn
         from . import models
         try:
             m, e, _ = models.resolve(self.team_dir, agent, model, effort)
             return m, e
         except Exception:
             return model, effort
+
+    def set_turn_model(self, agent: str, model: str, effort: str | None = None) -> None:
+        """Run `agent`'s next turns on this model until clear_turn_model --
+        for the supervisor's memory turns (distill, review, retro) on a
+        runtime that switches model inside a conversation."""
+        if not hasattr(self, "_turn_models"):
+            self._turn_models = {}
+        self._turn_models[agent] = (model, effort)
+
+    def clear_turn_model(self, agent: str) -> None:
+        getattr(self, "_turn_models", {}).pop(agent, None)
 
     def reset(self, agent: str | None = None) -> None:
         """Forget stored conversations so the next wake starts fresh.

@@ -35,7 +35,9 @@ TOOLS = [
          "unsure. Returns the refreshed memory index, and notifies if the memory "
          "appears to overlap or conflict with an existing one.",
          {"name": string("Short kebab-case topic name, e.g. 'user-preferences'"),
-          "description": string("One line for your index"),
+          "description": string("One line for your index saying when this applies, e.g. "
+                                "'Before approving a fix: run the real binary, not the "
+                                "mocked test'. It is all you see when deciding what to read"),
           "content": string("The memory content in markdown"),
           "why": string("Why this was learned: the situation or trigger that produced "
                         "the lesson, so future sessions can judge if it is still true"),
@@ -55,7 +57,7 @@ TOOLS = [
          "The sources are archived, and the merged memory keeps their history.",
          {"names": string("Comma-separated names of the memories to merge"),
           "into": string("Name of the merged memory: one of them, or a new name"),
-          "description": string("One line for your index"),
+          "description": string("One line for your index saying when this applies"),
           "content": string("The merged content in markdown"),
           "why": string("Why these were merged, and what each came from")},
          ["names", "into", "description", "content"]),

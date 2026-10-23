@@ -7,6 +7,30 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-10-23
+
+### Added
+- **`memory_model` / `memory_effort`** (roster, or one agent's entry): run
+  distill, memory review and retro turns on a stronger model while work
+  turns stay on the agent's own. It needs a runtime that switches models
+  inside a conversation (the agy CLI does); otherwise memory turns run on the
+  agent's model and the supervisor says so once. A model the runner does not
+  offer is skipped. Runners gain `set_turn_model` / `clear_turn_model`,
+  honoured by `resolved_model`. `actions.update_agent` and `add_agent` take
+  `memory_model` and `memory_effort`.
+- **Memory reviews see outcomes**: reviews that asked the agent for changes,
+  its failed or cancelled tasks, and what the operator told it since its
+  last review. Failed turns are left out, as runtime noise.
+
+### Changed
+- Distill and review prompts, the brief, and `save_memory` / `merge_memories`
+  descriptions ask for lessons that carry over to the next task rather than
+  values true only for this one, and for descriptions that say when a memory
+  applies. A review treats a never-read memory as possibly unfindable and
+  fixes its description first. From a memory-writing benchmark (Letta's
+  FrontierMemory): memories that recorded one task's file sizes did not
+  transfer, and one lesson split four ways was never found.
+
 ## [3.8.0] - 2026-10-22
 
 ### Added
@@ -342,7 +366,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.9.0...HEAD
+[3.9.0]: https://github.com/roelle/agy-team/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/roelle/agy-team/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/roelle/agy-team/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/roelle/agy-team/compare/v3.6.0...v3.7.0

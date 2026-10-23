@@ -227,3 +227,107 @@ def test_review_requests_need_a_running_supervisor(team):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))
+
+
+# --- memory turns on a stronger model ---------------------------------------------------
+
+class ModelSeen(ScriptedRunner):
+    """Records the model each turn runs on, as a CLI-runner command would."""
+    switches_model_in_conversation = True
+
+    def __init__(self):
+        super().__init__({})
+        self.seen = []
+
+    def wake(self, agent, message):
+        self.seen.append((agent, self.resolved_model(agent, "task-model")[0],
+                          "Review" if "Review your own" in message else
+                          "distill" if "save_memory" in message else "work"))
+        return "ok"
+
+
+def set_roster(team, **top):
+    doc = json.loads((team / "roster.json").read_text())
+    doc.update(top)
+    (team / "roster.json").write_text(json.dumps(doc))
+
+
+def test_memory_turns_run_on_the_memory_model_and_work_turns_do_not(team):
+    set_roster(team, memory_model="strong-model", memory_effort="high")
+    fill(team, "coder", 3)
+    runner = ModelSeen()
+    sup = Supervisor(AGENTS, runner, quiet=True, require_review=False)
+    try:
+        sup.distill("coder")
+        sup.review_memory("coder")
+        from agyteam.transport import load as load_transport
+        load_transport("user").send("coder", "do the work")
+        sup.step()
+    finally:
+        sup.close()
+    assert [(m, k) for _, m, k in runner.seen] == [
+        ("strong-model", "distill"), ("strong-model", "Review"), ("task-model", "work")]
+
+
+def test_a_runtime_that_cannot_switch_models_keeps_the_agents_own(team, capsys):
+    set_roster(team, memory_model="strong-model")
+    runner = ModelSeen()
+    runner.switches_model_in_conversation = False
+    sup = Supervisor(AGENTS, runner, quiet=False)
+    try:
+        sup.distill("coder")
+    finally:
+        sup.close()
+    assert runner.seen[0][1] == "task-model"
+    assert "cannot switch models inside a conversation" in capsys.readouterr().out
+
+
+def test_an_agents_own_memory_model_beats_the_teams(team):
+    doc = json.loads((team / "roster.json").read_text())
+    doc["memory_model"] = "team-strong"
+    doc["agents"][1]["memory_model"] = "coder-strong"
+    (team / "roster.json").write_text(json.dumps(doc))
+    sup = Supervisor(AGENTS, ScriptedRunner({}), quiet=True)
+    try:
+        assert sup.memory_model("coder") == ("coder-strong", None)
+        assert sup.memory_model("qa") == ("team-strong", None)
+    finally:
+        sup.close()
+
+
+# --- reviews see what happened --------------------------------------------------------------
+
+def test_a_review_sees_requested_changes_failed_tasks_and_what_the_operator_said(team):
+    fill(team, "coder", 2)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with (team / "reviews.jsonl").open("w") as f:
+        f.write(json.dumps({"ts": now, "reviewer": "qa", "author": "coder", "what": "the parser fix",
+                            "verdict": "changes_requested", "findings": "tested a mock, not the binary"}) + "\n")
+        f.write(json.dumps({"ts": now, "reviewer": "qa", "author": "tpm", "what": "not mine",
+                            "verdict": "changes_requested", "findings": "someone else's"}) + "\n")
+    from agyteam import tasks as tasks_lib
+    t = tasks_lib.create(team, "p", "flaky importer", owner="coder", created_by="tpm")
+    tasks_lib.update(team, t["id"], by="coder", status="failed", note="never reproduced the bug")
+    with (team / "bus.jsonl").open("w") as f:
+        f.write(json.dumps({"ts": now, "from": "user", "to": "coder", "content": "stop guessing paths"}) + "\n")
+        f.write(json.dumps({"ts": now, "from": "user", "to": "#general", "channel": "general",
+                            "content": "@coder please check the logs first"}) + "\n")
+        f.write(json.dumps({"ts": now, "from": "user", "to": "qa", "content": "not for coder"}) + "\n")
+    with (team / "events.jsonl").open("a") as f:
+        f.write(json.dumps({"ts": now, "event": "failure", "agent": "coder",
+                            "error": "[error: coder timed out after 900s]"}) + "\n")
+    sup = Supervisor(AGENTS, ScriptedRunner({}), quiet=True)
+    try:
+        prompt = sup._memory_review_prompt("coder")
+    finally:
+        sup.close()
+    assert "tested a mock, not the binary" in prompt and "someone else's" not in prompt
+    assert "flaky importer" in prompt and "never reproduced the bug" in prompt
+    assert "stop guessing paths" in prompt and "check the logs first" in prompt
+    assert "not for coder" not in prompt
+    assert "timed out" not in prompt, "a runtime failure is not a lesson about the work"
+
+
+def test_the_distill_prompt_asks_for_lessons_that_transfer_and_can_be_found():
+    from agyteam.supervisor import DISTILL_PROMPT
+    assert "next task" in DISTILL_PROMPT and "says when it applies" in DISTILL_PROMPT

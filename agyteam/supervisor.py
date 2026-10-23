@@ -117,7 +117,9 @@ nobody."""
 
 DISTILL_PROMPT = """Write down, using save_memory, what you have learned that a future session would need and does not yet have.
 
-Record durable, specific lessons — what surprised you, what you got wrong, what you would tell your replacement — rather than a summary of the conversation.
+Record durable lessons — what surprised you, what you got wrong, what you would tell your replacement — rather than a summary of the conversation. Write them so they help on the next task, not only on this one: how to check, where to look, when something applies. A value that was true only for this task (a file's size, a count, today's numbers) does not help the next one; keep a concrete detail when it will still be true (a command, a path, a name, a limit).
+
+Give each memory a description that says when it applies, e.g. "Before approving a fix: run the real binary, not the mocked test". Your future self picks what to read from those lines alone.
 
 Call save_memory now for each lesson (update existing memories rather than duplicating). If there is nothing durable to record that is not already in memory, do not save anything. Reply with what you saved, or confirm that nothing new needed saving."""
 
@@ -126,12 +128,14 @@ MEMORY_REVIEW_PROMPT = """Review your own memories. You have {count}; below is e
 {table}
 
 {flags}
-
+{evidence}
 Make your memory more useful to your next session, not shorter for its own sake:
 - Merge memories that say overlapping things with merge_memories. Keep every concrete detail of the sources -- commands, names, numbers, the reason each was learned. A merge that turns specific lessons into a general one loses what made them worth keeping.
-- Rewrite with save_memory one that is vague, wrong, or about a situation that has passed (the flags above point at some).
-- Delete with delete_memory one that is obsolete or that you never needed. Never read and long saved is a hint, not a verdict.
-- Leave the rest alone. Use only what is in your memories; do not invent.
+- Rewrite with save_memory one that is vague, wrong, or about a situation that has passed (the flags above point at some), and one that records values true only for the task it came from (sizes, counts, one day's numbers) rather than how to find them.
+- A memory never read may be one you could not find: its description should say when it applies ("When X: do Y"), since that line is all you see before deciding to read it. Fix the description before deciding it is useless.
+- Delete with delete_memory one that is obsolete or that you never needed.
+- Check your memories against what happened, above: a memory those outcomes contradict is wrong; a lesson they show you lacked is worth writing (say what to do, not only what went wrong).
+- Leave the rest alone. Use only what is in your memories and the outcomes above; do not invent.
 
 Deleted and merged memories are archived; the operator can restore them. Reply with what you merged, rewrote and deleted, and why, in a few lines."""
 
@@ -2153,10 +2157,13 @@ class Supervisor:
         before_snap = self._memory_snapshot(agent)
         self._log(f"  → distilling {agent}")
         t0 = time.monotonic()
+        self._begin_memory_turn(agent)
         try:
             reply = self.runner.wake(agent, DISTILL_PROMPT)
         except Exception as e:
             reply = self._distill_raised(agent, e, time.monotonic() - t0)
+        finally:
+            self._end_memory_turn(agent)
         before, after, failed = self._finish_distill(agent, before_snap, reply)
         self._last_distill_failed = failed
         return (before, after)
@@ -2246,9 +2253,11 @@ class Supervisor:
             before_snap = self._memory_snapshot(agent)
             self._log(f"  → distilling {agent}")
             t0 = time.monotonic()
+            self._begin_memory_turn(agent)
             try:
                 handle = self.runner.begin(agent, DISTILL_PROMPT)
             except Exception as e:
+                self._end_memory_turn(agent)
                 reply = self._distill_raised(agent, e, time.monotonic() - t0)
                 before, after, failed = self._finish_distill(agent, before_snap, reply)
                 out[agent] = (before, after)
@@ -2265,6 +2274,7 @@ class Supervisor:
                 if reply is None:
                     continue
                 del running[agent]
+                self._end_memory_turn(agent)
                 before, after, failed = self._finish_distill(
                     agent, before_snap, reply if isinstance(reply, str) else "")
                 out[agent] = (before, after)
@@ -2425,6 +2435,58 @@ class Supervisor:
     # everything removed archived. It runs at milestones of memory count and
     # weekly, between the agent's turns, through the request queue.
 
+    def memory_model(self, agent: str) -> tuple[str, str | None] | None:
+        """The model for `agent`'s memory turns: its roster entry's
+        "memory_model" ("memory_effort"), else the roster's, else None.
+
+        Memories are a small share of turns and the most leveraged: a
+        benchmark of memory writing (Letta's FrontierMemory, 2026-10) found
+        models differ widely at it, and memories written by a stronger model
+        made a cheaper one do better. So a team can pay for the strong model
+        where it writes what every later turn reads, and nowhere else."""
+        try:
+            doc = json.loads((self.team_dir / "roster.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        entry = next((a for a in doc.get("agents", []) if isinstance(a, dict)
+                      and a.get("name") == agent), {})
+        model = entry.get("memory_model") or doc.get("memory_model")
+        if not model:
+            return None
+        effort = entry.get("memory_effort") or doc.get("memory_effort") or None
+        return str(model), (str(effort) if effort else None)
+
+    def _begin_memory_turn(self, agent: str) -> bool:
+        """Put the agent's next turn on its memory model, where the runtime
+        can switch models inside a conversation. Returns whether it did."""
+        choice = self.memory_model(agent)
+        if not choice:
+            return False
+        if getattr(self.runner, "switches_model_in_conversation", False) is not True:
+            if not getattr(self, "_said_memory_model", False):
+                self._said_memory_model = True
+                self._log(f"[supervisor] memory_model is set, but {self.runner.label} cannot "
+                          f"switch models inside a conversation, and a distill needs the "
+                          f"conversation: memory turns run on each agent's own model")
+            return False
+        try:
+            from . import runner as runner_lib
+            ok = runner_lib.model_available(choice[0], choice[1], team_dir=self.team_dir)
+        except Exception:
+            ok = None
+        if ok is False:
+            self._log(f"    {agent}: memory_model {choice[0]!r} is not offered by the runner; "
+                      f"using the agent's own model")
+            return False
+        self.runner.set_turn_model(agent, *choice)
+        return True
+
+    def _end_memory_turn(self, agent: str) -> None:
+        try:
+            self.runner.clear_turn_model(agent)
+        except Exception:
+            pass
+
     REVIEW_DEFAULTS = {"milestones": [25, 50, 100, 200, 400, 800], "every_days": 7,
                        "min_memories": 10}
 
@@ -2465,8 +2527,50 @@ class Supervisor:
             rows.append(f"- [{e.name}] {e.description} | since {since} | saved {x.get('saved') or '?'}"
                         f" | revisions {x.get('revisions', 0)} | reads {x.get('reads', 0)}"
                         f" | last read {x.get('last_read') or 'never'}")
+        since = (self._review_state().get(agent) or {}).get("ts") or \
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 14 * 86400))
         return MEMORY_REVIEW_PROMPT.format(count=len(entries), table="\n".join(rows),
-                                           flags=flags.strip())
+                                           flags=flags.strip(),
+                                           evidence=self._review_evidence(agent, since))
+
+    REVIEW_EVIDENCE_CHARS = 4000
+
+    def _review_evidence(self, agent: str, since: str) -> str:
+        """What happened to `agent`'s work since its last review, from the
+        record: reviews that asked it for changes, its tasks that failed or
+        were cancelled, and what the operator told it. A review over the
+        memories alone can only tidy them; with outcomes beside them it can
+        tell a lesson that held from one that did not.
+
+        Failed turns are left out on purpose: nearly all are the runtime's
+        (a timeout, a quota, a bad model name), and a lesson drawn from one
+        is about the plumbing, not the work."""
+        out = []
+        for r in _jsonl_rows(self.team_dir / "reviews.jsonl"):
+            if r.get("author") == agent and r.get("verdict") == "changes_requested" \
+                    and (r.get("ts") or "") > since:
+                out.append(f"- {r.get('ts', '')[:16]} {r.get('reviewer', '?')} asked for changes to "
+                           f"\"{str(r.get('what', ''))[:120]}\": {str(r.get('findings', ''))[:400]}")
+        try:
+            for t in tasks_lib.snapshot(self.team_dir).values():
+                if t.get("owner") == agent and t.get("status") in ("failed", "cancelled") \
+                        and (t.get("updated_at") or "") > since:
+                    out.append(f"- task {t['id']} \"{str(t.get('title', ''))[:100]}\" ended "
+                               f"{t['status']}" + (f": {str(t.get('note'))[:300]}" if t.get("note") else ""))
+        except Exception:
+            pass
+        mention = re.compile(rf"(?<![\w@])@{re.escape(agent)}\b", re.I)
+        said = [m for m in _jsonl_rows(self.team_dir / "bus.jsonl")
+                if m.get("from") == "user" and (m.get("ts") or "") > since
+                and (m.get("to") == agent or mention.search(m.get("content") or ""))]
+        for m in said[-8:]:
+            out.append(f"- {m.get('ts', '')[:16]} the operator told you: {str(m.get('content', ''))[:300]}")
+        if not out:
+            return ""
+        text = "\n".join(out)
+        if len(text) > self.REVIEW_EVIDENCE_CHARS:
+            text = text[:self.REVIEW_EVIDENCE_CHARS] + "\n- (more, cut)"
+        return f"\nWhat happened to your work since your last review ({since[:16]}):\n{text}\n"
 
     def review_memory(self, agent: str, by: str = "operator") -> dict:
         """One memory review turn for `agent`. Returns what changed."""
@@ -2484,10 +2588,13 @@ class Supervisor:
         before = self._memory_snapshot(agent)
         self._log(f"  → reviewing {agent}'s memories ({len(before)})")
         t0 = time.monotonic()
+        self._begin_memory_turn(agent)
         try:
             reply = self.runner.wake(agent, prompt)
         except Exception as e:
             reply = self._distill_raised(agent, e, time.monotonic() - t0)
+        finally:
+            self._end_memory_turn(agent)
         after = self._memory_snapshot(agent)
         out = {"agent": agent, "before": len(before), "after": len(after),
                "removed": sorted(set(before) - set(after)),
@@ -2963,7 +3070,18 @@ class Supervisor:
               max_participants: int | None = None,
               max_transcript_chars: int | None = None,
               force: bool = False) -> RetroResult:
-        """Run a structured retrospective over completed work."""
+        """Run a structured retrospective over completed work. Its turns run
+        on the memory model, if the roster sets one."""
+        try:
+            return self._retro(leader, max_participants, max_transcript_chars, force)
+        finally:
+            for agent in list(self.agents):
+                self._end_memory_turn(agent)
+
+    def _retro(self, leader: str = "tpm",
+               max_participants: int | None = None,
+               max_transcript_chars: int | None = None,
+               force: bool = False) -> RetroResult:
         if leader not in self.agents:
             err = f"retro leader {leader!r} is not on the team roster: {', '.join(self.agents)}"
             report_text = format_retro_report(
@@ -3028,6 +3146,7 @@ class Supervisor:
             )
             self._log(f"  → retro reflection: waking {agent}")
             t0 = time.monotonic()
+            self._begin_memory_turn(agent)
             try:
                 reply = self.runner.wake(agent, prompt)
             except Exception as e:
@@ -3077,6 +3196,7 @@ class Supervisor:
         )
         self._log(f"  → retro leader synthesis: waking {leader}")
         t0 = time.monotonic()
+        self._begin_memory_turn(leader)
         try:
             leader_reply = self.runner.wake(leader, leader_prompt)
         except Exception as e:
@@ -3802,6 +3922,20 @@ def _agents_from_roster(team_dir: Path) -> list[str]:
 
 
 RESTART_FILE = ".restart"
+
+
+def _jsonl_rows(path) -> list[dict]:
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def memory_lib_saves(team_dir, agent: str, since: str | None) -> int:

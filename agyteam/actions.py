@@ -268,7 +268,8 @@ _RESERVED = {"user", "supervisor", "here", "all", "everyone", "channel"}
 # What an operator may set on an agent from a client. Policy fields
 # (workspaces, refuse_paths, allowed_send_to, ...) stay in the roster file,
 # where they are reviewed as what they are.
-AGENT_FIELDS = ("role", "model", "effort", "is_principal", "tools_off", "aliases")
+AGENT_FIELDS = ("role", "model", "effort", "memory_model", "memory_effort",
+                "is_principal", "tools_off", "aliases")
 
 
 def _roster_path(team_dir) -> Path:
@@ -282,7 +283,7 @@ def _agent_fields(fields: dict) -> dict:
                             f"{', '.join(AGENT_FIELDS)}")
     out = {}
     for k, v in fields.items():
-        if k in ("role", "model", "effort"):
+        if k in ("role", "model", "effort", "memory_model", "memory_effort"):
             out[k] = str(v or "").strip()
         elif k == "is_principal":
             out[k] = bool(v)
@@ -319,8 +320,9 @@ def add_agent(team_dir, name: str, role: str = "", channels="all", **fields) -> 
 
 
 def update_agent(team_dir, name: str, **fields) -> dict:
-    """Change an agent's role, default model, effort, principal flag,
-    tools_off or aliases. An empty value removes the field."""
+    """Change an agent's role, default model, effort, memory model and
+    effort, principal flag, tools_off or aliases. An empty value removes
+    the field."""
     _guard()
     from . import roster as roster_lib
     changes = _agent_fields(fields)
