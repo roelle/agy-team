@@ -750,6 +750,42 @@ A `project` is a grouping string on a task, not a separate object — if
 project-level metadata turns out to be needed later, it can be added as a
 field the same way `note` was.
 
+### Tasks form a tree: projects are tasks with tasks under them
+
+A project used to be a label on a task, and with hundreds of labels nothing
+could be finished or archived. Now any task may have a **parent**, the larger
+piece of work it serves. A project, program or initiative is a task with
+tasks under it, and the structure is whatever the work grows into. Each task
+has one parent, and cycles are refused, so every roll-up is well defined.
+
+- **Level** says how big a task is: 0 a task, 1 a project, 2 a program, 3 a
+  portfolio, or the team's own names (roster `"task_levels"`). Set it and it
+  stays: a project set at level 1 is one before it has any tasks, and an
+  extra layer an agent adds under it does not promote it. Leave it out and
+  it is worked out: 0 with nothing under it, otherwise one above its highest
+  child.
+- **Roll-ups**: `tasks.tree()` and `Record.task_tree()` give each task its
+  path from the top, how many tasks are under it and how many are closed,
+  and the tokens spent on it and everything under it.
+- **Closing**: when the last task under a parent closes, the parent's owner
+  (you, if it has none) is told once. With `auto_close`, the parent closes
+  itself instead, and that can climb further up. It never auto-closes over a
+  failed or cancelled child.
+- **Archiving** a task (the operator's call) takes it and everything under it
+  out of `list_tasks` and clients' default views.
+- **Priority**: P0 to P4, on any task.
+- **Agents keep the tree.** `create_task(parent=...)` puts new work under a
+  task. If none is given, it goes under the one task the agent is working
+  on, if there is exactly one, and the result says so; `parent='none'` makes
+  a top-level task. `update_task` can move a task or set its level, priority
+  or `auto_close`. `list_tasks(under=<id>)` shows a branch as a tree. An
+  agent woken about a task is told what it is part of, including the top
+  task's note, which is often why the task exists.
+- **Moving off labels**: `actions.migrate_project_labels(team_dir)` turns
+  each project label into a level-1 parent task, with the label's tasks
+  under it; a label whose tasks are all closed becomes a closed, archived
+  parent. `project` stays as an optional label.
+
 ## Session lifecycle: cycling and distillation
 
 **Distilling** an agent asks it to write down, with `save_memory`, what it has
@@ -1428,7 +1464,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.10.1"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.11.0"
 python -m agyteam.supervisor --version
 ```
 

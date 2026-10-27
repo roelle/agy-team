@@ -57,11 +57,12 @@ def test_create_returns_current_state(team):
     assert t["id"].startswith("task_")
 
 
-def test_create_requires_project_and_title(team):
-    with pytest.raises(ValueError):
-        tasks.create(team, project="", title="x")
+def test_create_requires_a_title_and_a_project_is_optional(team):
+    """A project label is optional since tasks have parents: a subtask takes
+    its parent's."""
     with pytest.raises(ValueError):
         tasks.create(team, project="x", title="")
+    assert tasks.create(team, project="", title="x")["project"] == ""
 
 
 def test_update_folds_onto_prior_state(team):

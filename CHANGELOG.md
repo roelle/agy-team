@@ -7,6 +7,33 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-10-27
+
+### Added
+- **The task tree.** Tasks have a `parent` (one each, cycles refused), a
+  `level` (set, or worked out from what is under it; names from roster
+  `task_levels`, default task/project/program/portfolio), a `priority`
+  (P0-P4), `auto_close`, and `archived` (the operator's; it hides a whole
+  branch). `tasks.tree()` and `Record.task_tree()` give each task's path,
+  closed/total under it, and tokens over its subtree.
+- When a parent's last open child closes, its owner (or the operator) is
+  told once, or, with `auto_close`, the parent closes itself (not over a
+  failed child) and the check climbs.
+- `create_task(parent, level, priority, auto_close)`. With no parent, a new
+  task goes under the one task the agent is working on, if there is exactly
+  one, and the result says so. `update_task` takes the same fields;
+  `list_tasks(under=<id>)` shows a branch as a tree and hides archived
+  branches unless asked.
+- A wake about a task includes what it is part of, and the top task's note.
+- The brief has a short section on how work is organised.
+- `actions.migrate_project_labels`: each project label becomes a level-1
+  parent task, its tasks under it; all-closed labels become closed, archived
+  parents. `actions.create_task` and `update_task` take the tree fields.
+
+### Changed
+- `project` is optional on `create_task` (a subtask takes its parent's).
+  Existing callers that pass it are unaffected.
+
 ## [3.10.1] - 2026-10-27
 
 ### Fixed
@@ -393,7 +420,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.10.1...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.11.0...HEAD
+[3.11.0]: https://github.com/roelle/agy-team/compare/v3.10.1...v3.11.0
 [3.10.1]: https://github.com/roelle/agy-team/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/roelle/agy-team/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/roelle/agy-team/compare/v3.8.0...v3.9.0

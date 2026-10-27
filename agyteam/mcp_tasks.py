@@ -40,8 +40,17 @@ TOOLS = [
          "back to. Owned by you unless you name a teammate. Pass check_after "
          "to be reminded at a time, or until to be woken only when something "
          "has happened (a file appears, a process exits).",
-         {"project": string("Grouping key for related tasks, e.g. 'sim-sweep-42'"),
-          "title": string("Short description of the task"),
+         {"title": string("Short description of the task"),
+          "parent": string("The task this one is part of (its id). Default: the one "
+                           "task you are working on now, if there is exactly one. "
+                           "'none' for a top-level task"),
+          "level": string("How big it is, when you know: 0 a task, 1 a project, "
+                          "2 a program (the team's names may differ). Leave it out "
+                          "and it is worked out from what is under it"),
+          "priority": string("P0 (most urgent) to P4"),
+          "auto_close": boolean("true to close this task by itself once every task "
+                                "under it is done; otherwise its owner is told"),
+          "project": string("An optional label; a subtask takes its parent's"),
           "owner": string("Teammate who owns it (default: you)"),
           "note": string("What you started, where its output will land, and "
                          "anything a later check-in will need"),
@@ -59,7 +68,7 @@ TOOLS = [
                                      "result may not go to the user, without an "
                                      "approved review naming it"),
           "channel": _CHANNEL},
-         ["project", "title"]),
+         ["title"]),
     tool("claim_task",
          "Take ownership of a task nobody owns yet. Refuses if a teammate "
          "already owns it; they can hand it over with update_task(owner=...).",
@@ -82,6 +91,11 @@ TOOLS = [
           "collaborators": string("Comma-separated teammates whose work this needs"),
           "evidence": string("Where the result can be checked: a path, or a review"),
           "note": string("Replace the task's note with this"),
+          "parent": string("Move it under this task (its id), or 'none' for top level"),
+          "level": string("0 a task, 1 a project, 2 a program...; 'auto' to work it "
+                          "out from what is under it"),
+          "priority": string("P0 (most urgent) to P4"),
+          "auto_close": boolean("Close it by itself once everything under it is done"),
           "channel": _CHANNEL},
          ["task_id"]),
     tool("complete_task",
@@ -98,10 +112,12 @@ TOOLS = [
          "List tasks, most recently updated first. Pass owner=<your name> to "
          "see only your own; no arguments shows the whole team's. A long list "
          "is cut short with a count of what was left out.",
-         {"project": string("Filter to one project"),
+         {"project": string("Filter to one project label"),
           "owner": string("Filter to one owner"),
           "status": string("Filter to one status"),
-          "task_id": string("Just this task")}),
+          "task_id": string("Just this task"),
+          "under": string("A task id: show it and everything under it, as a tree"),
+          "archived": boolean("Include archived branches (left out by default)")}),
 ]
 
 _DELIVERY = ("[reminder set for {when}: it arrives as a message once that time "
@@ -170,12 +186,22 @@ def _in_flight(team_dir: Path | None) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _blocks(rows: list[dict], team_dir: Path | None = None) -> list[str]:
+def _blocks(rows: list[dict], team_dir: Path | None = None, indent: dict | None = None) -> list[str]:
     flying = _in_flight(team_dir) if rows else {}
+    shape = tasks_lib.tree(team_dir) if rows and team_dir is not None else {}
+    names = tasks_lib.level_names(team_dir) if team_dir is not None else tasks_lib.DEFAULT_LEVEL_NAMES
     blocks = []
     for t in rows:
         lines = []
         extra = []
+        node = shape.get(t["id"]) or {}
+        if node.get("level"):
+            n = node["level"]
+            extra.append(f"a {names[n] if n < len(names) else f'level-{n}'}")
+        if node.get("total"):
+            extra.append(f"{node['done']}/{node['total']} under it closed")
+        if t.get("priority") is not None:
+            extra.append(f"P{t['priority']}")
         if t["id"] in flying:
             agent, since = flying[t["id"]]
             extra.append(f"in flight with {agent} since {since}")
@@ -190,8 +216,12 @@ def _blocks(rows: list[dict], team_dir: Path | None = None) -> list[str]:
         if t.get("channel"):
             extra.append(f"discussed in #{t['channel']}")
         tail = f" ({'; '.join(extra)})" if extra else ""
-        lines.append(f"- {t['id']} [{t.get('status')}] ({t.get('project')}) "
+        pad = "  " * (indent or {}).get(t["id"], 0)
+        label = f" ({t.get('project')})" if t.get("project") else ""
+        lines.append(f"{pad}- {t['id']} [{t.get('status')}]{label} "
                      f"{t.get('title')} — owner: {t.get('owner') or 'unclaimed'}{tail}")
+        if node.get("path") and indent is None:
+            lines.append(f"  under: {' › '.join(node['path'])}")
         if t.get("note"):
             lines.append(f"  note: {t['note']}")
         if t.get("evidence"):
@@ -227,10 +257,16 @@ def _policy(agent: str, team_dir: Path, tool_name: str, args: dict) -> str | Non
 
 def _create_task(agent: str, team_dir: Path, a: dict) -> str:
     project, title = _text(a, "project"), _text(a, "title")
-    if not project or not title:
-        missing = [n for n, v in (("project", project), ("title", title)) if not v]
-        return (f"[error: create_task is missing required argument(s): "
-                f"{', '.join(missing)}]")
+    if not title:
+        return "[error: create_task is missing required argument: title]"
+    parent, defaulted = _text(a, "parent"), False
+    if parent.lower() in ("none", "top", "-"):
+        parent = ""
+    elif not parent and "parent" not in a:
+        mine = [t for t in tasks_lib.snapshot(team_dir).values()
+                if t.get("owner") == agent and t.get("status") in ("claimed", "running")]
+        if len(mine) == 1:
+            parent, defaulted = mine[0]["id"], True
     owner = _text(a, "owner") or agent
     collaborators = _names(a, "collaborators") or []
     err = _check_teammates(team_dir, [owner, *collaborators])
@@ -248,10 +284,16 @@ def _create_task(agent: str, team_dir: Path, a: dict) -> str:
                              requires_review=flag(a, "requires_review"),
                              until=until, poll_every=_text(a, "poll_every") or None,
                              deadline=_text(a, "deadline") or None,
-                             channel=_text(a, "channel") or None)
+                             channel=_text(a, "channel") or None,
+                             parent=parent or None,
+                             level=_text(a, "level") or None,
+                             priority=_text(a, "priority") or None,
+                             auto_close=flag(a, "auto_close"))
     except tasks_lib.TaskError as e:
         return f"[error: {e}]"
-    return _with_delivery(team_dir, t, f"[task created: {t['id']}]\n{_render([t])}")
+    where = (f"\n[it is under {parent}, the task you are working on; pass "
+             f"parent='none' for a top-level task, or another task's id]" if defaulted else "")
+    return _with_delivery(team_dir, t, f"[task created: {t['id']}]\n{_render([t], team_dir)}{where}")
 
 
 def _claim_task(agent: str, team_dir: Path, a: dict) -> str:
@@ -293,11 +335,22 @@ def _update_task(agent: str, team_dir: Path, a: dict) -> str:
                          evidence=_text(a, "evidence") or None,
                          collaborators=collaborators,
                          until=until, poll_every=_text(a, "poll_every") or None,
-                         deadline=_text(a, "deadline") or None)
+                         deadline=_text(a, "deadline") or None,
+                         parent=_parent_arg(a),
+                         level=_text(a, "level") or None,
+                         priority=_text(a, "priority") or None,
+                         auto_close=flag(a, "auto_close") if "auto_close" in a else None)
     if t is None:
         return f"[error: no task with id '{task_id}']"
-    out = f"[updated]\n{_render([t])}"
+    out = f"[updated]\n{_render([t], team_dir)}"
     return _with_delivery(team_dir, t, out) if (raw and not clear) or until else out
+
+
+def _parent_arg(a: dict) -> str | None:
+    if "parent" not in a:
+        return None
+    p = _text(a, "parent")
+    return "" if p.lower() in ("none", "top", "-", "") else p
 
 
 def _complete_task(agent: str, team_dir: Path, a: dict) -> str:
@@ -330,11 +383,31 @@ def _complete_task(agent: str, team_dir: Path, a: dict) -> str:
 
 
 def _list_tasks(team_dir: Path, a: dict) -> str:
+    shape = tasks_lib.tree(team_dir)
+    if _text(a, "under"):
+        root = _text(a, "under")
+        state = tasks_lib.snapshot(team_dir)
+        if root not in state:
+            return f"[error: no task with id '{root}']"
+        order, depth = [], {}
+
+        def walk(tid, d):
+            order.append(state[tid]); depth[tid] = d
+            kids = sorted(shape[tid]["children"], key=lambda c: (state[c].get("status") in tasks_lib.TERMINAL,
+                                                                 state[c].get("title") or ""))
+            for c in kids:
+                walk(c, d + 1)
+        walk(root, 0)
+        text, _ = fit(_blocks(order, team_dir, indent=depth),
+                      "[{n} more tasks under it not shown]", sep="\n")
+        return text
     rows = tasks_lib.list_tasks(
         team_dir, project=_text(a, "project") or None, owner=_text(a, "owner") or None,
         status=tasks_lib.normalize_status(_text(a, "status") or None))
     if _text(a, "task_id"):
         rows = [r for r in rows if r["id"] == _text(a, "task_id")]
+    elif not flag(a, "archived"):
+        rows = [r for r in rows if not (shape.get(r["id"]) or {}).get("archived_by")]
     if not rows:
         return "[no tasks]"
     text, _ = fit(_blocks(list(reversed(rows)), team_dir),

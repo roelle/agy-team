@@ -147,13 +147,18 @@ _BUSY = {"claimed", "running", "blocked", "review"}
 def create_task(team_dir, project: str, title: str, owner: str | None = None,
                 note: str = "", channel: str | None = None, status: str | None = None,
                 deadline: str | None = None, requires_review: bool = False,
-                rank: float | None = None) -> dict:
+                rank: float | None = None, parent: str | None = None,
+                level: int | None = None, priority: int | None = None,
+                auto_close: bool = False) -> dict:
     _guard()
     from . import tasks
     try:
         t = tasks.create(team_dir, project, title, owner=owner or None, created_by="user",
                          note=note, channel=channel, status=status, deadline=deadline,
-                         requires_review=requires_review, rank=rank)
+                         requires_review=requires_review, rank=rank, parent=parent or None,
+                         level=level if level not in ("", None) else None,
+                         priority=priority if priority not in ("", None) else None,
+                         auto_close=bool(auto_close))
     except tasks.TaskError as e:
         raise OperatorError(str(e)) from None
     if t.get("owner") and t.get("status") not in tasks.PAUSED:
@@ -163,10 +168,13 @@ def create_task(team_dir, project: str, title: str, owner: str | None = None,
 
 
 def update_task(team_dir, task_id: str, **changes) -> dict:
-    """status, owner, title, project, note, channel ("" unlinks), deadline, rank."""
+    """status, owner, title, project, note, channel ("" unlinks), deadline,
+    rank, parent ("" for top level), level ("auto" to work it out), priority,
+    auto_close, archived."""
     _guard()
     from . import tasks
-    allowed = {"status", "owner", "title", "project", "note", "channel", "deadline", "rank"}
+    allowed = {"status", "owner", "title", "project", "note", "channel", "deadline", "rank",
+               "parent", "level", "priority", "auto_close", "archived"}
     unknown = set(changes) - allowed
     if unknown:
         raise OperatorError(f"cannot change {', '.join(sorted(unknown))} from here")
@@ -593,3 +601,41 @@ def attach(team_dir, data: bytes, filename: str, by: str = "user") -> dict:
         n += 1
     p.write_bytes(data)
     return {"path": str(p.resolve()), "name": p.name, "bytes": len(data), "by": by}
+
+
+
+def migrate_project_labels(team_dir, dry_run: bool = False) -> list[dict]:
+    """Turn each project label into a parent task: one top-level task per
+    label (level 1, a "project"), with the label's top-level tasks moved
+    under it. A label whose tasks are all closed becomes a closed, archived
+    parent. Labels that already have a parent of that title are reused.
+    Returns what it did, or would do."""
+    _guard()
+    from . import tasks
+    state = tasks.snapshot(team_dir)
+    names = tasks.level_names(team_dir)
+    existing = {(t.get("title") or "").strip().lower(): tid for tid, t in state.items()
+                if not t.get("parent") and (t.get("level") == 1)}
+    groups: dict[str, list[dict]] = {}
+    for t in state.values():
+        label = (t.get("project") or "").strip()
+        if label and not t.get("parent") and (t.get("title") or "").strip().lower() != label.lower():
+            groups.setdefault(label, []).append(t)
+    out = []
+    for label, members in sorted(groups.items()):
+        closed = all(m.get("status") in tasks.TERMINAL for m in members)
+        row = {"project": label, "tasks": len(members), "closed": closed,
+               "parent": existing.get(label.lower())}
+        out.append(row)
+        if dry_run:
+            continue
+        if not row["parent"]:
+            p = tasks.create(team_dir, label, label, created_by="user", level=1,
+                             note=f"Made from the project label \u201c{label}\u201d.")
+            row["parent"] = p["id"]
+        for m in members:
+            tasks.update(team_dir, m["id"], "user", parent=row["parent"])
+        if closed:
+            tasks.update(team_dir, row["parent"], "user", status="done", archived=True)
+    _ = names
+    return out

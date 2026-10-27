@@ -91,7 +91,8 @@ _KIND_SWEPT = "swept"
 # `kind`, `ts` and `by` describe the log entry, not the task.
 _MUTABLE_FIELDS = ("project", "title", "owner", "status", "note", "check_after",
                    "collaborators", "requires_review", "evidence", "until",
-                   "poll_every", "deadline", "channel", "rank", "links")
+                   "poll_every", "deadline", "channel", "rank", "links",
+                   "parent", "level", "priority", "auto_close", "archived", "archived_by")
 
 # What an agent may call a status and what it is here. The allowed set was
 # discoverable only by trial -- update_task(status="in_progress") was refused
@@ -290,7 +291,8 @@ def snapshot(team_dir: Path | str) -> dict[str, dict]:
                           ("id", "project", "title", "owner", "status",
                            "created_by", "note", "check_after", "collaborators",
                            "requires_review", "evidence", "until", "poll_every",
-                           "deadline", "channel", "rank", "links")}
+                           "deadline", "channel", "rank", "links",
+                           "parent", "level", "priority", "auto_close", "archived")}
             state[tid]["created_at"] = rec.get("ts")
             state[tid]["updated_at"] = rec.get("ts")
         elif tid in state:
@@ -314,11 +316,20 @@ def create(team_dir: Path | str, project: str, title: str,
            collaborators: list[str] | None = None, requires_review: bool = False,
            until: dict | None = None, poll_every: str | None = None,
            deadline: str | None = None, channel: str | None = None,
-           status: str | None = None, rank: float | None = None) -> dict:
+           status: str | None = None, rank: float | None = None,
+           parent: str | None = None, level: int | None = None,
+           priority: int | None = None, auto_close: bool = False) -> dict:
     """Append a new task and return its current state. `status` may start
-    it in the icebox; anything else starts queued."""
-    if not project or not project.strip():
-        raise TaskError("project is required")
+    it in the icebox; anything else starts queued.
+
+    `parent` puts it under another task (see "the tree" below); a task with
+    a parent takes the parent's project label when it is given none."""
+    parent = (parent or "").strip() or None
+    if parent:
+        up = get(team_dir, parent)
+        if up is None:
+            raise TaskError(f"no task {parent!r} to put this under")
+        project = project or up.get("project") or ""
     if not title or not title.strip():
         raise TaskError("title is required")
     if until:
@@ -331,7 +342,7 @@ def create(team_dir: Path | str, project: str, title: str,
         "id": "task_" + uuid.uuid4().hex[:8],
         "kind": _KIND_CREATED,
         "ts": _now(),
-        "project": project.strip(),
+        "project": (project or "").strip(),
         "title": title.strip(),
         "owner": owner,
         "status": status,
@@ -346,6 +357,10 @@ def create(team_dir: Path | str, project: str, title: str,
         "deadline": parse_when(deadline) if deadline else None,
         "channel": channel,
         "rank": _rank(rank),
+        "parent": parent,
+        "level": _level(level),
+        "priority": _priority(priority),
+        "auto_close": bool(auto_close),
     }
     if until and not entry["check_after"]:
         # A condition is checked from the next sweep on, not left to wait
@@ -389,7 +404,10 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
            until: dict | None = None, poll_every: str | None = None,
            deadline: str | None = None, channel: str | None = None,
            rank: float | None = None, title: str | None = None,
-           project: str | None = None, links: list | None = None) -> dict | None:
+           project: str | None = None, links: list | None = None,
+           parent: str | None = None, level: int | str | None = None,
+           priority: int | str | None = None, auto_close: bool | None = None,
+           archived: bool | None = None) -> dict | None:
     """Append a mutation by `by`. None if task_id is unknown.
 
     Only the owner -- or the operator -- may change an owned task, and
@@ -412,12 +430,16 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
         channel = _check_channel(team_dir, channel) if channel.strip() else ""
     if title is not None and not title.strip():
         raise TaskError("a task's title cannot be empty")
-    if project is not None and not project.strip():
-        raise TaskError("a task's project cannot be empty")
+    if archived is not None and by != OPERATOR:
+        raise TaskError("archiving is the operator's: it takes the task and "
+                        "everything under it out of view")
     with filelock.locked(path(team_dir)):
-        current = snapshot(team_dir).get(task_id)
+        state = snapshot(team_dir)
+        current = state.get(task_id)
         if current is None:
             return None
+        if parent is not None and parent.strip():
+            _check_parent(state, task_id, parent.strip())
         if current.get("owner") and current["owner"] != by and by != OPERATOR:
             raise TaskError(f"task {task_id} is owned by '{current['owner']}', "
                             f"not '{by}'")
@@ -462,8 +484,21 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
             entry["project"] = project.strip()
         if links is not None:
             entry["links"] = _links(links)
+        if parent is not None:
+            entry["parent"] = parent.strip() or None
+        if level is not None:
+            entry["level"] = None if str(level).strip() in ("", "auto") else _level(level)
+        if priority is not None:
+            entry["priority"] = None if str(priority).strip() == "" else _priority(priority)
+        if auto_close is not None:
+            entry["auto_close"] = bool(auto_close)
+        if archived is not None:
+            entry["archived"] = _now() if archived else None
+            entry["archived_by"] = by if archived else None
         _append(team_dir, entry)
     t = get(team_dir, task_id)
+    if t and status in TERMINAL and current.get("status") not in TERMINAL:
+        _children_closed(team_dir, t)
     if t and t.get("channel"):
         if channel and channel != current.get("channel"):
             _notice(team_dir, t, by, "linked to this channel")
@@ -496,6 +531,32 @@ def _links(links) -> list[dict]:
         title = str((x.get("title") if isinstance(x, dict) else "") or "").strip() or url
         out.append({"title": title[:200], "url": url[:2000]})
     return out[:50]
+
+
+def _level(level) -> int | None:
+    if level is None:
+        return None
+    try:
+        n = int(level)
+    except (TypeError, ValueError):
+        raise TaskError(f"level is a whole number (0 a task, 1 a project, ...), "
+                        f"not {level!r}") from None
+    if not 0 <= n <= 9:
+        raise TaskError("level is between 0 and 9")
+    return n
+
+
+def _priority(priority) -> int | None:
+    if priority is None:
+        return None
+    raw = str(priority).strip().lower().lstrip("p")
+    try:
+        n = int(raw)
+    except ValueError:
+        raise TaskError(f"priority is P0 (highest) to P4, not {priority!r}") from None
+    if not 0 <= n <= 4:
+        raise TaskError("priority is P0 (highest) to P4")
+    return n
 
 
 def _rank(rank) -> float | None:
@@ -612,6 +673,161 @@ def waive_review(team_dir: Path | str, task_id: str, by: str = "user",
         with path_.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     return entry
+
+
+# --- the tree ---------------------------------------------------------------
+#
+# A task may have a parent: the larger piece of work it serves. Projects,
+# programs, initiatives are not separate things -- each is a task with
+# children, and the structure is whatever the work grows into. One parent
+# each and no cycles, so every roll-up below is well defined and archiving
+# a branch hides exactly that branch.
+#
+# A task's level says how big it is: 0 a task, 1 a project, 2 a program...
+# (the names are the team's: roster "task_levels"). Set it, and it stays;
+# leave it, and it is worked out: 0 with no children, else one above the
+# highest child. A project set at level 1 is one before it has any tasks,
+# and a layer an agent adds underneath does not promote it.
+
+DEFAULT_LEVEL_NAMES = ["task", "project", "program", "portfolio"]
+
+
+def level_names(team_dir) -> list[str]:
+    try:
+        doc = json.loads((Path(team_dir) / "roster.json").read_text(encoding="utf-8"))
+        names = doc.get("task_levels")
+        if isinstance(names, list) and names and all(isinstance(n, str) and n.strip() for n in names):
+            return [n.strip().lower() for n in names]
+    except (OSError, ValueError):
+        pass
+    return list(DEFAULT_LEVEL_NAMES)
+
+
+def _check_parent(state: dict, task_id: str, parent: str) -> None:
+    if parent not in state:
+        raise TaskError(f"no task {parent!r} to put {task_id} under")
+    seen, cur = set(), parent
+    while cur:
+        if cur == task_id:
+            raise TaskError(f"{parent} is under {task_id} already; a task cannot "
+                            f"be inside itself")
+        if cur in seen:
+            break
+        seen.add(cur)
+        cur = (state.get(cur) or {}).get("parent")
+
+
+def tree(team_dir: Path | str | None = None, state: dict | None = None) -> dict[str, dict]:
+    """{id: {children, level, depth, path, open, done, total, archived_by}}.
+
+    path: the titles from the top down to (not including) this task.
+    total/done: the tasks under it, at any depth, and how many are closed.
+    archived_by: the id of the archived task this one is under (itself
+    included), or None.
+    """
+    state = state if state is not None else snapshot(team_dir)
+    kids: dict[str, list[str]] = {}
+    for tid, t in state.items():
+        p = t.get("parent")
+        if p and p in state and p != tid:
+            kids.setdefault(p, []).append(tid)
+    out: dict[str, dict] = {}
+
+    def level(tid, stack=()):
+        if tid in out and "level" in out[tid]:
+            return out[tid]["level"]
+        t = state[tid]
+        if isinstance(t.get("level"), int):
+            n = t["level"]
+        elif tid in stack:                     # a cycle in an old log: stop
+            n = 0
+        else:
+            n = max((level(c, stack + (tid,)) for c in kids.get(tid, [])), default=-1) + 1
+        out.setdefault(tid, {})["level"] = n
+        return n
+
+    def under(tid, stack=()):
+        done = total = 0
+        for c in kids.get(tid, []):
+            if c in stack:
+                continue
+            total += 1
+            done += state[c].get("status") in TERMINAL
+            d, n = under(c, stack + (tid,))
+            done, total = done + d, total + n
+        return done, total
+
+    for tid in state:
+        level(tid)
+        path, arch, seen, cur = [], None, {tid}, tid
+        if state[tid].get("archived"):
+            arch = tid
+        p = state[tid].get("parent")
+        while p and p in state and p not in seen:
+            seen.add(p)
+            path.insert(0, state[p].get("title") or p)
+            if state[p].get("archived") and not arch:
+                arch = p
+            p = state[p].get("parent")
+        done, total = under(tid)
+        out[tid].update({"children": kids.get(tid, []), "depth": len(path), "path": path,
+                         "done": done, "total": total, "archived_by": arch})
+    return out
+
+
+def _message(team_dir, to: str, text: str, task_id: str, kind: str = "reminder") -> None:
+    """A message from the supervisor about a task. Never raises: a nudge
+    must not undo the change that caused it."""
+    try:
+        from . import transport as transport_lib
+        cfg = json.loads(os.environ.get("AGYTEAM_BUS_CONFIG") or "{}")
+        cfg.setdefault("team_dir", str(team_dir))
+        bus = transport_lib.load("supervisor", config=cfg)
+        try:
+            try:
+                bus.send(to, text, kind=kind, task_id=task_id)
+            except TypeError:
+                bus.send_kind(to, text, kind=kind, task_id=task_id)
+        finally:
+            if hasattr(bus, "close"):
+                bus.close()
+    except Exception:
+        pass
+
+
+def _children_closed(team_dir, t: dict) -> None:
+    """A task just closed: if that closed its parent's last open child, close
+    the parent (auto_close) or tell its owner (the operator, if nobody owns
+    it) once. Recurses upward through auto-closing parents."""
+    pid = t.get("parent")
+    if not pid:
+        return
+    state = snapshot(team_dir)
+    parent = state.get(pid)
+    if not parent or parent.get("status") in TERMINAL:
+        return
+    siblings = [x for x in state.values() if x.get("parent") == pid]
+    if not siblings or any(x.get("status") not in TERMINAL for x in siblings):
+        return
+    failed = [x for x in siblings if x.get("status") != "done"]
+    if parent.get("auto_close") and not failed:
+        with filelock.locked(path(team_dir)):
+            _append(team_dir, {"id": pid, "kind": _KIND_UPDATED, "ts": _now(), "by": "auto",
+                               "status": "done", "check_after": None,
+                               "closed_because": "every task under it is done"})
+        closed = get(team_dir, pid)
+        if closed and closed.get("channel"):
+            _notice(team_dir, closed, "auto", "done: every task under it is done")
+        if closed:
+            _children_closed(team_dir, closed)
+        return
+    owner = parent.get("owner") or OPERATOR
+    tail = (f"; {len(failed)} of them did not finish ({', '.join(x['id'] for x in failed[:5])})"
+            if failed else "")
+    _message(team_dir, owner,
+             f"Every task under {pid} “{parent.get('title')}” is closed "
+             f"({len(siblings)}{tail}). Close it if its work is done "
+             f"(complete_task), or add what is still missing under it.", pid)
 
 
 def list_tasks(team_dir: Path | str, project: str | None = None,

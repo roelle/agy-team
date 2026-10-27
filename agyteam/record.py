@@ -210,6 +210,28 @@ class Record:
                 add(t, agent, ev, 1 / len(working), "inferred")
         return out
 
+    def task_tree(self) -> dict:
+        """{"levels": [names], "nodes": {id: {children, level, depth, path,
+        done, total, archived_by, tokens}}}: the shape of the work, with each
+        task's tokens summed over everything under it."""
+        from . import tasks as tasks_lib
+        shape = tasks_lib.tree(self.team_dir)
+        usage = self.task_usage()
+        memo: dict[str, int] = {}
+
+        def tokens(tid, stack=()):
+            if tid in memo:
+                return memo[tid]
+            n = (usage.get(tid) or {}).get("tokens", 0)
+            for c in shape.get(tid, {}).get("children", []):
+                if c not in stack:
+                    n += tokens(c, stack + (tid,))
+            memo[tid] = n
+            return n
+        for tid, node in shape.items():
+            node["tokens"] = tokens(tid)
+        return {"levels": tasks_lib.level_names(self.team_dir), "nodes": shape}
+
     def avatars(self) -> dict[str, str]:
         from . import actions
         return actions.avatars(self.team_dir)

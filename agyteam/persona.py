@@ -215,6 +215,18 @@ deliverable, an answer, a question, a blocker, or a correction. Acknowledgements
 are not messages; they wake someone to read nothing. Silence means understood.
 """
 
+# Tasks form a tree (agyteam/tasks.py, "the tree"): a project is a task with
+# tasks under it. Agents keep it, so they are told what the shape is for.
+TASK_TREE = """\
+## How the work is organised
+Tasks form a tree. A task's parent is the larger piece of work it serves; a
+"project" or "program" is just a task with tasks under it (its level says
+which). Put new work under the task it serves -- create_task does that for the
+task you are working on unless you say parent='none' -- and do not add layers
+nobody asked for. When you are woken about a task you are told what it is part
+of; read that, since the parent's note is often why the task exists.
+"""
+
 # Accountability means owning the answer that reaches the user. The manager or
 # whoever holds that channel cannot pass off unverified claims: work is not
 # done because someone said it was, a rejected review comes back rather than
@@ -409,7 +421,7 @@ def brief(
     over = team_overrides(team_dir=team_dir, scopes=scopes)
     sections = [("principal" if is_principal else "teamwork",
                  PRINCIPAL if is_principal else TEAMWORK),
-                ("contract", CONTRACT), ("continuity", CONTINUITY),
+                ("contract", CONTRACT), ("tasks", TASK_TREE), ("continuity", CONTINUITY),
                 ("consistency", CONSISTENCY), ("verification", VERIFICATION),
                 ("accountability", ACCOUNTABILITY)]
     parts = [identity(agent, agents, _operator(team_dir, scopes)), tool_index()]

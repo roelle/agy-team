@@ -1350,7 +1350,7 @@ class Supervisor:
         user message.
         """
         if not self.inbox_pull:
-            body = "\n\n".join(m.render() for m in msgs)
+            body = "\n\n".join(m.render() for m in msgs) + self._task_context(msgs)
             if deferred:
                 body += (f"\n\n[{deferred} more unread message(s) -- channel posts "
                          f"that did not mention you, acks, fyi -- are still in your "
@@ -1363,7 +1363,33 @@ class Supervisor:
                 bits.append(f"task_id={m.task_id}")
             bits.append(f"bytes={len(m.content.encode('utf-8', 'replace'))}")
             parts.append(" ".join(bits))
-        return PULL_PROMPT.format(n=len(msgs), summary="; ".join(parts))
+        return PULL_PROMPT.format(n=len(msgs), summary="; ".join(parts)) + self._task_context(msgs)
+
+    def _task_context(self, msgs) -> str:
+        """Where the tasks these messages name sit in the tree: the chain of
+        larger work above each, and the top one's note. A task read alone
+        says what to do; its parents say what it is for."""
+        ids = list(dict.fromkeys(m.task_id for m in msgs if getattr(m, "task_id", None)))
+        if not ids:
+            return ""
+        try:
+            state = tasks_lib.snapshot(self.team_dir)
+        except Exception:
+            return ""
+        lines = []
+        for tid in ids[:5]:
+            chain, seen, cur = [], {tid}, (state.get(tid) or {}).get("parent")
+            while cur and cur in state and cur not in seen:
+                seen.add(cur)
+                chain.insert(0, state[cur])
+                cur = state[cur].get("parent")
+            if not chain:
+                continue
+            top = chain[0]
+            lines.append(f"- {tid} \u201c{(state.get(tid) or {}).get('title')}\u201d is part of: "
+                         + " \u203a ".join(f"{c['id']} \u201c{c.get('title')}\u201d" for c in chain)
+                         + (f"\n  {top['id']}: {str(top.get('note'))[:400]}" if top.get("note") else ""))
+        return ("\n\n[Where these tasks fit]\n" + "\n".join(lines)) if lines else ""
 
     # Who has already been escalated, kept on disk: held only in memory, a
     # restarted daemon escalated the same broken agent again on its first
