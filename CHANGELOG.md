@@ -7,6 +7,21 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-10-27
+
+### Added
+- **Tokens per task**: `Record.task_usage()`. A turn woken by a message
+  naming tasks counts toward them ("direct"). Any other turn counts toward
+  the task its agent owned and was working (claimed, running, review) when
+  the turn ended ("inferred"). Each task also gets a per-agent breakdown.
+- **Bookmarks**: on channels (`actions.set_channel_bookmarks`, kept in
+  `channels.json`) and on tasks (`links`, `actions.set_task_links`), each a
+  list of `{title, url}`.
+- **Pictures** for agents and the operator: `actions.set_avatar`,
+  `Record.avatars()`, files in `<team_dir>/avatars/<name>.<ext>`.
+- **Attachments**: `actions.attach` keeps a file the operator shares in
+  `<team_dir>/attachments/` and returns its absolute path for the message.
+
 ## [3.9.0] - 2026-10-23
 
 ### Added
@@ -366,7 +381,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/roelle/agy-team/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/roelle/agy-team/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/roelle/agy-team/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/roelle/agy-team/compare/v3.7.0...v3.7.1

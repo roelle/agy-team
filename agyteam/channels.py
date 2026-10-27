@@ -200,6 +200,22 @@ def delete(team_dir, name: str, by: str = "user") -> dict:
     return _edit(team_dir, do)
 
 
+def set_bookmarks(team_dir, name: str, bookmarks: list) -> list[dict]:
+    """Replace a channel's bookmarks: [{title, url}], kept in channels.json."""
+    from .tasks import _links
+    marks = _links(bookmarks)
+
+    def do(chans):
+        if name not in chans:
+            raise ChannelError(f"no channel #{name}")
+        if marks:
+            chans[name]["bookmarks"] = marks
+        else:
+            chans[name].pop("bookmarks", None)
+        return marks
+    return _edit(team_dir, do)
+
+
 def restore(team_dir, name: str) -> dict:
     def do(chans):
         if name not in chans:

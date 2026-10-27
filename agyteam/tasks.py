@@ -91,7 +91,7 @@ _KIND_SWEPT = "swept"
 # `kind`, `ts` and `by` describe the log entry, not the task.
 _MUTABLE_FIELDS = ("project", "title", "owner", "status", "note", "check_after",
                    "collaborators", "requires_review", "evidence", "until",
-                   "poll_every", "deadline", "channel", "rank")
+                   "poll_every", "deadline", "channel", "rank", "links")
 
 # What an agent may call a status and what it is here. The allowed set was
 # discoverable only by trial -- update_task(status="in_progress") was refused
@@ -290,7 +290,7 @@ def snapshot(team_dir: Path | str) -> dict[str, dict]:
                           ("id", "project", "title", "owner", "status",
                            "created_by", "note", "check_after", "collaborators",
                            "requires_review", "evidence", "until", "poll_every",
-                           "deadline", "channel", "rank")}
+                           "deadline", "channel", "rank", "links")}
             state[tid]["created_at"] = rec.get("ts")
             state[tid]["updated_at"] = rec.get("ts")
         elif tid in state:
@@ -389,7 +389,7 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
            until: dict | None = None, poll_every: str | None = None,
            deadline: str | None = None, channel: str | None = None,
            rank: float | None = None, title: str | None = None,
-           project: str | None = None) -> dict | None:
+           project: str | None = None, links: list | None = None) -> dict | None:
     """Append a mutation by `by`. None if task_id is unknown.
 
     Only the owner -- or the operator -- may change an owned task, and
@@ -460,6 +460,8 @@ def update(team_dir: Path | str, task_id: str, by: str, *,
             entry["title"] = title.strip()
         if project is not None:
             entry["project"] = project.strip()
+        if links is not None:
+            entry["links"] = _links(links)
         _append(team_dir, entry)
     t = get(team_dir, task_id)
     if t and t.get("channel"):
@@ -481,6 +483,19 @@ def _check_channel(team_dir, channel: str | None) -> str | None:
         raise TaskError(f"no open channel #{name}; channels: "
                         f"{', '.join('#' + c for c in sorted(live)) or 'none'}")
     return name
+
+
+def _links(links) -> list[dict]:
+    """[{title, url}]: bookmarks on a task -- a URL, a path, anything worth
+    keeping beside it."""
+    out = []
+    for x in links or []:
+        url = str((x.get("url") if isinstance(x, dict) else x) or "").strip()
+        if not url:
+            continue
+        title = str((x.get("title") if isinstance(x, dict) else "") or "").strip() or url
+        out.append({"title": title[:200], "url": url[:2000]})
+    return out[:50]
 
 
 def _rank(rank) -> float | None:

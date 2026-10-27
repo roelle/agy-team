@@ -135,6 +135,65 @@ class Record:
         except OSError:
             return ""
 
+    def task_usage(self) -> dict[str, dict]:
+        """Tokens spent on each task, estimated from the turns: {task_id:
+        {turns, input_tokens, output_tokens, tokens, direct, inferred,
+        agents: {agent: tokens}}}.
+
+        A turn woken by a message naming tasks counts toward them ("direct",
+        split evenly). Any other turn counts toward the task its agent owned
+        and was working (claimed, running, review) when the turn ended
+        ("inferred", split evenly if it had several). Turns with neither are
+        nobody's. An estimate, and labelled as one.
+        """
+        from . import tasks as tasks_lib
+        active_states = {"claimed", "running", "review"}
+        spans: dict[str, list[tuple[str, str, str]]] = {}     # agent -> [(start, end, task)]
+        state: dict[str, dict] = {}
+        open_since: dict[str, tuple[str, str]] = {}            # task -> (agent, start)
+        for rec in tasks_lib.read(self.team_dir):
+            tid, ts = rec["id"], rec.get("ts") or ""
+            cur = state.setdefault(tid, {})
+            for k in ("owner", "status"):
+                if k in rec:
+                    cur[k] = rec[k]
+            was = open_since.pop(tid, None)
+            if was:
+                spans.setdefault(was[0], []).append((was[1], ts, tid))
+            if cur.get("owner") and cur.get("status") in active_states:
+                open_since[tid] = (cur["owner"], ts)
+        for tid, (agent, start) in open_since.items():
+            spans.setdefault(agent, []).append((start, "9999", tid))
+        out: dict[str, dict] = {}
+
+        def add(tid, agent, ev, share, how):
+            u = out.setdefault(tid, {"turns": 0, "input_tokens": 0, "output_tokens": 0,
+                                     "tokens": 0, "direct": 0, "inferred": 0, "agents": {}})
+            inp = int(ev.get("input_tokens") or 0) * share
+            outp = int(ev.get("output_tokens") or 0) * share
+            u["turns"] += 1
+            u["input_tokens"] += round(inp)
+            u["output_tokens"] += round(outp)
+            u["tokens"] += round(inp + outp)
+            u[how] += 1
+            u["agents"][agent] = u["agents"].get(agent, 0) + round(inp + outp)
+
+        for ev in self.events("turn"):
+            agent, ts = ev.get("agent"), ev.get("ts") or ""
+            named = [t for t in ((ev.get("trigger") or {}).get("task_ids") or []) if t]
+            if named:
+                for t in named:
+                    add(t, agent, ev, 1 / len(named), "direct")
+                continue
+            working = [tid for start, end, tid in spans.get(agent, []) if start <= ts <= end]
+            for t in working:
+                add(t, agent, ev, 1 / len(working), "inferred")
+        return out
+
+    def avatars(self) -> dict[str, str]:
+        from . import actions
+        return actions.avatars(self.team_dir)
+
     def memory_stats(self, agent: str) -> list[dict]:
         """One agent's memories with their history: [{name, description,
         created, saved, revisions, reads, last_read, known_since}]."""

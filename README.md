@@ -1033,8 +1033,13 @@ message an agent as the user (with the person's name as `author`), create
 channels and change their members, set or clear a model, waive a review,
 stop, start and gracefully restart the team, add, change and remove agents
 (through the roster's history, so a running supervisor adopts the change),
-replace `NORMS.md`, and read, write and delete an agent's memories -- each
-refused from inside an agent's session. A UI built on these two modules
+replace `NORMS.md`, read, write and delete an agent's memories, keep
+bookmarks on channels and links on tasks, set pictures for agents and the
+operator (`<team_dir>/avatars/`), and attach files the operator shares
+(`<team_dir>/attachments/`, by absolute path, so agents can open them) --
+each refused from inside an agent's session. `Record.task_usage()` estimates
+the tokens spent on each task: turns woken by a message naming it, and
+otherwise the turns of the agent working on it at the time. A UI built on these two modules
 needs nothing else from agyteam.
 
 ### Choosing models without editing the roster
@@ -1423,7 +1428,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.9.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.10.0"
 python -m agyteam.supervisor --version
 ```
 

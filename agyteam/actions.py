@@ -503,3 +503,92 @@ def review_memory(team_dir, agent: str, by: str = "user") -> dict:
                             "so start the team first")
     rid = distill_queue.add(team_dir, "review", agent, by=by)
     return {"queued": rid, "agent": agent}
+
+
+# --- bookmarks ------------------------------------------------------------------
+
+def set_channel_bookmarks(team_dir, channel: str, bookmarks: list) -> list[dict]:
+    """Replace a channel's bookmarks: [{title, url}] (a URL, a path, a go link)."""
+    _guard()
+    try:
+        return channels_lib.set_bookmarks(team_dir, channel, bookmarks)
+    except channels_lib.ChannelError as e:
+        raise OperatorError(str(e)) from None
+
+
+def set_task_links(team_dir, task_id: str, links: list) -> dict:
+    """Replace a task's links: [{title, url}]."""
+    _guard()
+    from . import tasks
+    try:
+        t = tasks.update(team_dir, task_id, by="user", links=links)
+    except tasks.TaskError as e:
+        raise OperatorError(str(e)) from None
+    if t is None:
+        raise OperatorError(f"no task {task_id!r}")
+    return t
+
+
+# --- pictures and attachments ----------------------------------------------------
+
+AVATARS = "avatars"
+ATTACHMENTS = "attachments"
+IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+AVATAR_BYTES = 2_000_000
+ATTACHMENT_BYTES = 20_000_000
+
+
+def avatars(team_dir) -> dict[str, str]:
+    """{agent name or "user": file name} under <team_dir>/avatars/."""
+    d = Path(team_dir) / AVATARS
+    out = {}
+    for f in sorted(d.iterdir()) if d.is_dir() else []:
+        if f.suffix.lower() in IMAGE_TYPES:
+            out[f.stem] = f.name
+    return out
+
+
+def set_avatar(team_dir, who: str, data: bytes | None, ext: str = ".png") -> dict:
+    """Set (or, with no data, remove) the picture for an agent or for the
+    operator ("user"). Kept as <team_dir>/avatars/<who><ext>."""
+    _guard()
+    from . import roster as roster_lib
+    names = [a["name"] for a in roster_lib.load(Path(team_dir) / "roster.json").get("agents", [])]
+    if who != "user" and who not in names:
+        raise OperatorError(f"no teammate named {who!r}")
+    ext = ext.lower() if ext.startswith(".") else "." + ext.lower()
+    if data is not None and ext not in IMAGE_TYPES:
+        raise OperatorError(f"a picture is one of {', '.join(sorted(IMAGE_TYPES))}")
+    if data is not None and len(data) > AVATAR_BYTES:
+        raise OperatorError(f"a picture is at most {AVATAR_BYTES // 1_000_000} MB")
+    d = Path(team_dir) / AVATARS
+    d.mkdir(parents=True, exist_ok=True)
+    for old in d.glob(f"{who}.*"):
+        old.unlink()
+    if data is None:
+        return {"who": who, "removed": True}
+    (d / f"{who}{ext}").write_bytes(data)
+    return {"who": who, "file": f"{who}{ext}"}
+
+
+def attach(team_dir, data: bytes, filename: str, by: str = "user") -> dict:
+    """Keep a file the operator is sharing (a pasted screenshot, say) where
+    the team can read it: <team_dir>/attachments/<time>-<name>. Returns its
+    absolute path, which goes into the message so agents can open it."""
+    _guard()
+    import re
+    import time
+    if not data:
+        raise OperatorError("nothing to attach")
+    if len(data) > ATTACHMENT_BYTES:
+        raise OperatorError(f"an attachment is at most {ATTACHMENT_BYTES // 1_000_000} MB")
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(filename or "file").name)[-80:] or "file"
+    d = Path(team_dir) / ATTACHMENTS
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{name}"
+    n = 1
+    while p.exists():
+        p = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{n}-{name}"
+        n += 1
+    p.write_bytes(data)
+    return {"path": str(p.resolve()), "name": p.name, "bytes": len(data), "by": by}
