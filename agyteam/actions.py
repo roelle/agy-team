@@ -79,6 +79,27 @@ def dm(team_dir, agent: str, content: str, author: str | None = None,
         out = t.send_kind(agent, content, kind=kind)
     if out.startswith("[error"):
         raise OperatorError(out.strip("[]"))
+    # An @mention in a direct message brings that agent in, as it would in a
+    # channel: it gets a copy, which wakes it, saying where it was said.
+    # Without this, "@ada can you help?" in a DM (or a DM's thread) reached
+    # only the agent the DM was to. Group words (@all, @here) do nothing here.
+    from . import roster as roster_lib
+    doc = channels_lib._roster_doc(team_dir)
+    names = [a["name"] for a in doc.get("agents", []) if isinstance(a, dict) and a.get("name")]
+    pulled = []
+    for handle in channels_lib._MENTION.findall(content):
+        who = roster_lib.resolve_name(handle, names, roster_lib.aliases(doc))
+        if who and who not in (agent, "user") and who not in pulled:
+            pulled.append(who)
+    for who in pulled:
+        note = (f"[You were mentioned in the operator's direct message to {agent}. "
+                f"Reply to the operator, or to {agent} if it is theirs to answer.]\n")
+        try:
+            t.send(who, note + content, kind=kind, **{k: v for k, v in meta.items() if v})
+        except TypeError:
+            t.send_kind(who, note + content, kind=kind)
+    if pulled:
+        out += f" (and to {', '.join(pulled)}, who were mentioned)"
     return out
 
 

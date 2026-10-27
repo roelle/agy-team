@@ -134,3 +134,17 @@ def test_the_alias_set_from_a_client_is_the_one_mentions_use(team):
     assert roster_lib.aliases(doc) == {"ada": "coder"}
     actions.update_agent(team, "coder", alias="")
     assert roster_lib.aliases(roster_lib.load(team / "roster.json")) == {}
+
+
+def test_a_mention_in_a_direct_message_reaches_the_agent_mentioned(team):
+    """@ada in a DM to tpm (or in a thread under it) reached only tpm."""
+    from agyteam import roster as roster_lib
+    from agyteam.transport import load as load_transport
+    actions.update_agent(team, "coder", alias="Ada")
+    out = actions.dm(team, "tpm", "@ada can you help with this?", thread="m1")
+    assert "and to coder" in out
+    [copy] = load_transport("coder").peek()
+    assert copy.wakes and copy.thread == "m1" and "direct message to tpm" in copy.content
+    actions.dm(team, "tpm", "@all and @tpm: nobody else", thread="m1")
+    assert len(load_transport("coder").peek()) == 1, "group words do not pull anyone in"
+    assert roster_lib.aliases(roster_lib.load(team / "roster.json"))["ada"] == "coder"
