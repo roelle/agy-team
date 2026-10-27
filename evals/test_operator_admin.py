@@ -124,3 +124,13 @@ def test_admin_actions_are_refused_inside_an_agent(team, monkeypatch):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))
+
+
+def test_the_alias_set_from_a_client_is_the_one_mentions_use(team):
+    """The admin page used to write an "aliases" list nothing read."""
+    from agyteam import roster as roster_lib
+    actions.update_agent(team, "coder", alias="Ada")
+    doc = roster_lib.load(team / "roster.json")
+    assert roster_lib.aliases(doc) == {"ada": "coder"}
+    actions.update_agent(team, "coder", alias="")
+    assert roster_lib.aliases(roster_lib.load(team / "roster.json")) == {}

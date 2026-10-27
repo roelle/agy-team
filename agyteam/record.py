@@ -49,6 +49,22 @@ def _json(path: Path, default):
         return default
 
 
+def instant(ts) -> float | None:
+    """Seconds since the epoch for a record's timestamp, whichever kind it
+    is. Two are written: UTC ISO ("2026-10-27T19:01:18Z": tasks, model
+    overrides, the heartbeat) and local time with a space ("2026-10-27
+    12:01:18": the bus, events, reviews, the memory log). Compared as text
+    they disagree by the UTC offset, so compare these instead."""
+    s = str(ts or "").strip()
+    try:
+        if "T" in s[:19]:
+            import calendar
+            return float(calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")))
+        return time.mktime(time.strptime(s[:19], "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+
+
 class Record:
     def __init__(self, team_dir):
         self.team_dir = Path(team_dir)
@@ -148,11 +164,13 @@ class Record:
         """
         from . import tasks as tasks_lib
         active_states = {"claimed", "running", "review"}
-        spans: dict[str, list[tuple[str, str, str]]] = {}     # agent -> [(start, end, task)]
+        spans: dict[str, list[tuple[float, float, str]]] = {}  # agent -> [(start, end, task)]
         state: dict[str, dict] = {}
-        open_since: dict[str, tuple[str, str]] = {}            # task -> (agent, start)
+        open_since: dict[str, tuple[str, float]] = {}            # task -> (agent, start)
         for rec in tasks_lib.read(self.team_dir):
-            tid, ts = rec["id"], rec.get("ts") or ""
+            tid, ts = rec["id"], instant(rec.get("ts"))
+            if ts is None:
+                continue
             cur = state.setdefault(tid, {})
             for k in ("owner", "status"):
                 if k in rec:
@@ -163,7 +181,7 @@ class Record:
             if cur.get("owner") and cur.get("status") in active_states:
                 open_since[tid] = (cur["owner"], ts)
         for tid, (agent, start) in open_since.items():
-            spans.setdefault(agent, []).append((start, "9999", tid))
+            spans.setdefault(agent, []).append((start, float("inf"), tid))
         out: dict[str, dict] = {}
 
         def add(tid, agent, ev, share, how):
@@ -179,7 +197,9 @@ class Record:
             u["agents"][agent] = u["agents"].get(agent, 0) + round(inp + outp)
 
         for ev in self.events("turn"):
-            agent, ts = ev.get("agent"), ev.get("ts") or ""
+            agent, ts = ev.get("agent"), instant(ev.get("ts"))
+            if ts is None:
+                continue
             named = [t for t in ((ev.get("trigger") or {}).get("task_ids") or []) if t]
             if named:
                 for t in named:

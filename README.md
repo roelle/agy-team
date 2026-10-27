@@ -1428,7 +1428,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.10.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.10.1"
 python -m agyteam.supervisor --version
 ```
 

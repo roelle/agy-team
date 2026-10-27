@@ -7,6 +7,18 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.10.1] - 2026-10-27
+
+### Fixed
+- **`Record.task_usage` counted no inferred turns on real teams.** Tasks are
+  stamped in UTC ISO and turns in local time, and the two were compared as
+  text. The 3.9.0 memory-review evidence compared failed tasks the same
+  way. Both now compare instants (`agyteam.record.instant`, which reads
+  either kind).
+- **An alias set through `actions.update_agent` was never used.** It wrote an
+  `aliases` list, but the roster's field is `alias`, a single name the agent
+  is shown by and answers to as @alias. `AGENT_FIELDS` now has `alias`.
+
 ## [3.10.0] - 2026-10-27
 
 ### Added
@@ -381,7 +393,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.10.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.10.1...HEAD
+[3.10.1]: https://github.com/roelle/agy-team/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/roelle/agy-team/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/roelle/agy-team/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/roelle/agy-team/compare/v3.7.1...v3.8.0

@@ -2551,10 +2551,14 @@ class Supervisor:
                     and (r.get("ts") or "") > since:
                 out.append(f"- {r.get('ts', '')[:16]} {r.get('reviewer', '?')} asked for changes to "
                            f"\"{str(r.get('what', ''))[:120]}\": {str(r.get('findings', ''))[:400]}")
+        from .record import instant
+        since_at = instant(since) or 0.0
         try:
             for t in tasks_lib.snapshot(self.team_dir).values():
+                # Tasks are stamped in UTC ISO, the rest of the record in
+                # local time: compare instants, not text.
                 if t.get("owner") == agent and t.get("status") in ("failed", "cancelled") \
-                        and (t.get("updated_at") or "") > since:
+                        and (instant(t.get("updated_at")) or 0.0) > since_at:
                     out.append(f"- task {t['id']} \"{str(t.get('title', ''))[:100]}\" ended "
                                f"{t['status']}" + (f": {str(t.get('note'))[:300]}" if t.get("note") else ""))
         except Exception:

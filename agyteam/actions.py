@@ -269,7 +269,7 @@ _RESERVED = {"user", "supervisor", "here", "all", "everyone", "channel"}
 # (workspaces, refuse_paths, allowed_send_to, ...) stay in the roster file,
 # where they are reviewed as what they are.
 AGENT_FIELDS = ("role", "model", "effort", "memory_model", "memory_effort",
-                "is_principal", "tools_off", "aliases")
+                "is_principal", "tools_off", "alias")
 
 
 def _roster_path(team_dir) -> Path:
@@ -283,11 +283,11 @@ def _agent_fields(fields: dict) -> dict:
                             f"{', '.join(AGENT_FIELDS)}")
     out = {}
     for k, v in fields.items():
-        if k in ("role", "model", "effort", "memory_model", "memory_effort"):
+        if k in ("role", "model", "effort", "memory_model", "memory_effort", "alias"):
             out[k] = str(v or "").strip()
         elif k == "is_principal":
             out[k] = bool(v)
-        elif k in ("tools_off", "aliases"):
+        elif k == "tools_off":
             items = v.split(",") if isinstance(v, str) else list(v or [])
             out[k] = [str(x).strip() for x in items if str(x).strip()]
     return out
@@ -321,7 +321,8 @@ def add_agent(team_dir, name: str, role: str = "", channels="all", **fields) -> 
 
 def update_agent(team_dir, name: str, **fields) -> dict:
     """Change an agent's role, default model, effort, memory model and
-    effort, principal flag, tools_off or aliases. An empty value removes
+    effort, principal flag, tools_off or alias (the name it is shown by and
+    answers to as @alias). An empty value removes
     the field."""
     _guard()
     from . import roster as roster_lib

@@ -37,12 +37,22 @@ def log(team, rec):
         f.write(json.dumps(rec) + "\n")
 
 
+def utc(local: str) -> str:
+    """The task log's stamp (UTC ISO) for a local wall-clock time."""
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                         time.gmtime(time.mktime(time.strptime(local, "%Y-%m-%d %H:%M:%S"))))
+
+
 def test_tokens_go_to_the_task_a_turn_was_for(team):
-    log(team, {"id": "task_a", "kind": "created", "ts": "2026-10-01 09:00:00", "title": "A",
+    """Tasks are stamped in UTC ISO and turns in local time, as the real
+    record writes them: compared as text they disagreed by the UTC offset
+    and no turn was ever counted."""
+    log(team, {"id": "task_a", "kind": "created", "ts": utc("2026-10-01 09:00:00"), "title": "A",
                "owner": "coder", "status": "queued"})
-    log(team, {"id": "task_a", "kind": "updated", "ts": "2026-10-01 10:00:00", "status": "running"})
-    log(team, {"id": "task_a", "kind": "updated", "ts": "2026-10-01 12:00:00", "status": "done"})
-    log(team, {"id": "task_b", "kind": "created", "ts": "2026-10-01 09:00:00", "title": "B",
+    log(team, {"id": "task_a", "kind": "updated", "ts": utc("2026-10-01 10:00:00"), "status": "running"})
+    log(team, {"id": "task_a", "kind": "updated", "ts": utc("2026-10-01 12:00:00"), "status": "done"})
+    log(team, {"id": "task_b", "kind": "created", "ts": utc("2026-10-01 09:00:00"), "title": "B",
                "owner": "qa", "status": "running"})
     turn(team, "coder", "2026-10-01 09:30:00", 999)                    # before it started: nobody's
     turn(team, "coder", "2026-10-01 11:00:00", 100)                    # working on A: inferred
@@ -52,6 +62,12 @@ def test_tokens_go_to_the_task_a_turn_was_for(team):
     assert u["task_a"]["tokens"] == 125 and u["task_a"]["inferred"] == 1 and u["task_a"]["direct"] == 1
     assert u["task_a"]["agents"] == {"coder": 100, "qa": 25}
     assert u["task_b"]["tokens"] == 25
+
+
+def test_both_kinds_of_timestamp_are_the_same_instant():
+    from agyteam.record import instant
+    assert instant(utc("2026-10-27 12:01:18")) == instant("2026-10-27 12:01:18")
+    assert instant("garbage") is None
 
 
 def test_bookmarks_on_a_channel_and_links_on_a_task(team):
