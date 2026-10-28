@@ -869,6 +869,8 @@ class Supervisor:
             doc[agent] = {"handle": turn["handle"], "ts": turn["ts"],
                           "hop": turn["hop"], "trigger": turn["trigger"],
                           "msgs": [m.as_dict() for m in turn["msgs"]]}
+            if turn.get("distill"):
+                doc[agent]["distill"] = turn["distill"]
         try:
             with filelock.locked(self.ledger_path):
                 _rewrite(self.ledger_path, json.dumps(doc, indent=2) + "\n")
@@ -894,6 +896,8 @@ class Supervisor:
                 self._log(f"[supervisor] {agent}'s turn from before the restart "
                           f"began {stale}; cancelled, and its mail will be "
                           f"delivered again")
+                if turn.get("distill"):
+                    distill_queue.put_back(self.team_dir, turn["distill"])
                 transport = self.transports.get(agent)
                 if self.inbox_pull and transport is not None:
                     self._restore_pulled_mail(agent, transport, {
@@ -911,12 +915,17 @@ class Supervisor:
                     "hop": turn.get("hop", 0), "trigger": turn.get("trigger", {}),
                     "started": time.monotonic(), "failures_before": 0,
                     "resumed": True}
+                if turn.get("distill"):
+                    self.inflight[agent]["distill"] = turn["distill"]
                 self._log(f"[supervisor] resuming {agent}'s turn from before the restart")
             else:
                 # The turn died with the process that ran it. Its mail was
-                # never acknowledged, so the next pass delivers it again.
+                # never acknowledged, so the next pass delivers it again; a
+                # distill it was running goes back on the queue.
                 self._log(f"[supervisor] {agent}'s turn did not survive the "
                           f"restart; its mail will be delivered again")
+                if turn.get("distill"):
+                    distill_queue.put_back(self.team_dir, turn["distill"])
                 try:
                     self.observer.record_failure(
                         agent, "", "[error: supervisor restarted mid-turn; "
@@ -1611,6 +1620,8 @@ class Supervisor:
 
     def _finish(self, agent: str, turn: dict, reply: str) -> None:
         """Acknowledge or requeue, account, and judge one ended turn."""
+        if turn.get("distill"):
+            return self._finish_distill_turn(agent, turn, reply)
         self._roster_touched.add(agent)
         msgs = turn["msgs"]
         dur = time.monotonic() - turn["started"]
@@ -2771,10 +2782,61 @@ class Supervisor:
         self._last_distill_failed = bool(self.distill_failed)
         return out
 
+    def _begin_distill_turn(self, agent: str, request: dict) -> str | None:
+        """Start a distill (or cycle) asked of this driver as a turn of its
+        own: it runs alongside the team's other turns, and every agent's at
+        once, instead of one after another with the dispatch loop waiting.
+        Returns None once started, else why it could not be."""
+        if agent in self._purged_agents:
+            return "its context was purged; nothing to distill"
+        if not hasattr(self, "_distill_before"):
+            self._distill_before = {}
+        self._distill_before[agent] = self._memory_snapshot(agent)
+        self._begin_memory_turn(agent)
+        try:
+            handle = self.runner.begin(agent, DISTILL_PROMPT)
+        except Exception as e:
+            self._end_memory_turn(agent)
+            self._distill_before.pop(agent, None)
+            return f"could not start: {type(e).__name__}: {e}"
+        self.inflight[agent] = {
+            "handle": handle, "msgs": [], "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "started": time.monotonic(), "hop": self.hops,
+            "trigger": {"distill": request.get("action")},
+            "failures_before": self._failure_count(), "distill": request}
+        self._save_ledger()
+        self._log(f"  → {'cycling' if request.get('action') == 'cycle' else 'distilling'} "
+                  f"{agent} (asked by {request.get('by') or 'the operator'}), alongside "
+                  f"the team's turns")
+        return None
+
+    def _finish_distill_turn(self, agent: str, turn: dict, reply: str) -> None:
+        request = turn["distill"]
+        self._end_memory_turn(agent)
+        before_snap = getattr(self, "_distill_before", {}).pop(agent, None)
+        if before_snap is None:                     # resumed after a restart
+            before_snap = self._memory_snapshot(agent)
+        before, after, failed = self._finish_distill(agent, before_snap, reply)
+        ev = {"id": request.get("id"), "action": request.get("action"), "agent": agent,
+              "by": request.get("by"), "before": before, "after": after, "failed": failed}
+        if failed:
+            ev["reason"] = "the distill failed; see the supervisor's log"
+        elif request.get("action") == "cycle":
+            if agent in self._purged_agents:
+                self._log(f"    {agent}: cycle aborted (agent context was purged due to anomaly)")
+            else:
+                self.runner.reset(agent)
+                self._log(f"    {agent}: conversation reset")
+        try:
+            self.observer.record_event("distill_request_done", **ev)
+        except Exception:
+            pass
+
     def _serve_distill_requests(self) -> int:
         """Run what other processes asked of this driver, for agents that
-        are between turns. Blocks the pass while it runs, as the sweep does;
-        turns already running carry on."""
+        are between turns. A distill or cycle starts as a turn and runs
+        alongside the others; a sweep or memory review blocks the pass while
+        it runs, and turns already running carry on."""
         if not distill_queue.path(self.team_dir).exists():
             return 0
         rows = distill_queue.take(
@@ -2794,11 +2856,10 @@ class Supervisor:
             elif agent not in self.agents:
                 ev.update(failed=True, reason="not on the roster")
             else:
-                before, after = (self.cycle if action == "cycle" else self.distill)(agent)
-                failed = bool(getattr(self, "_last_distill_failed", False))
-                ev.update(before=before, after=after, failed=failed)
-                if failed:
-                    ev["reason"] = "the distill failed; see the supervisor's log"
+                why = self._begin_distill_turn(agent, r)
+                if why is None:
+                    continue            # running; recorded when the turn ends
+                ev.update(failed=True, reason=why)
             try:
                 self.observer.record_event("distill_request_done", **ev)
             except Exception:

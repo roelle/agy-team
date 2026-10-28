@@ -237,3 +237,69 @@ def test_the_schema_declares_requires_review_a_boolean():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, *sys.argv[1:]]))
+
+
+PARALLEL_DRIVER = textwrap.dedent("""
+    import json, os, sys, time
+    sys.path.insert(0, {root!r}); sys.path.insert(0, {evals!r})
+    os.environ["AGYTEAM_TEAM_DIR"] = {td!r}
+    from agyteam.supervisor import Supervisor
+    from fixture_runner import ScriptedRunner
+
+    class Timed(ScriptedRunner):
+        def wake(self, agent, message):
+            what = "distill" if "save_memory" in message else "turn"
+            start = time.time()
+            time.sleep(1.5 if what == "distill" else 0.1)
+            with open({log!r}, "a") as f:
+                f.write(json.dumps({{"agent": agent, "what": what, "start": start,
+                                     "end": time.time()}}) + "\\n")
+            return "ok"
+
+    sup = Supervisor(["tpm", "coder", "qa"], Timed({{}}), quiet=True, poll=0.1,
+                     require_review=False)
+    sup.run_forever()
+""")
+
+
+def test_distills_asked_of_a_running_supervisor_run_together_and_alongside_work(team, tmp_path):
+    """--distill-all with a daemon running used to distill one agent after
+    another, the daemon's loop waiting on each: no other turn could start."""
+    import threading
+    log = tmp_path / "wakes.jsonl"
+    driver = subprocess.Popen([sys.executable, "-c", PARALLEL_DRIVER.format(
+        root=str(ROOT), evals=str(ROOT / "evals"), td=str(team), log=str(log))])
+    try:
+        for _ in range(100):
+            if (team / "supervisor.json").exists():
+                break
+            time.sleep(0.1)
+        outside = Supervisor(AGENTS, ScriptedRunner({}), quiet=True)
+        done = threading.Event()
+
+        def ask():
+            try:
+                outside.distill_all(["coder", "qa"])
+            finally:
+                done.set()
+        threading.Thread(target=ask, daemon=True).start()
+        time.sleep(0.6)                                  # the distills have begun
+        load_transport("user").send("tpm", "a quick question")
+        assert done.wait(20), "the distills never finished"
+        outside.close()
+        for _ in range(50):                              # tpm's turn has landed
+            rows = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
+            if any(r["what"] == "turn" for r in rows):
+                break
+            time.sleep(0.1)
+        distills = [r for r in rows if r["what"] == "distill"]
+        turn = next(r for r in rows if r["what"] == "turn")
+        assert {r["agent"] for r in distills} == {"coder", "qa"}
+        assert max(r["start"] for r in distills) < min(r["end"] for r in distills), \
+            "the distills ran one after another"
+        assert turn["start"] < max(r["end"] for r in distills), \
+            "tpm's turn waited for the distills to finish"
+        assert not outside.distill_failed
+    finally:
+        driver.kill()
+        driver.wait()

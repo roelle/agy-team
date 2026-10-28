@@ -7,6 +7,18 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-10-28
+
+### Changed
+- **Distills asked of a running supervisor run in parallel, alongside the
+  team's work.** `--distill-all` or `--cycle-all` with a daemon running used
+  to distill one agent after another, and the daemon's dispatch loop waited
+  on each, so no other turn could start. Each requested distill or cycle now
+  starts as a turn of its own when its agent is between turns, and is
+  recorded when it ends. If the supervisor restarts mid-distill on a runtime
+  that cannot resume turns, the request goes back on the queue, so the
+  command waiting for it still gets an answer.
+
 ## [3.11.1] - 2026-10-27
 
 ### Fixed
@@ -431,7 +443,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.11.1...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.12.0...HEAD
+[3.12.0]: https://github.com/roelle/agy-team/compare/v3.11.1...v3.12.0
 [3.11.1]: https://github.com/roelle/agy-team/compare/v3.11.0...v3.11.1
 [3.11.0]: https://github.com/roelle/agy-team/compare/v3.10.1...v3.11.0
 [3.10.1]: https://github.com/roelle/agy-team/compare/v3.10.0...v3.10.1

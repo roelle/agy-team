@@ -809,10 +809,11 @@ With a team, it happens:
 - **once a day**, if the roster has `nightly_distill`;
 - **when you ask**: `--distill <agent>`, `--cycle <agent>`, `--distill-all`,
   `--cycle-all`, `--nightly-distill`. While a supervisor is driving the team,
-  these are handed to it and run when the agent is between turns, never
-  alongside one; the command waits for the result (up to
-  `AGYTEAM_DISTILL_WAIT_S`, 900 s by default) and what is not done by then
-  still runs.
+  these are handed to it. Each agent's distill starts as a turn of its own
+  as soon as that agent is between turns, so `--distill-all` distills
+  everyone at once, while the rest of the team keeps working. The command
+  waits for the result (up to `AGYTEAM_DISTILL_WAIT_S`, 900 s by default),
+  and what is not done by then still runs.
 
 A single agent (`agyteam.sdk_cli`) distills on `/quit`, after a one-shot run,
 on `/cycle`, and, on a best-effort basis (see quirks), when the harness
@@ -1464,7 +1465,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.11.1"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.12.0"
 python -m agyteam.supervisor --version
 ```
 

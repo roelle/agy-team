@@ -66,3 +66,12 @@ def take(team_dir, ready) -> list[dict]:
             later = [r for r in rows if r not in now]
             p.write_text("".join(json.dumps(r) + "\n" for r in later), encoding="utf-8")
         return now
+
+
+def put_back(team_dir, row: dict) -> None:
+    """Queue a request again as it was (same id), for one whose turn did not
+    survive a restart: the command that asked is still waiting on that id."""
+    p = path(team_dir)
+    with filelock.locked(p):
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
