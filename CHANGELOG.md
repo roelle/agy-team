@@ -7,6 +7,24 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-29
+
+### Changed
+- **A running team's hop budget is a rate.** It allows `--max-hops` wakes
+  in any `AGYTEAM_HOP_WINDOW` seconds (default 600). It used to reset only
+  once no turn was in flight, which a busy team, or one long turn, may
+  never reach. Until it did, no agent woke, and nothing said why. A
+  one-shot episode still counts its whole run.
+- **The user's messages are never held by the hop budget.** The budget
+  bounds agents waking agents. A message from the user is a new stimulus,
+  so it wakes its recipient even when the budget is spent.
+
+### Added
+- **`held` presence.** `Record.presence()` reports `held` for an agent
+  whose waking mail the hop budget is holding back, with how much of the
+  budget is used. The supervisor's heartbeat carries `held` and `hops`, and
+  logs once when it starts holding mail.
+
 ## [3.14.0] - 2026-10-29
 
 ### Added
@@ -488,7 +506,10 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.12.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.15.0...HEAD
+[3.15.0]: https://github.com/roelle/agy-team/compare/v3.14.0...v3.15.0
+[3.14.0]: https://github.com/roelle/agy-team/compare/v3.13.0...v3.14.0
+[3.13.0]: https://github.com/roelle/agy-team/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/roelle/agy-team/compare/v3.11.1...v3.12.0
 [3.11.1]: https://github.com/roelle/agy-team/compare/v3.11.0...v3.11.1
 [3.11.0]: https://github.com/roelle/agy-team/compare/v3.10.1...v3.11.0

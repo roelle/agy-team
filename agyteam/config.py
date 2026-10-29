@@ -111,6 +111,12 @@ RETRO_MAX_REFLECTION_CHARS = int(os.environ.get("AGYTEAM_RETRO_MAX_REFLECTION_CH
 MAX_LOOP_STEPS = int(os.environ["AGYTEAM_MAX_LOOP_STEPS"]) \
     if os.environ.get("AGYTEAM_MAX_LOOP_STEPS") else None
 
+# A running team's hop budget is a rate: at most --max-hops wakes in any
+# window this long, in seconds. It used to be a count that reset only when no
+# turn was in flight, so one long turn held every agent's mail -- the user's
+# included -- until it ended. A one-shot episode still counts its whole run.
+HOP_WINDOW_S = float(os.environ.get("AGYTEAM_HOP_WINDOW", 600))
+
 # Wall-clock ceiling on one agent turn. Waiting forever is not a safe default:
 # with no credentials configured the SDK can block on the transport rather than
 # returning an auth error, and an unattended supervisor then sits silent with

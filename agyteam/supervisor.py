@@ -672,6 +672,8 @@ class Supervisor:
         self.user_transport = load_transport("user")
         self._user_mail_at_start = self._user_mail_count()
         self.hops = 0
+        self._wakes: list[float] = []          # when each hop began (monotonic)
+        self._held: set[str] = set()           # waking mail held by the hop budget
         self.stopped = ""
         self.draining: dict | None = None      # a restart request being honoured
         self._preparing: dict[str, dict] = {}  # turns waiting on their recall
@@ -1324,7 +1326,12 @@ class Supervisor:
                 # Clients look for this before asking for a restart: a
                 # supervisor without it does not know the request.
                 "restartable": True,
-                "draining": self.draining is not None}) + "\n")
+                "draining": self.draining is not None,
+                # Agents whose waking mail the hop budget is holding back.
+                "held": sorted(self._held),
+                "hops": {"used": self.hops, "max": self.max_hops,
+                         "window_s": config.HOP_WINDOW_S
+                         if getattr(self, "_daemon", False) else None}}) + "\n")
         except OSError:
             pass
 
@@ -1557,11 +1564,16 @@ class Supervisor:
         ordered = sorted(self.transports.items(),
                          key=lambda item: 0 if self._has_user_mail(item[1]) else 1)
         recall_cfg = recall_lib.config(self.team_dir)
+        held: set[str] = set()
         for agent, transport in ordered:
             if agent in self.inflight or agent in self._preparing:
                 continue
-            if self.hops >= self.max_hops:
-                break
+            # The hop budget bounds agents waking agents. The user is the
+            # stimulus, not a loop, so their mail always gets through.
+            if self.hops >= self.max_hops and not self._has_user_mail(transport):
+                if self._has_waking_mail(transport):
+                    held.add(agent)
+                continue
             if respect_backoff and self._backoff.get(agent, 0.0) > now:
                 continue
             # One agent's unreadable inbox is that agent's problem. Raising
@@ -1577,6 +1589,7 @@ class Supervisor:
             msgs, deferred = self._fit_wake(msgs)
             senders = ", ".join(sorted({m.sender for m in msgs}))
             self.hops += 1
+            self._wakes.append(time.monotonic())
             trigger = {"senders": sorted({m.sender for m in msgs}),
                        "kinds": sorted({m.kind for m in msgs}),
                        "task_ids": sorted({m.task_id for m in msgs if m.task_id})}
@@ -1607,9 +1620,22 @@ class Supervisor:
                 continue
             self.inflight[agent] = turn
             begun.append(agent)
+        if held and not self._held:
+            window = (f" in the last {config.HOP_WINDOW_S / 60:g} min"
+                      if getattr(self, "_daemon", False) else "")
+            self._log(f"[hop budget: {self.hops} wakes{window}; holding mail for "
+                      f"{', '.join(sorted(held))} until it frees up. The user's "
+                      f"messages still wake.]")
+        self._held = held
         if begun:
             self._save_ledger()
         return begun
+
+    def _age_wakes(self) -> None:
+        """A running team's hop budget: --max-hops wakes in any HOP_WINDOW_S."""
+        cutoff = time.monotonic() - config.HOP_WINDOW_S
+        self._wakes = [t for t in self._wakes if t >= cutoff]
+        self.hops = len(self._wakes)
 
     # --- recall: memories offered with the wake (agyteam/recall.py) --------
 
@@ -2168,14 +2194,13 @@ class Supervisor:
         while not stop.is_set():
             if self.stopped:
                 break
+            # A long-running daemon should not inherit a budget meant to
+            # bound one stimulus. It was reset once no turn was in flight,
+            # which a busy team -- or one long turn -- never reaches; now
+            # wakes older than the window stop counting.
+            self._age_wakes()
             begun, reaped = self._pass()
             if begun or reaped:
-                # A long-running daemon should not inherit a budget meant to
-                # bound one stimulus; the cap applies per burst of activity.
-                if self.hops >= self.max_hops and not self.inflight:
-                    self._log("[hop budget reached; resetting for the next burst]")
-                    self.hops = 0
-                    self.auto_cycle()
                 continue
             if self.inflight:
                 self.runner.wait_turn(self.poll)

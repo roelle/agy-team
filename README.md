@@ -421,7 +421,8 @@ enforced by capability, not prose.
   (`send_to_teammate`, logged to the team's `bus.jsonl`); workers can only be
   *spawned* (builtin `start_subagent`, depth-capped at 1) and have no memory or
   bus identity. Agents cannot confuse them because the affordances differ.
-- Runaway protection: a hop budget per user stimulus (`--max-hops`), a
+- Runaway protection: a hop budget on agents waking agents (`--max-hops`
+  per episode; in a running team, per `AGYTEAM_HOP_WINDOW` seconds), a
   wall-clock ceiling per turn (`AGYTEAM_TURN_TIMEOUT`, default 10 minutes), and
   backoff on an agent whose turns keep failing.
 - Shared deliverables go in the shared directory (`python -m agyteam.scope`
@@ -592,7 +593,11 @@ back what `record_retro` wrote.
 
 Runaway protection: a hop budget bounds one stimulus (`--max-hops`, default 32)
 so agents can't ping-pong your token budget away, and an agent that fails is
-logged and skipped rather than stopping the team. Both are tested.
+logged and skipped rather than stopping the team. Both are tested. In a
+running team the budget is a rate: at most `--max-hops` wakes in any
+`AGYTEAM_HOP_WINDOW` seconds (default 600). Mail it holds back waits, the
+agent shows as `held` in `Record.presence()`, and the user's own messages
+always wake their recipient.
 
 ### Knowing when to stop
 
@@ -1457,6 +1462,7 @@ All subsystems support configuration through environment variables:
 |---|---|---|
 | `GEMINI_API_KEY` | Google Gemini API key for model inference | None (prompted by `./run`) |
 | `AGYTEAM_RUNNER` | Agent execution runner (`agyteam.runner_agy:AgyRunner`, `agyteam.runner_sdk:SdkRunner`, `agyteam.runner_mixed:MixedRunner`, `agyteam.runner_host:HostRunner`, or your own) | `agyteam.runner_agy:AgyRunner`; `./run` selects the SDK runner when a Gemini key is configured |
+| `AGYTEAM_HOP_WINDOW` | A running team's hop budget window, in seconds: at most `--max-hops` agent-to-agent wakes in any window this long | `600` |
 | `AGYTEAM_RUNNER_CONFIG` | JSON configuration passed to runner constructor | `{}` |
 | `AGYTEAM_BUS_TRANSPORT` | Pluggable A2A messaging transport class | `agyteam.transport_file:FileTransport` |
 | `AGYTEAM_MEMORY_STORE` | Pluggable persistent memory store class | `agyteam.memory_file:FileMemory` |
@@ -1519,7 +1525,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.14.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.15.0"
 python -m agyteam.supervisor --version
 ```
 

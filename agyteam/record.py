@@ -341,11 +341,14 @@ class Record:
     def presence(self) -> dict[str, dict]:
         """{agent: {"state", "since", "detail"}}.
 
-        state is one of: running (a turn in flight), failing (its last turn
-        failed), idle (supervisor up, nothing running), offline (no
-        supervisor is running, so nothing will wake it).
+        state is one of: running (a turn in flight), held (mail is waiting
+        and the hop budget is spent; the user's messages still wake it),
+        failing (its last turn failed), idle (supervisor up, nothing
+        running), offline (no supervisor is running, so nothing will wake it).
         """
         running = self.supervisor()
+        held = set((running or {}).get("held") or [])
+        hops = (running or {}).get("hops") or {}
         inflight = _json(self.team_dir / "inflight.json", {})
         last: dict[str, dict] = {}
         for e in self.events():
@@ -357,6 +360,11 @@ class Record:
                 t = inflight[agent]
                 out[agent] = {"state": "running", "since": t.get("ts"),
                               "detail": ", ".join((t.get("trigger") or {}).get("senders", []))}
+            elif agent in held:
+                window = hops.get("window_s")
+                out[agent] = {"state": "held", "since": None,
+                              "detail": f"hop budget: {hops.get('used')} of {hops.get('max')} wakes"
+                                        + (f" in the last {window / 60:g} min" if window else "")}
             elif last.get(agent, {}).get("event") == "failure":
                 out[agent] = {"state": "failing", "since": last[agent].get("ts"),
                               "detail": (last[agent].get("error") or "")[:200]}
