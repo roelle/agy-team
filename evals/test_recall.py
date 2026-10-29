@@ -247,3 +247,23 @@ def test_more_memories_get_more_candidates_unless_the_roster_says_how_many(team)
     assert len(auto.candidates("parser")) == 10
     fixed = recall.AgentRecall(team, "coder", {**recall.DEFAULTS, "candidates": 4}, backend=Fake())
     assert len(fixed.candidates("parser")) == 4
+
+
+def test_the_record_sums_recall_per_day_and_per_memory(team):
+    import time as _time
+    from agyteam.record import Record
+    now = _time.strftime("%Y-%m-%d %H:%M:%S")
+    rows = [{"event": "recall", "agent": "coder", "picked": ["stats-ab"], "hints": []},
+            {"event": "recall", "agent": "coder", "picked": [], "hints": []},
+            {"event": "recall", "agent": "qa", "picked": ["other"], "hints": []},
+            {"event": "recall_miss", "agent": "coder", "memory": "parser-ship",
+             "correction": "ship the parser", "learned": ["parser"]}]
+    with (team / "events.jsonl").open("a") as f:
+        for r in rows:
+            f.write(json.dumps({"ts": now, **r}) + "\n")
+    st = Record(team).recall_stats("coder")
+    today = st["days"][-1]
+    assert len(st["days"]) == 14 and today["day"] == now[:10]
+    assert (today["wakes"], today["offered"], today["memories"], today["misses"]) == (2, 1, 1, 1)
+    assert st["memories"]["stats-ab"]["offered"] == 1 and st["memories"]["parser-ship"]["missed"] == 1
+    assert "other" not in st["memories"] and st["misses"][0]["memory"] == "parser-ship"

@@ -7,6 +7,28 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-10-29
+
+### Added
+- **`Record.recall_stats(agent)`**: how recall has gone for an agent, from
+  its `recall` and `recall_miss` events. Per day for the last two weeks:
+  wakes, wakes offered memories, memories offered, misses, judge errors.
+  Per memory, over all time: times offered, hinted and missed. Also the
+  last ten misses, with the correction and what was learned. agy-chat
+  draws it on its Memories page.
+
+### Fixed
+- **A reply to a reply disappeared.** An agent answering the operator's
+  reply in a thread named that reply's id, as the tools invited. Stored
+  as is, it hung off a message no client shows a thread under. It reached
+  neither the channel nor the thread, and the agent believed it had
+  answered. A reply now goes under its thread's first message, whichever
+  message of the thread it names: channel posts, direct messages,
+  agents' and the operator's alike. The record shows replies already
+  stored under a reply in their thread too, so lost answers reappear. The
+  `thread` parameter of `send_to_teammate` and `post_to_channel` now says
+  that any message in the thread will do.
+
 ## [3.13.0] - 2026-10-29
 
 ### Added

@@ -183,6 +183,42 @@ def test_a_dm_can_reply_in_a_thread(team):
     assert [r["content"] for r in Record(team).thread(first["id"])] == ["start on it", "on it"]
 
 
+
+def test_a_reply_to_a_reply_goes_under_the_thread_s_first_message(team):
+    """An agent answered the operator's reply by that reply's id. Stored as
+    is, it hung off a message no client shows a thread under, and nobody
+    saw it. It now goes in the thread, by a channel post or a DM."""
+    root = actions.post(team, "billing", "@coder why is allocate wrong?", author="matt")
+    reply = actions.post(team, "billing", "@coder and the rounding?", author="matt", thread=root["id"])
+    mcp_bus._post_to_channel(FileTransport("coder"), {
+        "channel": "billing", "content": "both fixed", "thread": reply["id"]})
+    rows = [json.loads(line) for line in (team / "bus.jsonl").read_text().splitlines()]
+    assert rows[-1]["content"] == "both fixed" and rows[-1]["thread"] == root["id"]
+    rec = Record(team)
+    assert [r["content"] for r in rec.thread(root["id"])][-1] == "both fixed"
+    assert rec.reply_counts() == {root["id"]: 2}
+    actions.dm(team, "coder", "start on it")
+    first_id = json.loads((team / "bus.jsonl").read_text().splitlines()[-1])["id"]
+    mcp_bus._send(FileTransport("coder"), {"to": "user", "content": "on it", "thread": first_id})
+    on_it = json.loads((team / "bus.jsonl").read_text().splitlines()[-1])
+    actions.dm(team, "coder", "thanks", thread=on_it["id"])
+    assert [r["content"] for r in Record(team).thread(first_id)] == ["start on it", "on it", "thanks"]
+
+
+def test_replies_already_stored_under_a_reply_are_shown_in_their_thread(team):
+    """Logs written before the fix: the record puts them where they belong."""
+    rows = [{"id": "r00t", "ts": "2026-10-29 10:00:00", "from": "user", "to": "#billing",
+             "channel": "billing", "content": "question"},
+            {"id": "rep1", "ts": "2026-10-29 10:01:00", "from": "user", "to": "#billing",
+             "channel": "billing", "thread": "r00t", "content": "more"},
+            {"id": "rep2", "ts": "2026-10-29 10:02:00", "from": "coder", "to": "#billing",
+             "channel": "billing", "thread": "rep1", "content": "answer"}]
+    (team / "bus.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    rec = Record(team)
+    assert [r["content"] for r in rec.thread("r00t")] == ["question", "more", "answer"]
+    assert rec.reply_counts() == {"r00t": 2}
+    assert {r["thread"] for r in rec.messages(channel="billing") if r.get("thread")} == {"r00t"}
+
 # --- delivery bookkeeping ------------------------------------------------------------------------
 
 def test_a_failed_turn_requeues_channel_copies_still_quiet(team):

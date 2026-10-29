@@ -53,8 +53,9 @@ TOOLS = [
                                   "wake nobody -- use them for anything that needs "
                                   "no action"},
           "task_id": string("The task this is about, if any"),
-          "thread": string("To reply in a thread: the id of the message it hangs off "
-                           "(shown as [id ...] on every message you receive)")},
+          "thread": string("To reply in a thread: the id of any message in it "
+                           "(shown as [id ...] on every message you receive); the "
+                           "reply goes under the thread's first message")},
          ["to", "content"]),
     tool("post_to_channel",
          "Post to a channel you are a member of. Everyone in it can read it; it "
@@ -66,7 +67,8 @@ TOOLS = [
           "content": string("The post. Mention who must act: @coder, @here"),
           "kind": {"type": "string", "enum": list(KINDS),
                    "description": "What this post is; same kinds as send_to_teammate"},
-          "thread": string("Id of the message whose thread this replies in, if any"),
+          "thread": string("Id of any message in the thread this replies in, if any; "
+                           "the reply goes under the thread's first message"),
           "task_id": string("The task this is about, if any")},
          ["channel", "content"]),
     tool("list_channels",

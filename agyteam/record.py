@@ -90,7 +90,24 @@ class Record:
     # --- what was said -----------------------------------------------------------
 
     def bus(self) -> list[dict]:
-        return _jsonl(self.team_dir / "bus.jsonl")
+        """Every message, with each reply's `thread` set to the first message
+        of its thread. Replies used to be stored under whatever message they
+        answered, often another reply, where no client looked for them."""
+        rows = _jsonl(self.team_dir / "bus.jsonl")
+        parents = {r["id"]: r["thread"] for r in rows if r.get("id") and r.get("thread")}
+        if not parents:
+            return rows
+        out = []
+        for r in rows:
+            t = r.get("thread")
+            if t in parents:
+                seen = {t}
+                while t in parents and parents[t] not in seen:
+                    t = parents[t]
+                    seen.add(t)
+                r = {**r, "thread": t}
+            out.append(r)
+        return out
 
     def messages(self, channel: str | None = None, dm: tuple[str, str] | None = None,
                  include_plumbing: bool = False, limit: int | None = None) -> list[dict]:
@@ -248,6 +265,54 @@ class Record:
         st = memory_log.stats(self.team_dir, agent, entries)
         return [{"name": e.name, "description": e.description, **st.get(e.name, {})}
                 for e in entries]
+
+    def recall_stats(self, agent: str, days: int = 14) -> dict:
+        """How recall has gone for one agent, from its `recall` and
+        `recall_miss` events: {"enabled", "days": [{"day", "wakes", "offered",
+        "memories", "hints", "errors", "misses"}] for the last `days` days
+        (oldest first, empty days included), "memories": {name: {"offered",
+        "hinted", "missed", "last_offered"}} over all time, and "misses": the
+        last ten misses, newest first}."""
+        import datetime
+        from . import recall as recall_lib
+        today = datetime.date.today()
+        span = [(today - datetime.timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+        per_day = {d: {"day": d, "wakes": 0, "offered": 0, "memories": 0, "hints": 0,
+                       "errors": 0, "misses": 0} for d in span}
+        per_mem: dict[str, dict] = {}
+        misses = []
+
+        def mem(name):
+            return per_mem.setdefault(name, {"offered": 0, "hinted": 0, "missed": 0,
+                                             "last_offered": None})
+        for e in self.events():
+            if e.get("agent") != agent or e.get("event") not in ("recall", "recall_miss"):
+                continue
+            d = per_day.get(str(e.get("ts") or "")[:10])
+            if e["event"] == "recall_miss":
+                misses.append(e)
+                if e.get("memory"):
+                    mem(e["memory"])["missed"] += 1
+                if d:
+                    d["misses"] += 1
+                continue
+            picked, hints = e.get("picked") or [], e.get("hints") or []
+            for name in picked:
+                m = mem(name)
+                m["offered"] += 1
+                m["last_offered"] = e.get("ts")
+            for name in hints:
+                mem(name)["hinted"] += 1
+            if d:
+                d["wakes"] += 1
+                d["offered"] += bool(picked)
+                d["memories"] += len(picked)
+                d["hints"] += bool(hints) and not picked
+                d["errors"] += bool(e.get("error"))
+        return {"enabled": recall_lib.config(self.team_dir) is not None,
+                "days": list(per_day.values()), "memories": per_mem,
+                "misses": [{k: e.get(k) for k in ("ts", "memory", "correction", "learned")}
+                           for e in reversed(misses[-10:])]}
 
     def memory_archive(self, agent: str) -> list[dict]:
         from . import memory_log

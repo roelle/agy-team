@@ -96,8 +96,37 @@ class FileTransport(Transport):
                 entry[k] = meta[k]
         return entry
 
+    def _thread_root(self, thread: str | None) -> str | None:
+        """The first message of the thread `thread` is in. A reply names the
+        message it answers, and that is often itself a reply; stored as is,
+        it hung off a message no client shows a thread under, and nobody saw
+        it. Older replies may chain, so this follows a few hops."""
+        if not thread:
+            return thread
+        parents = {}
+        try:
+            with self.log.open(encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"thread"' not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("id") and row.get("thread"):
+                        parents[row["id"]] = row["thread"]
+        except OSError:
+            return thread
+        seen = {thread}
+        while thread in parents and parents[thread] not in seen:
+            thread = parents[thread]
+            seen.add(thread)
+        return thread
+
     def send(self, to: str, content: str, kind: str = "work",
              task_id: str | None = None, **meta) -> str:
+        if meta.get("thread"):
+            meta["thread"] = self._thread_root(meta["thread"])
         known = [a["name"] for a in self._agents()]
         if to != "user" and known and to not in known:
             return (f"[error: no teammate named '{to}'. Teammates: "
@@ -122,6 +151,7 @@ class FileTransport(Transport):
         """The post is logged to bus.jsonl once, addressed to '#<channel>';
         each member's inbox gets a copy, quiet unless they were mentioned."""
         mentioned = mentioned or set()
+        thread = self._thread_root(thread)
         entry = self._entry(self.me, f"#{channel}", content, kind, task_id,
                             channel=channel, thread=thread, author=author)
         if mentioned:
