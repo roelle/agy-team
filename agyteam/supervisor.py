@@ -88,7 +88,8 @@ WAKE_PROMPT = """You have new messages from your team:
 
 {messages}
 
-Act on them now: do the work if it is yours, or delegate with send_to_teammate.
+Act on them now: do the work if it is yours, or delegate with send_to_teammate
+(list_teammates shows who is busy and who has room).
 
 Send a message only when it carries something the recipient does not already
 have — a deliverable, an answer, a question, a blocker, or a correction. Do NOT
@@ -106,7 +107,7 @@ send_to_teammate; text you write here is seen by nobody."""
 PULL_PROMPT = """[wake] {n} message(s) in your inbox: {summary}
 
 Call check_inbox to read them, then act: do the work if it is yours, or
-delegate with send_to_teammate.
+delegate with send_to_teammate (list_teammates shows who has room).
 
 Send a message only when it carries something the recipient does not already
 have — a deliverable, an answer, a question, a blocker, or a correction. Do NOT

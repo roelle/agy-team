@@ -172,7 +172,9 @@ def check_tools(r: Report, team_dir: Path, agent: str) -> None:
 
     try:
         mates = _list_teammates(t)
-        r.line(OK, f"list_teammates -> {len(mates.splitlines())} entries")
+        entries = [l for l in mates.splitlines()
+                   if l.startswith("- ") and not l.startswith("- you (")]
+        r.line(OK, f"list_teammates -> {len(entries)} entries")
     except Exception as e:
         r.line(BAD, f"list_teammates raised {type(e).__name__}: {e}")
 

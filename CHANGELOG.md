@@ -7,6 +7,27 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-29
+
+### Added
+- **Agents can see who has room.** `list_teammates` now says how busy each
+  teammate is, and the caller too. For each: working now or idle, waking
+  mail not yet picked up, and the share of the last hour and day spent in
+  turns. A last line says where the caller stands ("Over the last hour you
+  were busier than 2 of your 3 teammates"). Its description asks agents to
+  balance both ways. If you are among the busiest and part of your work
+  fits a less busy teammate's role, hand that part over. If you are among
+  the least busy, offer the busiest your help. The wake prompts point at
+  it where they mention delegating.
+- **`Record.load()`**: per agent, `working`, `since`, `waiting`, `busy`
+  (shares of the last hour and day) and all-time `busy_s` and `turns`. It
+  is timed from `turn` and `failure` events and the turn in flight. agy-chat
+  shows it in its Agents list.
+
+### Changed
+- `doctor` counts `list_teammates` entries by their lines, so the caller's
+  own line and the summary are not counted as teammates.
+
 ## [3.15.0] - 2026-10-29
 
 ### Changed
@@ -506,7 +527,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.15.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.16.0...HEAD
+[3.16.0]: https://github.com/roelle/agy-team/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/roelle/agy-team/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/roelle/agy-team/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/roelle/agy-team/compare/v3.12.0...v3.13.0

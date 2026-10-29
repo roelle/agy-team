@@ -42,6 +42,21 @@ def _jsonl(path: Path) -> list[dict]:
     return out
 
 
+def _epoch(ts) -> float | None:
+    """A record timestamp ("%Y-%m-%d %H:%M:%S", local time) as epoch seconds."""
+    try:
+        return time.mktime(time.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _lines(path: Path) -> list[str]:
+    try:
+        return [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except OSError:
+        return []
+
+
 def _json(path: Path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -373,6 +388,59 @@ class Record:
                               "detail": ""}
             else:
                 out[agent] = {"state": "offline", "since": None, "detail": ""}
+        return out
+
+    def load(self, now: float | None = None) -> dict[str, dict]:
+        """How busy each agent is, so work can go where there is room.
+
+        {agent: {"working": bool, "since": ts of the turn in flight or None,
+                 "waiting": waking messages not yet being worked on,
+                 "busy": {"hour": share, "day": share},
+                 "busy_s": seconds in turns, all time, "turns": all time}}
+
+        A share is the part of the window spent in turns, the turn in flight
+        included. Turns are timed from the record, so work an agent did
+        outside the supervisor (asked directly in the IDE, say) is not
+        counted.
+        """
+        from .transport import Message
+        now = time.time() if now is None else now
+        windows = {"hour": 3600.0, "day": 86400.0}
+        spans: dict[str, list[tuple[float, float]]] = {}
+        for e in self.events():
+            if e.get("event") not in ("turn", "failure") or not e.get("agent"):
+                continue
+            end, dur = _epoch(e.get("ts")), e.get("duration_s")
+            if end is None or not isinstance(dur, (int, float)) or dur <= 0:
+                continue
+            spans.setdefault(e["agent"], []).append((end - dur, end))
+        inflight = _json(self.team_dir / "inflight.json", {})
+        inflight = inflight if isinstance(inflight, dict) else {}
+        out = {}
+        for agent in self.agents():
+            done = spans.get(agent, [])
+            turn = inflight.get(agent) if isinstance(inflight.get(agent), dict) else None
+            since = turn.get("ts") if turn else None
+            start = _epoch(since)
+            live = [(start, now)] if start is not None and start < now else []
+            busy = {}
+            for name, w in windows.items():
+                lo = now - w
+                spent = sum(max(0.0, min(b, now) - max(a, lo)) for a, b in done + live)
+                busy[name] = round(min(1.0, spent / w), 3)
+            waiting = 0
+            for line in _lines(self.team_dir / "inbox" / f"{agent}.jsonl"):
+                try:
+                    m = Message.from_dict(json.loads(line))
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                # Mail older than the turn in flight is what it is working on.
+                if m.wakes and not (since and (m.ts or "") <= since):
+                    waiting += 1
+            out[agent] = {"working": bool(turn), "since": since, "waiting": waiting,
+                          "busy": busy,
+                          "busy_s": round(sum(b - a for a, b in done + live)),
+                          "turns": len(done)}
         return out
 
     def models(self) -> dict[str, dict]:

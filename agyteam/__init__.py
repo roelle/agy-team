@@ -2,4 +2,4 @@
 
 # The single source of the version: pyproject.toml reads it from here, and
 # `python -m agyteam.supervisor --version` prints it. See RELEASING.md.
-__version__ = "3.15.0"
+__version__ = "3.16.0"

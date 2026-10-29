@@ -495,6 +495,16 @@ python -m agyteam.supervisor --daemon        # stay up, react as mail arrives
 python -m agyteam.supervisor --status        # who has mail waiting, whose turn is running (read-only)
 ```
 
+**Spreading the work.** `list_teammates` says how busy each teammate is, and
+the caller too: working now or not, waking mail not yet picked up, and the
+share of the last hour and day spent in turns. It ends with where the caller
+stands ("Over the last hour you were busier than 2 of your 3 teammates"). Its
+description asks agents to balance both ways: a busy agent hands part of its
+work to a less busy teammate whose role fits, and an idle one offers the
+busiest its help. The figures come from `Record.load()`, which times the
+turns in `events.jsonl`. Work an agent does outside the supervisor, asked
+directly in the IDE for example, is not counted.
+
 Verified with real agents (`evals/test_reactive.py`, which uses a three-agent
 team of its own): one instruction to the tpm produced seven turns and this
 trace, with no inbox ever checked by hand —
@@ -1525,7 +1535,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.15.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.16.0"
 python -m agyteam.supervisor --version
 ```
 

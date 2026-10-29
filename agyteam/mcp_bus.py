@@ -84,8 +84,13 @@ TOOLS = [
          "were working. If it says more are unread, call it again.",
          {}),
     tool("list_teammates",
-         "List your teammates (persistent peers you can message) and their "
-         "roles. Workers you spawn yourself are not teammates and are not "
+         "List your teammates (persistent peers you can message), their "
+         "roles, and how busy each is, you included: working now or not, "
+         "mail waiting, and the share of the last hour and day spent in "
+         "turns. Use it to spread the work. If you are among the busiest and "
+         "part of your work fits a less busy teammate's role, hand that part "
+         "to them. If you are among the least busy, offer the busiest your "
+         "help. Workers you spawn yourself are not teammates and are not "
          "listed here.", {}),
     tool("record_review",
          "Record a verification review of a feature, change, or task. "
@@ -172,8 +177,23 @@ ADMIN_TOOLS = [
 
 
 def _list_teammates(t: Transport) -> str:
+    try:
+        from .record import Record
+        load = Record(_team_dir(t)).load()
+    except Exception:
+        load = {}
+    mates = t.teammates()
     rows = [f"- {a['name']}" + (f" (also '{a['alias']}')" if a.get("alias") else "")
-            + f": {a.get('role', '')}" for a in t.teammates()]
+            + f": {a.get('role', '')}" + _load_text(load.get(a["name"]))
+            for a in mates]
+    me, tail = getattr(t, "me", None), []
+    if load.get(me):
+        mine = load[me]["busy"]["hour"]
+        others = [load[a["name"]]["busy"]["hour"] for a in mates if a["name"] in load]
+        tail.append(f"- you ({me}){_load_text(load[me])}")
+        if others:
+            tail.append(f"Over the last hour you were busier than "
+                        f"{sum(o < mine for o in others)} of your {len(others)} teammates.")
     try:
         from . import channels
         op = roster_lib.operator(channels._roster_doc(_team_dir(t)))
@@ -181,7 +201,18 @@ def _list_teammates(t: Transport) -> str:
         op = {"name": "", "handles": []}
     handles = " or ".join(f"'{h}'" for h in op.get("handles") or [])
     who = f" -- {op['name']}; to={handles} reaches them too" if op.get("name") else ""
-    return "\n".join(rows + [f"- user: the human you work for{who}"])
+    return "\n".join(rows + [f"- user: the human you work for{who}"] + tail)
+
+
+def _load_text(load: dict | None) -> str:
+    """ -- working, 2 waiting; busy 85% of the last hour, 40% of the day"""
+    if not load:
+        return ""
+    now = "working" if load["working"] else "idle"
+    waiting = f", {load['waiting']} waiting" if load["waiting"] else ""
+    busy = load["busy"]
+    return (f" -- {now}{waiting}; busy {busy['hour']:.0%} of the last hour, "
+            f"{busy['day']:.0%} of the day")
 
 
 def _check_inbox(t: Transport) -> str:

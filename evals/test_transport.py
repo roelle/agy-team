@@ -63,7 +63,9 @@ def contract(label: str, env_for) -> tuple[int, int]:
 
     return sum([
         check("teammates listed, self excluded, user included",
-              "coder" in text_of(a_res[0]) and "tpm" not in text_of(a_res[0])
+              "coder" in text_of(a_res[0])
+              # its own load line ("- you (tpm)") is not a teammate entry
+              and not any(l.startswith("- tpm") for l in text_of(a_res[0]).splitlines())
               and "user" in text_of(a_res[0]), text_of(a_res[0])),
         # "queued", not "delivered": the message is in an inbox, and a manager
         # read "[delivered to X]" as X having received it.
