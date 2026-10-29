@@ -26,6 +26,16 @@ if [ -L "$VENV_DIR" ] && [ ! -e "$VENV_DIR" ]; then
     rm -f "$VENV_DIR"
 fi
 
+# A venv whose Python is gone -- removed by an OS upgrade, say: its links
+# dangle, `[ -f .venv/bin/python ]` reads it as missing, and a plain
+# `python3 -m venv` over it fails on the stale links. Rebuild it with --clear.
+if [ -d "$VENV_DIR" ] && [ -L "$VENV_DIR/bin/python" ] && ! "$VENV_DIR/bin/python" -c "pass" 2>/dev/null; then
+    echo "Notice: .venv's Python ($(readlink "$VENV_DIR/bin/python")) no longer runs (an OS upgrade?). Rebuilding .venv with $(python3 --version 2>&1)..."
+    python3 -m venv --clear "$VENV_DIR"
+    "$VENV_DIR/bin/python" -m pip install --upgrade pip --quiet 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install -e ".[dev]" --quiet
+fi
+
 # Create virtual environment if missing
 if [ ! -f "$VENV_DIR/bin/python" ]; then
     echo "Creating virtual environment at .venv..."

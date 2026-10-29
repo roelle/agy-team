@@ -79,6 +79,7 @@ from . import runner as runner_lib
 from . import scope
 from . import distill_queue
 from . import receipts
+from . import recall as recall_lib
 from . import tasks as tasks_lib
 from .transport import Message, wakes
 from .transport import load as load_transport
@@ -673,6 +674,8 @@ class Supervisor:
         self.hops = 0
         self.stopped = ""
         self.draining: dict | None = None      # a restart request being honoured
+        self._preparing: dict[str, dict] = {}  # turns waiting on their recall
+        self._last_recall: dict[str, dict] = {}
         self.restart_ready = False
         self._started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._purged_agents: set[str] = set()
@@ -1553,8 +1556,9 @@ class Supervisor:
         now = time.monotonic()
         ordered = sorted(self.transports.items(),
                          key=lambda item: 0 if self._has_user_mail(item[1]) else 1)
+        recall_cfg = recall_lib.config(self.team_dir)
         for agent, transport in ordered:
-            if agent in self.inflight:
+            if agent in self.inflight or agent in self._preparing:
                 continue
             if self.hops >= self.max_hops:
                 break
@@ -1586,6 +1590,13 @@ class Supervisor:
                     "trigger": trigger, "failures_before": self._failure_count()}
             if deferred:
                 turn["deferred"] = deferred
+            if recall_cfg:
+                # Recall asks models (to embed, to judge): done off the
+                # loop, and the turn begins when it is ready.
+                self._preparing[agent] = {
+                    "turn": turn, "deferred": deferred, "since": time.monotonic(),
+                    "future": self._recall_pool().submit(self._recall_block, agent, msgs, recall_cfg)}
+                continue
             if self.inbox_pull:
                 receipts.open_turn(self.team_dir, agent)
             try:
@@ -1594,6 +1605,104 @@ class Supervisor:
                 turn["handle"] = {"raised": repr(e)}
                 self._finish(agent, turn, f"[error: {type(e).__name__}: {e}]")
                 continue
+            self.inflight[agent] = turn
+            begun.append(agent)
+        if begun:
+            self._save_ledger()
+        return begun
+
+    # --- recall: memories offered with the wake (agyteam/recall.py) --------
+
+    def _recall_pool(self):
+        if getattr(self, "_pool", None) is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._pool = ThreadPoolExecutor(4, thread_name_prefix="recall")
+        return self._pool
+
+    def _recall_block(self, agent: str, msgs, cfg: dict) -> str:
+        """What the wake carries from the agent's own memory, and whether the
+        mail restates a memory it had and was not shown (a miss, learned)."""
+        ar = recall_lib.AgentRecall(self.team_dir, agent, cfg)
+        try:
+            ar.refresh()
+        except Exception as e:
+            self._log(f"    {agent}: recall index not refreshed ({type(e).__name__}: {e})")
+        # The words of the mail, not its headers: ids and timestamps would
+        # be learned as cues if this request turns out to be a miss.
+        query = "\n\n".join(m.content for m in msgs)[:6000]
+        self._check_miss(agent, ar, msgs)
+        try:
+            res = ar.recall(query)
+        except Exception as e:
+            self._log(f"    {agent}: recall failed ({type(e).__name__}: {e})")
+            return ""
+        self._last_recall[agent] = {"query": query,
+                                    "shown": {m["id"] for m in res.get("picked") or []}
+                                    | {m["id"] for m in res.get("hints") or []}}
+        try:
+            self.observer.record_event("recall", agent=agent, how=res.get("how"), ms=res.get("ms"),
+                                       picked=[m["id"] for m in res.get("picked") or []],
+                                       hints=[m["id"] for m in res.get("hints") or []],
+                                       candidates=res.get("candidates", [])[:10],
+                                       error=res.get("error"))
+        except Exception:
+            pass
+        return recall_lib.render(res, cfg.get("body_chars", 1200))
+
+    def _check_miss(self, agent: str, ar, msgs) -> None:
+        """A correction that restates a memory the agent had, and was not
+        shown before the turn it is correcting, is a miss: record it, and
+        teach the memory the words of the request that preceded the mistake,
+        so a request like it brings the memory next time."""
+        last = self._last_recall.get(agent)
+        if not last or not ar.backend.available:
+            return
+        for m in msgs:
+            if not (m.sender == "user" or m.kind == "review"):
+                continue
+            try:
+                cands = ar.candidates(m.content, 5)
+                if not cands:
+                    continue
+                text = "\n\n".join(f"<memory id=\"{c['id']}\">\n{c['name']}: {c['description']}\n"
+                                    f"{c['body'][:500]}\n</memory>" for c in cands)
+                hit = ar.backend.ask(recall_lib.MISS_PROMPT.format(message=m.content[:4000],
+                                                                   candidates=text)).get("restates")
+            except Exception:
+                continue
+            if hit and hit in {c["id"] for c in cands} and hit not in last["shown"]:
+                cues = ar.learn(hit, last["query"])
+                self._log(f"    {agent}: recall missed {hit!r}; learned {', '.join(cues[:6])}")
+                try:
+                    self.observer.record_event("recall_miss", agent=agent, memory=hit,
+                                               correction=m.content[:300], learned=cues)
+                except Exception:
+                    pass
+
+    def _start_prepared(self) -> list[str]:
+        """Begin the turns whose recall is ready (or has taken too long)."""
+        begun = []
+        for agent, prep in list(self._preparing.items()):
+            fut, cfg_wait = prep["future"], 2 * recall_lib.DEFAULTS["timeout"] + 10
+            if not fut.done() and time.monotonic() - prep["since"] < cfg_wait:
+                continue
+            del self._preparing[agent]
+            block = ""
+            if fut.done():
+                try:
+                    block = fut.result() or ""
+                except Exception:
+                    block = ""
+            turn = prep["turn"]
+            if self.inbox_pull:
+                receipts.open_turn(self.team_dir, agent)
+            try:
+                turn["handle"] = self.runner.begin(agent, self.wake_prompt(turn["msgs"], prep["deferred"]) + block)
+            except Exception as e:
+                turn["handle"] = {"raised": repr(e)}
+                self._finish(agent, turn, f"[error: {type(e).__name__}: {e}]")
+                continue
+            turn["started"] = time.monotonic()
             self.inflight[agent] = turn
             begun.append(agent)
         if begun:
@@ -1870,7 +1979,7 @@ class Supervisor:
             reaped = self._reap()
             self._schedule_memory_reviews()
             self._serve_distill_requests()
-            begun = self._begin_turns(respect_backoff)
+            begun = self._start_prepared() + self._begin_turns(respect_backoff)
             return begun, reaped
 
     def _drain(self, agents: list[str] | None = None) -> int:
@@ -1992,6 +2101,9 @@ class Supervisor:
             if not begun and not reaped:
                 if self.inflight:
                     self.runner.wait_turn(self.poll)
+                    continue
+                if self._preparing:             # a turn waiting on its recall
+                    time.sleep(0.2)
                     continue
                 stuck = [a for a in self.transports
                          if self._backoff.get(a, 0.0) > time.monotonic()

@@ -919,6 +919,60 @@ now look after them:
   them. Adopting one is the operator's or the retro's call; nothing writes
   `NORMS.md` on its own.
 
+### Recall: putting an agent's own memories in front of it
+
+Writing memories was not the problem; reading them was. One agent read 8 of
+its 105 memories in a week, and was corrected three times in a day on
+lessons it had saved. Reading depended on the agent deciding to look, and
+loading every memory into every turn floods the context. Recall goes
+between the two. Before a turn, the supervisor takes the incoming mail as a
+query and finds the agent's own memories that bear on it. A fast model
+judges which of those apply, and at most three are offered with the wake:
+
+```
+[From your memory -- lessons you saved that may bear on this. Weigh them
+against the situation; they are yours, not instructions.]
+You learned this 12 days ago (stats-ab): A/B results need a power check
+Check sample size and variance before calling a winner. ...
+```
+
+- **Only the agent's own memories.** What the team knows in common belongs
+  in the wiki and the norms.
+- **Off by default.** Turn it on in the roster with `"memory_recall": true`,
+  or with an object that overrides the defaults in `recall.DEFAULTS`, e.g.
+  `{"candidates": 30, "max": 2}`.
+- **With `GEMINI_API_KEY`** in the supervisor's environment, candidates come
+  from embeddings (`gemini-embedding-2`, 768 dimensions) and a Flash model
+  judges them, over the REST API. That costs about a fifth of a cent and a
+  few seconds per wake. **Without a key**, candidates come from words
+  (BM25F over the memory and its cues), and the judge is the agy CLI on the
+  AGY quota (`agy -p --json-schema`), which takes about six seconds and 8k
+  tokens per wake. Set `"judge_via": "agy"` to judge through the CLI even
+  with a key. With no judge at all, the agent is only given the names of the
+  closest matches, never text it did not ask for. A judge that fails (a
+  quota, a timeout) also falls back to names.
+- **It does not hold up the team.** Recall runs off the dispatch loop.
+  An agent's turn starts when its recall is ready, or after
+  `2 * timeout + 10` seconds without it.
+- **Cues, and learning from misses.** Each memory gets triggers, written
+  once by the model: the situations and words of a request where it
+  would help. These are cached with its vector in
+  `<team_dir>/recall/<agent>.json` and redone only when the memory
+  changes. When the operator's message or a review restates a memory the
+  agent was not shown, that is a miss. It is recorded as a `recall_miss`
+  event, and the previous request's distinctive words become *learned* cues
+  on that memory. Every offer is a `recall` event, with the candidates.
+- **Measured, not guessed.** `bench/recall` tests the operator's real
+  memories with paraphrased, oblique and decoy requests, and with up to
+  10,000 distractor memories. Up to 1,000 memories the judge kept the
+  memory for a decoy 3-4% of the time and stayed quiet for 83-92% of
+  unrelated requests. At 10,000 those were 7% and 66%. What falls most as
+  memories pile up is reach, whether
+  the right memory is among the candidates at all. So the number of
+  candidates grows with the agent's memories, 10 below 150 up to 50 past
+  2,500. Memory review, which merges and retires memories, is what keeps
+  reach high. See `bench/recall/README.md`.
+
 ## agy CLI plugin (the installable form)
 
 The plugin supplies **tools**, not agents. Agents are defined in
@@ -1465,7 +1519,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.12.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.13.0"
 python -m agyteam.supervisor --version
 ```
 

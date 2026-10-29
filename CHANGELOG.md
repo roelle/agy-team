@@ -7,6 +7,29 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-10-29
+
+### Added
+- **Recall: an agent's own memories are put in front of it, per turn.**
+  Agents saved good memories and did not read them back. Now, before a
+  turn, the incoming mail is the query: candidates come from embeddings
+  (with `GEMINI_API_KEY`) or from words and cues (without one). A Flash
+  judge, through the API or the agy CLI, picks at most three that apply.
+  They come with the wake as "You learned this N days ago (id): ...".
+  Without a judge, only names are offered. Recall prepares off the dispatch
+  loop and never holds up another agent. A correction that restates a
+  memory the agent was not shown is a `recall_miss`, and teaches that
+  memory the missed request's words. Off by default: `"memory_recall": true`
+  in the roster. See "Recall" in the README and `bench/recall/`, which
+  measured it on real memories with up to 10,000 distractors.
+- `bench/recall/`: the recall benchmark. Its data stays outside the
+  repository.
+
+### Fixed
+- **`./run` with a stale virtual environment.** After the system Python was
+  upgraded (3.12 to 3.14), `.venv/bin/python` pointed at nothing, and `./run`
+  failed. It now notices and rebuilds the environment.
+
 ## [3.12.0] - 2026-10-28
 
 ### Changed
