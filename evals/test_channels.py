@@ -101,6 +101,74 @@ def test_a_woken_agent_reads_everything_unread_not_just_the_mention(team):
     assert inbox("coder") == []                    # all of it was delivered and read
 
 
+# --- members every post wakes ----------------------------------------------------
+
+def test_a_channel_can_wake_a_member_on_every_post(team):
+    actions.set_channel_wake(team, "billing", ["qa"])
+    r = actions.post(team, "billing", "the March invoices look off", author="matt")
+    assert r["woke"] == ["qa"]
+    assert [m.wakes for m in inbox("qa")] == [True]
+    assert [m.wakes for m in inbox("coder")] == [False]
+    runner = Recording()
+    step(runner)
+    assert runner.woken == ["qa"]
+    entry = json.loads((team / "bus.jsonl").read_text().splitlines()[-1])
+    assert "mentions" not in entry, "being woken by every post is not a mention"
+
+
+def test_an_agents_post_wakes_the_listener_but_never_its_author(team):
+    actions.set_channel_wake(team, "billing", ["coder", "qa"])
+    coder = FileTransport("coder")
+    try:
+        r = channels.post(coder, team, "billing", "allocate is fixed, please document it")
+    finally:
+        coder.close()
+    assert r["woke"] == ["qa"] and inbox("coder") == []
+    assert [m.wakes for m in inbox("qa")] == [True]
+
+
+def test_quiet_kinds_wake_no_listener(team):
+    actions.set_channel_wake(team, "billing", ["qa"])
+    r = actions.post(team, "billing", "fyi: invoices run tonight", kind="fyi", author="matt")
+    assert r["woke"] == [] and [m.wakes for m in inbox("qa")] == [False]
+
+
+def test_only_members_can_be_woken_by_every_post(team):
+    with pytest.raises(actions.OperatorError, match="not in #billing: tpm"):
+        actions.set_channel_wake(team, "billing", ["tpm"])
+    actions.set_channel_wake(team, "billing", ["qa"])
+    actions.set_members(team, "billing", remove=["qa"])
+    assert "wake" not in channels.load(team)["billing"]
+    actions.set_channel_wake(team, "billing", ["coder"])
+    actions.set_channel_wake(team, "billing", [])
+    assert "wake" not in channels.load(team)["billing"]
+
+
+def test_list_channels_says_who_every_post_wakes(team):
+    actions.set_channel_wake(team, "billing", ["qa"])
+    for me, says in (("coder", "every post wakes qa"), ("qa", "every post wakes you")):
+        t = FileTransport(me)
+        try:
+            assert says in mcp_bus._list_channels(t)
+        finally:
+            t.close()
+
+
+def test_a_transport_without_the_wake_list_still_wakes_listeners(team):
+    class Old(FileTransport):
+        def post(self, channel, members, content, kind="work", mentioned=None,
+                 task_id=None, thread=None, author=None):
+            return super().post(channel, members, content, kind=kind, mentioned=mentioned,
+                                task_id=task_id, thread=thread, author=author)
+    actions.set_channel_wake(team, "billing", ["qa"])
+    t = Old("user")
+    try:
+        channels.post(t, team, "billing", "anything", author="matt")
+    finally:
+        t.close()
+    assert [m.wakes for m in inbox("qa")] == [True]
+
+
 def test_here_wakes_the_channel_and_all_wakes_the_team(team):
     actions.post(team, "billing", "@here standup in 5", author="matt")
     assert {n for n in AGENTS if any(not m.quiet for m in inbox(n))} == {"coder", "qa"}

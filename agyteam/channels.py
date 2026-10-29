@@ -13,6 +13,11 @@ then it is read with everything else unread. So a busy channel costs no
 turns, and a woken agent still sees what was said in its channels while it
 was away.
 
+A channel can also name members that every post wakes, mention or not
+(its "wake" list): an agent that owns a channel's work -- docs in #docs --
+picks up whatever is posted there. A post never wakes its own author, and
+quiet kinds (fyi, status, ack) wake nobody.
+
 A thread is the id of the message it hangs off; replies carry it.
 
 Membership lives in <team_dir>/channels.json. A team with no channels file
@@ -28,6 +33,7 @@ and restored. Deleting one is archiving it and hiding its history from
 clients: its messages stay in bus.jsonl, which is the team's record, and a
 deleted name cannot be reused until it is restored.
 """
+import inspect
 import json
 import os
 import re
@@ -37,6 +43,7 @@ from pathlib import Path
 
 from . import filelock
 from . import roster as roster_lib
+from .transport import wakes
 
 FILE = "channels.json"
 DEFAULT = "general"
@@ -163,7 +170,28 @@ def set_members(team_dir, name: str, add=(), remove=(),
             chans[name].pop("everyone", None)
         members = (set(chans[name].get("members", [])) | set(add)) - set(remove)
         chans[name]["members"] = sorted(members)
+        wake = set(chans[name].pop("wake", None) or ()) & members
+        if wake:                            # only members are woken by every post
+            chans[name]["wake"] = sorted(wake)
         return chans[name]["members"]
+    return _edit(team_dir, do)
+
+
+def set_wake(team_dir, name: str, agents) -> list[str]:
+    """Which members every post to the channel wakes, mention or not."""
+    agents = sorted(set(agents or ()))
+
+    def do(chans):
+        if name not in chans:
+            raise ChannelError(f"no channel #{name}")
+        outside = [a for a in agents if a not in chans[name].get("members", [])]
+        if outside:
+            raise ChannelError(f"not in #{name}: {', '.join(outside)}; add them first")
+        if agents:
+            chans[name]["wake"] = agents
+        else:
+            chans[name].pop("wake", None)
+        return agents
     return _edit(team_dir, do)
 
 
@@ -282,10 +310,19 @@ def post(transport, team_dir, channel: str, content: str, kind: str = "work",
     doc = _roster_doc(team_dir)
     roster = _roster_agents(team_dir)
     named = mentioned(content, chan_members, roster, roster_lib.aliases(doc)) - {who}
-    woke = named - {"user"}
+    listening = (set(load(team_dir).get(chan, {}).get("wake") or ()) & set(chan_members)) - {who}
+    woke = (named - {"user"}) | listening
     recipients = sorted((set(chan_members) | woke) - {who, "user"})
-    post_id = transport.post(chan, recipients, content, kind=kind, mentioned=named,
-                             task_id=task_id, thread=thread, author=author)
+    if "wake" in inspect.signature(transport.post).parameters:
+        post_id = transport.post(chan, recipients, content, kind=kind, mentioned=named,
+                                 task_id=task_id, thread=thread, author=author,
+                                 wake=listening)
+    else:                       # a transport from before the wake list
+        post_id = transport.post(chan, recipients, content, kind=kind,
+                                 mentioned=named | listening,
+                                 task_id=task_id, thread=thread, author=author)
+    if not wakes(kind):
+        woke = set()
     return {"id": post_id, "channel": chan, "woke": sorted(woke),
             "delivered_to": recipients, "mentions_user": "user" in named}
 

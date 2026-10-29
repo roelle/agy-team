@@ -72,7 +72,8 @@ TOOLS = [
           "task_id": string("The task this is about, if any")},
          ["channel", "content"]),
     tool("list_channels",
-         "List the channels you are in, with their members and topics.", {}),
+         "List the channels you are in, with their members and topics, and "
+         "who every post there wakes without a mention.", {}),
     tool("broadcast",
          "Send one message to every teammate at once. Use sparingly — for "
          "announcements, not for delegating work (delegate by name instead).",
@@ -651,7 +652,16 @@ def _list_channels(t: Transport) -> str:
     if not mine:
         return "[you are in no channels]"
     return "\n".join(f"- #{n}: {', '.join(c.get('members', []))}"
-                     + (f" -- {c['topic']}" if c.get("topic") else "") for n, c in mine)
+                     + (f" -- {c['topic']}" if c.get("topic") else "")
+                     + _wake_text(c.get("wake"), t.me) for n, c in mine)
+
+
+def _wake_text(wake, me: str) -> str:
+    """ (every post wakes docs, no mention needed)"""
+    if not wake:
+        return ""
+    names = ["you" if a == me else a for a in wake]
+    return f" (every post wakes {', '.join(names)}, no mention needed)"
 
 
 def _resolve_deliverable(raw: str, team_dir: Path) -> Path | None:

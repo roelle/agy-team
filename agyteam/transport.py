@@ -176,20 +176,22 @@ class Transport(ABC):
 
     def post(self, channel: str, members: list[str], content: str, kind: str = "work",
              mentioned: set[str] | None = None, task_id: str | None = None,
-             thread: str | None = None, author: str | None = None) -> str:
-        """Post to a channel: one copy to each member, quiet unless mentioned.
+             thread: str | None = None, author: str | None = None,
+             wake: set[str] | None = None) -> str:
+        """Post to a channel: one copy to each member, quiet unless mentioned
+        or in `wake` (the members every post to the channel wakes).
 
         The default delivers per member through send(), so any transport can
         carry a channel post; a transport with a log of its own (the file
         transport) overrides it to record the post once. Returns the post's
         id when the transport assigns one, else ''.
         """
-        mentioned = mentioned or set()
+        waking = (mentioned or set()) | (wake or set())
         for name in members:
             if name == self.me:
                 continue
             meta = {"channel": channel, "thread": thread, "author": author,
-                    "quiet": name not in mentioned}
+                    "quiet": name not in waking}
             try:
                 self.send(name, content, kind=kind, task_id=task_id, **meta)
             except TypeError:

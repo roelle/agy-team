@@ -147,10 +147,13 @@ class FileTransport(Transport):
 
     def post(self, channel: str, members: list[str], content: str, kind: str = "work",
              mentioned: set[str] | None = None, task_id: str | None = None,
-             thread: str | None = None, author: str | None = None) -> str:
+             thread: str | None = None, author: str | None = None,
+             wake: set[str] | None = None) -> str:
         """The post is logged to bus.jsonl once, addressed to '#<channel>';
-        each member's inbox gets a copy, quiet unless they were mentioned."""
+        each member's inbox gets a copy, quiet unless they were mentioned or
+        are in `wake` (members every post to the channel wakes)."""
         mentioned = mentioned or set()
+        waking = mentioned | (wake or set())
         thread = self._thread_root(thread)
         entry = self._entry(self.me, f"#{channel}", content, kind, task_id,
                             channel=channel, thread=thread, author=author)
@@ -163,7 +166,7 @@ class FileTransport(Transport):
                 continue
             copy = dict(entry, to=name)
             copy.pop("mentions", None)
-            if name not in mentioned:
+            if name not in waking:
                 copy["quiet"] = True
             inbox = self._inbox(name)
             with filelock.locked(inbox):

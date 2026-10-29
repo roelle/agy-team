@@ -1095,6 +1095,17 @@ has an `id`; a reply passes `thread=<id>` (direct messages too), and agents
 see the ids on what they receive. The post is logged to `bus.jsonl` once,
 addressed to `#<channel>`, with its mentions.
 
+**A channel can also wake some members on every post**, mention or not:
+its `wake` list (`actions.set_channel_wake(team_dir, "docs", ["docs"])`). It
+suits an agent that owns a channel's work. Anything posted to `#docs` reaches
+the docs agent, so an engineer hands off documentation just by posting there.
+Only members can be on the list, and removing a member takes them off it. A
+post never wakes its own author, and quiet kinds (`fyi`, `status`, `ack`) wake
+nobody. `list_channels` tells agents who every post wakes. Two agents on one
+channel's list can wake each other back and forth. The hop budget bounds
+that, but one owner per channel is the usual setup. Direct messages always
+wake, as before.
+
 A channel created with `everyone` (`actions.create_channel(..., everyone=True)`)
 has the whole roster as members and keeps it: an agent added later is in it.
 Removing someone from it makes its member list explicit.
@@ -1535,7 +1546,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.16.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.17.0"
 python -m agyteam.supervisor --version
 ```
 

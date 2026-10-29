@@ -7,6 +7,25 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-29
+
+### Added
+- **Channels can wake some members on every post.** A channel's `wake` list
+  names members that every post wakes, mention or not. Set it with
+  `actions.set_channel_wake(team_dir, channel, agents)`. It suits an agent
+  that owns a channel's work, such as a docs agent in `#docs`, so a teammate
+  hands work off by posting there. Only members can be on it, and removing
+  a member takes them off it. A post never wakes its author, and quiet kinds
+  wake nobody. `list_channels` says who every post wakes ("every post wakes
+  you" to that agent). Agent posts and thread replies wake the list too.
+- `Transport.post` takes `wake`, the members to wake besides those
+  mentioned. They are not recorded as mentions. A transport whose `post`
+  lacks the parameter still works: they are passed as mentioned.
+
+### Fixed
+- A channel post of a quiet kind (`fyi`, `status`, `ack`) no longer
+  reports the agents it mentions under `woke`: it wakes nobody.
+
 ## [3.16.0] - 2026-10-29
 
 ### Added
@@ -527,7 +546,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.16.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.17.0...HEAD
+[3.17.0]: https://github.com/roelle/agy-team/compare/v3.16.0...v3.17.0
 [3.16.0]: https://github.com/roelle/agy-team/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/roelle/agy-team/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/roelle/agy-team/compare/v3.13.0...v3.14.0

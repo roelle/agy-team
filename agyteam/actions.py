@@ -121,6 +121,15 @@ def set_members(team_dir, name: str, add=(), remove=(),
         raise OperatorError(str(e)) from None
 
 
+def set_channel_wake(team_dir, name: str, agents=()) -> list[str]:
+    """Which members of a channel every post to it wakes, mention or not."""
+    _guard()
+    try:
+        return channels_lib.set_wake(team_dir, name, agents)
+    except channels_lib.ChannelError as e:
+        raise OperatorError(str(e)) from None
+
+
 def set_topic(team_dir, name: str, topic: str) -> None:
     _guard()
     try:
