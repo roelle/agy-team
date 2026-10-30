@@ -963,7 +963,23 @@ Check sample size and variance before calling a winner. ...
   (BM25F over the memory and its cues), and the judge is the agy CLI on the
   AGY quota (`agy -p --json-schema`), which takes about six seconds and 8k
   tokens per wake. Set `"judge_via": "agy"` to judge through the CLI even
-  with a key. With no judge at all, the agent is only given the names of the
+  with a key.
+- **Your own judge.** With a model SDK but neither a key nor the agy CLI,
+  set `"judge_via"` to a command's argv, e.g.
+  `["/usr/bin/python3", "/opt/team/judge.py"]`. The prompt arrives on its
+  stdin; it prints the model's JSON answer to stdout, in a ```` ```json ````
+  fence or as its last line if it logs anything else. A nonzero exit is a
+  failure. It runs in an empty directory, so give absolute paths, and
+  inherits the supervisor's environment. Each call may take up to
+  `3 * timeout` seconds. A minimal adapter:
+
+  ```python
+  import sys
+  prompt = sys.stdin.read()
+  print(ask_my_model(prompt))   # your SDK call; the prompt asks for JSON
+  ```
+
+  With no judge at all, the agent is only given the names of the
   closest matches, never text it did not ask for. A judge that fails (a
   quota, a timeout) also falls back to names.
 - **It does not hold up the team.** Recall runs off the dispatch loop.
@@ -1546,7 +1562,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.17.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.18.0"
 python -m agyteam.supervisor --version
 ```
 

@@ -230,12 +230,58 @@ def test_an_agy_quota_error_falls_back_to_names_not_silence(team, tmp_path, monk
     assert not res["picked"] and [m["id"] for m in res["hints"]] == ["stats-ab"]
 
 
+def judge_script(tmp_path, body):
+    """A judge command: a Python script given the prompt on stdin."""
+    script = tmp_path / "judge.py"
+    script.write_text("import sys\nprompt = sys.stdin.read()\n" + body)
+    return [sys.executable, str(script)]
+
+
+def test_the_judge_can_be_a_command_of_your_own(team, tmp_path, monkeypatch):
+    """No API key and no agy CLI, but a model SDK: "judge_via" is an argv,
+    the prompt goes to its stdin, and its stdout is the answer."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    argv = judge_script(tmp_path, (
+        "open(sys.argv[1], 'w').write(prompt)\n"
+        "print('loading the model...')\n"
+        "print('```json')\n"
+        "print('{\"apply\": [\"stats-ab\"]}' if 'stats-ab' in prompt else '{}')\n"
+        "print('```')\n"))
+    seen = tmp_path / "prompt.txt"
+    cfg = {**recall.DEFAULTS, "judge_via": [*argv, str(seen)]}
+    b = recall.backend_for(cfg)
+    assert isinstance(b.judge, recall.CommandJudge) and b.available and not b.can_embed
+    save(team, "coder", "stats-ab", "A/B results need a power check", "Check sample size and variance.")
+    res = recall.AgentRecall(team, "coder", cfg).recall("is the variance too high for this sample?")
+    assert [m["id"] for m in res["picked"]] == ["stats-ab"] and res["how"] == "words+judge"
+    assert "is the variance too high" in seen.read_text(), "the prompt did not reach stdin"
+
+
+def test_a_failing_judge_command_falls_back_to_names(team, tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    argv = judge_script(tmp_path, "sys.exit('no credentials for the SDK')\n")
+    cfg = {**recall.DEFAULTS, "judge_via": argv}
+    with pytest.raises(RuntimeError, match="no credentials"):
+        recall.backend_for(cfg).ask("anything")
+    save(team, "coder", "stats-ab", "A/B results need a power check", "Check sample size and variance.")
+    res = recall.AgentRecall(team, "coder", cfg).recall("is the variance too high for this sample?")
+    assert not res["picked"] and [m["id"] for m in res["hints"]] == ["stats-ab"]
+
+
+def test_a_judge_command_that_is_not_there_is_no_judge(team, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    for via in (["/no/such/judge"], [], ["python3", 7]):
+        assert not recall.backend_for({**recall.DEFAULTS, "judge_via": via}).available, via
+
+
 def test_with_a_key_the_api_embeds_and_judges_unless_told_to_judge_with_agy(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
     b = recall.backend_for({**recall.DEFAULTS})
     assert isinstance(b.judge, recall.Gemini) and b.can_embed
     b = recall.backend_for({**recall.DEFAULTS, "judge_via": "agy"})
     assert isinstance(b.judge, recall.AgyJudge) and b.can_embed
+    b = recall.backend_for({**recall.DEFAULTS, "judge_via": ["/bin/cat"]})
+    assert isinstance(b.judge, recall.CommandJudge) and b.can_embed, "a key still embeds"
 
 
 def test_more_memories_get_more_candidates_unless_the_roster_says_how_many(team):

@@ -297,6 +297,51 @@ class AgyJudge:
         return _as_object(ans)
 
 
+class CommandJudge:
+    """Short JSON answers from a command of your own: "judge_via" set to an
+    argv list, e.g. ["/usr/bin/python3", "/opt/judge.py"]. For a team with
+    a model SDK but neither an API key nor the agy CLI. The prompt goes to
+    the command's stdin; its stdout is the JSON answer (in a ```json fence,
+    or on the last line, if it logs anything else).
+    A nonzero exit is a failure, which falls back to names. It runs in an
+    empty directory, so give absolute paths. It cannot embed."""
+
+    def __init__(self, cfg: dict):
+        import shutil
+        self.cfg = cfg
+        via = cfg.get("judge_via")
+        self.argv = [os.path.expanduser(a) for a in via] if (
+            isinstance(via, list) and via and all(isinstance(a, str) and a for a in via)) else []
+        self.binary = shutil.which(self.argv[0]) if self.argv else None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.binary)
+
+    def embed(self, texts, task):
+        raise RuntimeError("a judge command does not embed")
+
+    def ask(self, prompt: str) -> dict:
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run([self.binary, *self.argv[1:]], input=prompt, cwd=d,
+                               capture_output=True, text=True,
+                               timeout=3 * self.cfg.get("timeout", 20))
+        if r.returncode:
+            tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"judge command exited {r.returncode}: {tail[0][:200]}")
+        out = r.stdout.strip()
+        if out.count("```") >= 2:                 # the last fenced block
+            out = out.rsplit("```", 2)[1].split("\n", 1)[-1].strip()
+        for text in (out, *reversed(out.splitlines())):
+            try:
+                return _as_object(json.loads(text))
+            except ValueError:
+                continue
+        raise RuntimeError(f"judge command printed no JSON: {out[-200:]!r}")
+
+
 class _Pair:
     """An embedder and a judge as one backend: embed() from the first,
     ask() from the second."""
@@ -323,10 +368,13 @@ class _Pair:
 
 def backend_for(cfg: dict):
     """Embeddings from the API when a key is set. The judge: "api" (needs the
-    key), "agy" (the agy CLI), or "auto" -- the API with a key, else agy."""
+    key), "agy" (the agy CLI), a command's argv (CommandJudge), or "auto" --
+    the API with a key, else agy."""
     api = Gemini(cfg)
     via = cfg.get("judge_via", "auto")
-    if via == "api" or (via == "auto" and api.available):
+    if isinstance(via, list):
+        judge = CommandJudge(cfg)
+    elif via == "api" or (via == "auto" and api.available):
         judge = api
     else:
         judge = AgyJudge(cfg)

@@ -7,6 +7,19 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-29
+
+### Added
+- **Recall's judge can be a command of your own.** Set the roster's
+  `memory_recall.judge_via` to an argv list, e.g.
+  `["/usr/bin/python3", "/opt/team/judge.py"]`, for a team that has a model
+  SDK but neither `GEMINI_API_KEY` nor the agy CLI. Before this, such a team
+  had no judge, and recall offered only names. The prompt goes to the
+  command's stdin, and its stdout is the JSON answer (fenced, or on the last
+  line). A nonzero exit or no JSON falls back to names, as a failed judge
+  does. It runs in an empty directory with the supervisor's environment.
+  The same command writes memory cues and spots recall misses.
+
 ## [3.17.0] - 2026-10-29
 
 ### Added
@@ -546,7 +559,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.17.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.18.0...HEAD
+[3.18.0]: https://github.com/roelle/agy-team/compare/v3.17.0...v3.18.0
 [3.17.0]: https://github.com/roelle/agy-team/compare/v3.16.0...v3.17.0
 [3.16.0]: https://github.com/roelle/agy-team/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/roelle/agy-team/compare/v3.14.0...v3.15.0
