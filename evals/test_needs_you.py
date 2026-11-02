@@ -13,6 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from agyteam import actions  # noqa: E402
 from agyteam import tasks as tl  # noqa: E402
 from agyteam.record import Record  # noqa: E402
 from agyteam.transport import load as load_transport  # noqa: E402
@@ -26,6 +27,7 @@ def team(tmp_path, monkeypatch):
         "operator": {"name": "matt", "handles": ["mattr"]},
         "agents": [{"name": "coder", "role": "builds"}, {"name": "qa", "role": "reviews"}]}))
     monkeypatch.setenv("AGYTEAM_TEAM_DIR", str(td))
+    monkeypatch.delenv("AGYTEAM_AGENT", raising=False)
     return td
 
 
@@ -109,6 +111,58 @@ def test_a_stopped_team_comes_first(team):
     (team / ".stop").write_text("the operator stopped it")
     rows = Record(team).needs_you()
     assert rows[0]["kind"] == "stopped" and rows[0]["reason"] == "the operator stopped it"
+
+
+def event(team, name, agent):
+    with (team / "events.jsonl").open("a") as f:
+        f.write(json.dumps({"ts": "2026-11-02 12:00:00", "event": name, "agent": agent}) + "\n")
+
+
+def test_a_notice_can_be_cleared_though_nothing_can_answer_it(team):
+    """Reported: notices piled up, with no one to reply to and no other way."""
+    send("supervisor", "user", "Moved a roster change back.", kind="blocker")
+    send("coder", "user", "Which database?", kind="question")
+    rows = Record(team).needs_you()
+    notice = next(r for r in rows if r["from"] == "supervisor")
+    assert actions.clear_waiting(team, ids=[notice["id"]], by="matt") == 1
+    assert [r["from"] for r in Record(team).needs_you()] == ["coder"]
+    assert "Moved a roster" in Record(team).messages(dm=("supervisor", "user"), include_plumbing=True)[0]["content"]
+
+
+def test_all_notices_clear_at_once_and_questions_stay(team):
+    for n in range(3):
+        send("supervisor", "user", f"Notice {n}", kind="blocker")
+    send("coder", "user", "Which database?", kind="question")
+    assert actions.clear_waiting(team, sender="supervisor") == 3
+    assert [r["from"] for r in Record(team).needs_you()] == ["coder"]
+    assert actions.clear_waiting(team, sender="supervisor") == 0
+
+
+def test_a_question_can_be_cleared_without_waking_the_agent(team):
+    send("coder", "user", "Still want this?", kind="question")
+    before = (team / "inbox" / "coder.jsonl").exists()
+    actions.clear_waiting(team, ids=[Record(team).needs_you()[0]["id"]])
+    assert kinds(team) == []
+    assert (team / "inbox" / "coder.jsonl").exists() == before
+
+
+def test_clearing_only_touches_what_is_waiting(team):
+    assert actions.clear_waiting(team, ids=["nope"]) == 0
+    assert not (team / "cleared.jsonl").read_text()
+
+
+def test_a_failure_notice_goes_when_the_agent_recovers(team):
+    event(team, "failure", "coder")
+    bus = load_transport("supervisor")
+    bus.send_kind("user", "coder has failed 3 turns in a row.", kind="blocker", failing="coder")
+    bus.close()
+    assert kinds(team) == ["blocker"]
+    event(team, "failure", "coder")
+    assert kinds(team) == ["blocker"]
+    event(team, "turn", "qa")
+    assert kinds(team) == ["blocker"], "someone else's turn says nothing about coder"
+    event(team, "turn", "coder")
+    assert kinds(team) == []
 
 
 def test_rows_from_both_clocks_sort_together(team):

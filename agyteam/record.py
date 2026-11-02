@@ -25,6 +25,9 @@ from . import channels as channels_lib
 #: Supervisor plumbing: messages a person does not need in the stream.
 PLUMBING_SENDERS = {"supervisor"}
 
+#: Messages a person took off Waiting on you without replying, one per line.
+CLEARED = "cleared.jsonl"
+
 
 def _jsonl(path: Path) -> list[dict]:
     try:
@@ -368,7 +371,8 @@ class Record:
         Only those kinds of message count, not ordinary mail: whether a
         report is really a question is not something to guess from its text.
         A reply from the operator in the same conversation or thread clears
-        a message.
+        a message, and so does actions.clear_waiting. A notice that an agent
+        is failing (its "failing" field) clears once that agent's turn works.
         """
         from . import tasks as tasks_lib
         rows = []
@@ -378,6 +382,8 @@ class Record:
         operator = self.operator()
         names = {"user", operator.get("name"), *operator.get("handles", [])} - {"", None}
         replied: dict[tuple, int] = {}          # by place in the log: ts is to the second
+        cleared = {r.get("id") for r in _jsonl(self.team_dir / CLEARED)}
+        last_turn = self._last_turns()
         waiting = []
         for n, m in enumerate(self.bus()):
             sender = m.get("from")
@@ -394,7 +400,9 @@ class Record:
             keys = [("thread", m["thread"])] if m.get("thread") else [where]
             if m.get("id"):
                 keys.append(("thread", m["id"]))
-            if any(replied.get(k, -1) > n for k in keys):
+            if any(replied.get(k, -1) > n for k in keys) or m.get("id") in cleared:
+                continue
+            if last_turn.get(m.get("failing"), {}).get("event") == "turn":
                 continue
             rows.append({"kind": m["kind"], "ts": m.get("ts") or "", "id": m.get("id"),
                          "from": m.get("from"), "content": m.get("content"),
@@ -412,6 +420,14 @@ class Record:
                 rows.append({"kind": "stuck", "owner": t.get("owner"), **row})
         return sorted(rows, key=lambda r: _epoch(r["ts"]) or 0)
 
+    def _last_turns(self) -> dict[str, dict]:
+        """{agent: its latest "turn" or "failure" event}."""
+        last: dict[str, dict] = {}
+        for e in self.events():
+            if e.get("event") in ("turn", "failure") and e.get("agent"):
+                last[e["agent"]] = e
+        return last
+
     def presence(self) -> dict[str, dict]:
         """{agent: {"state", "since", "detail"}}.
 
@@ -424,10 +440,7 @@ class Record:
         held = set((running or {}).get("held") or [])
         hops = (running or {}).get("hops") or {}
         inflight = _json(self.team_dir / "inflight.json", {})
-        last: dict[str, dict] = {}
-        for e in self.events():
-            if e.get("event") in ("turn", "failure") and e.get("agent"):
-                last[e["agent"]] = e
+        last = self._last_turns()
         out = {}
         for agent in self.agents():
             if isinstance(inflight, dict) and agent in inflight:

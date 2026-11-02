@@ -7,6 +7,17 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-11-02
+
+### Added
+- **Waiting on you can be cleared.** Supervisor notices had nobody to reply to,
+  so they stayed on the list for good. `actions.clear_waiting` takes messages
+  off the list without replying, recorded in `cleared.jsonl` in the team
+  directory. The message stays where it was sent, and an agent whose question is
+  cleared is not told. agy-chat 0.20.0 gives this a button.
+- A notice that an agent keeps failing clears itself once that agent's turn
+  works. It carries the new message field `failing`.
+
 ## [3.24.0] - 2026-11-01
 
 ### Changed
@@ -643,7 +654,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.24.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.25.0...HEAD
+[3.25.0]: https://github.com/roelle/agy-team/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/roelle/agy-team/compare/v3.23.0...v3.24.0
 [3.23.0]: https://github.com/roelle/agy-team/compare/v3.22.0...v3.23.0
 [3.22.0]: https://github.com/roelle/agy-team/compare/v3.21.0...v3.22.0

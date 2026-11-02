@@ -1906,7 +1906,7 @@ class Supervisor:
         try:
             bus = load_transport("supervisor")
             try:
-                bus.send_kind(to, text, kind="blocker")
+                bus.send_kind(to, text, kind="blocker", failing=agent)
             finally:
                 if hasattr(bus, "close"):
                     bus.close()

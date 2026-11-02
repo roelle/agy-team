@@ -47,7 +47,9 @@ def wakes(kind: str | None) -> bool:
 #:   author   the human behind a "user" message, by name
 #:   quiet    this copy does not wake its recipient, whatever its kind --
 #:            a channel post to a member it did not mention
-EXTRA_FIELDS = ("channel", "thread", "author", "quiet")
+#:   failing  the agent a notice says is failing, so that the notice can
+#:            stop waiting on a person once that agent recovers
+EXTRA_FIELDS = ("channel", "thread", "author", "quiet", "failing")
 
 
 @dataclass
@@ -63,6 +65,7 @@ class Message:
     thread: str | None = None
     author: str | None = None
     quiet: bool = False
+    failing: str | None = None
     # Set by the supervisor, never by a sender: a turn that read this
     # failed before it finished, and this is what that turn had done.
     redelivered: str | None = None
@@ -104,7 +107,7 @@ class Message:
                    to=d.get("to", ""), content=d.get("content", ""), id=d.get("id"),
                    kind=d.get("kind") or "work", task_id=d.get("task_id"),
                    channel=d.get("channel"), thread=d.get("thread"),
-                   author=d.get("author"), quiet=bool(d.get("quiet")),
+                   author=d.get("author"), quiet=bool(d.get("quiet")), failing=d.get("failing"),
                    redelivered=d.get("redelivered") or None)
 
 
@@ -158,7 +161,7 @@ class Transport(ABC):
     # --- optional ---------------------------------------------------------
 
     def send_kind(self, to: str, content: str, kind: str = "work",
-                  task_id: str | None = None) -> str:
+                  task_id: str | None = None, **meta) -> str:
         """send() with a kind, on any transport.
 
         A transport whose send() takes the keywords stores them. One that
@@ -168,7 +171,7 @@ class Transport(ABC):
         if kind == "work" and not task_id:
             return self.send(to, content)
         try:
-            return self.send(to, content, kind=kind, task_id=task_id)
+            return self.send(to, content, kind=kind, task_id=task_id, **meta)
         except TypeError:
             tag = f"[{kind}]" if kind != "work" else ""
             task = f"[task {task_id}]" if task_id else ""
