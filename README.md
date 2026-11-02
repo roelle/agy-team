@@ -1,5 +1,7 @@
 # agy-team
 
+> Work continues in [a-team](https://github.com/roelle/a-team), which brings agy-team and agy-chat together as one product. This repository stays here for teams that have not moved.
+
 A persistent, learning agent for Google Antigravity — and a team of them that
 argue with each other, review each other's work, and keep durable memories
 between sessions.
