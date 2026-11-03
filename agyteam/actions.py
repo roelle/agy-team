@@ -67,15 +67,15 @@ def post(team_dir, channel: str, content: str, author: str | None = None,
 
 
 def clear_waiting(team_dir, ids=(), sender: str | None = None, by: str | None = None) -> int:
-    """Take messages off Waiting on you without replying: `ids`, and all from
-    `sender`. For a notice, which nothing reads a reply to, or a question that
+    """Take messages off Waiting on you without replying: `ids` (each row's
+    "key"), and all from `sender`. For a notice, which nothing reads a reply to, or a question that
     no longer matters. The message stays where it was sent and its sender is
     not told. Returns how many came off."""
     _guard()
     from . import filelock
     from .record import CLEARED, Record
-    gone = [r["id"] for r in Record(team_dir).needs_you()
-            if r.get("id") and (r["id"] in ids or (sender and r.get("from") == sender))]
+    gone = [r["key"] for r in Record(team_dir).needs_you()
+            if r.get("key") and (r["key"] in ids or (sender and r.get("from") == sender))]
     path = Path(team_dir) / CLEARED
     with filelock.locked(path), path.open("a") as f:
         for i in gone:

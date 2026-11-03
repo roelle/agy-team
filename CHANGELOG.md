@@ -7,6 +7,20 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-11-03
+
+### Fixed
+- **Notices from before messages had ids can be cleared.** Clearing worked by
+  a message's id, and notices written before ids (early October) had none, so
+  neither the × nor Clear all could take them off Waiting on you. Each
+  question and blocker row of `Record.needs_you()` now carries a `key`: its
+  id, or for a message without one, a key made from the message itself, the
+  same on every read. `actions.clear_waiting` takes keys. What was cleared
+  before still is.
+
+### Added
+- `key` on question and blocker rows of `Record.needs_you()`.
+
 ## [3.26.0] - 2026-11-03
 
 ### Changed
@@ -671,7 +685,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.26.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.27.0...HEAD
+[3.27.0]: https://github.com/roelle/agy-team/compare/v3.26.0...v3.27.0
 [3.26.0]: https://github.com/roelle/agy-team/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/roelle/agy-team/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/roelle/agy-team/compare/v3.23.0...v3.24.0

@@ -138,6 +138,24 @@ def test_all_notices_clear_at_once_and_questions_stay(team):
     assert actions.clear_waiting(team, sender="supervisor") == 0
 
 
+def test_notices_from_before_messages_had_ids_clear_too(team):
+    """Reported: some twenty notices from before ids would not clear, one by
+    one or all at once."""
+    with (team / "bus.jsonl").open("a") as f:
+        for n in range(3):
+            f.write(json.dumps({"ts": f"2026-10-02 09:00:0{n}", "from": "supervisor", "to": "user",
+                                "kind": "blocker", "content": f"coder is waiting for you {n}"}) + "\n")
+    send("coder", "user", "Which database?", kind="question")
+    rows = Record(team).needs_you()
+    old = [r for r in rows if r["from"] == "supervisor"]
+    assert len(old) == 3 and all(r["key"] and not r["id"] for r in old)
+    assert len({r["key"] for r in old}) == 3
+    assert old[0]["key"] == Record(team).needs_you()[0]["key"], "a key must not change between reads"
+    assert actions.clear_waiting(team, ids=[old[0]["key"]]) == 1
+    assert actions.clear_waiting(team, sender="supervisor") == 2
+    assert [r["from"] for r in Record(team).needs_you()] == ["coder"]
+
+
 def test_a_question_can_be_cleared_without_waking_the_agent(team):
     send("coder", "user", "Still want this?", kind="question")
     before = (team / "inbox" / "coder.jsonl").exists()

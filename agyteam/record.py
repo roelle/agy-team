@@ -15,6 +15,7 @@ parses the files itself and none of them drifts when a format changes.
 
 Everything here reads. Changing the team goes through agyteam.actions.
 """
+import hashlib
 import json
 import os
 import time
@@ -43,6 +44,13 @@ def _jsonl(path: Path) -> list[dict]:
         if isinstance(row, dict):
             out.append(row)
     return out
+
+
+def _key(m: dict) -> str:
+    """A key for a message with no id (written before messages had them), so
+    it can be cleared: the same message always makes the same key."""
+    raw = json.dumps([m.get(k) for k in ("ts", "from", "to", "channel", "thread", "content")])
+    return "msg-" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
 def _epoch(ts) -> float | None:
@@ -364,7 +372,9 @@ class Record:
             stopped   the team is stopped: "reason"
             question, blocker
                       a message to the operator with no reply yet: "id",
-                      "from", "content", "channel" or "dm", and "task_id"
+                      "from", "content", "channel" or "dm", "task_id", and
+                      "key", which clears it: its id, or for a message
+                      written before messages had ids, one made from it
             task      an open task the operator owns: "id", "title", "status"
             stuck     a task an agent marked blocked: the same, plus "owner"
 
@@ -400,11 +410,12 @@ class Record:
             keys = [("thread", m["thread"])] if m.get("thread") else [where]
             if m.get("id"):
                 keys.append(("thread", m["id"]))
-            if any(replied.get(k, -1) > n for k in keys) or m.get("id") in cleared:
+            key = m.get("id") or _key(m)
+            if any(replied.get(k, -1) > n for k in keys) or key in cleared:
                 continue
             if last_turn.get(m.get("failing"), {}).get("event") == "turn":
                 continue
-            rows.append({"kind": m["kind"], "ts": m.get("ts") or "", "id": m.get("id"),
+            rows.append({"kind": m["kind"], "ts": m.get("ts") or "", "id": m.get("id"), "key": key,
                          "from": m.get("from"), "content": m.get("content"),
                          "task_id": m.get("task_id"), where[0]: where[1],
                          "thread": m.get("thread")})
