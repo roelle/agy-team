@@ -330,7 +330,8 @@ def roster_lines(agent: str, agents: list[dict], operator: dict | None = None) -
                      f"go to 'user'; {handles} reach them too, and an @{op['name']} "
                      f"in a channel shows them the post (it wakes nobody).")
     else:
-        peers.append("- user: the human. Final results and questions go to 'user'.")
+        peers.append("- user: the human. Final results and questions go to 'user'; "
+                     "an @user in a channel shows them the post (it wakes nobody).")
     return "\n".join(peers)
 
 

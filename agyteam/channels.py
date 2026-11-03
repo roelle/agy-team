@@ -24,9 +24,9 @@ Membership lives in <team_dir>/channels.json. A team with no channels file
 has one implicit channel, "general", with every roster agent in it.
 
 The user is not a member: the user reads every channel from the record
-(bus.jsonl), and is never woken. An @handle of the operator's (roster
-`operator`) is recorded in the post's `mentions` as "user", so a client can
-show it as a mention; it wakes nobody.
+(bus.jsonl), and is never woken. @user, or an @handle of the operator's
+(roster `operator`), is recorded in the post's `mentions` as "user", so a
+client can show it as a mention; it wakes nobody.
 
 A channel can be archived -- read-only, out of every agent's list, kept --
 and restored. Deleting one is archiving it and hiding its history from
@@ -274,7 +274,7 @@ def of(team_dir, agent: str) -> list[str]:
 def mentioned(content: str, channel_members: list[str], roster: list[str],
               aliases: dict[str, str] | None = None) -> set[str]:
     """Who a post mentions: named agents on the roster, @here, @all, and
-    "user" for an operator handle. A name may drop the team prefix or its
+    "user" for @user or an operator handle. A name may drop the team prefix or its
     case (@Ada wakes at-Ada) when that leaves exactly one agent it can mean,
     or be an agent's alias. "user" is never woken; the caller sees to that."""
     out: set[str] = set()
@@ -285,6 +285,8 @@ def mentioned(content: str, channel_members: list[str], roster: list[str],
             out |= set(channel_members)
         elif low in ("all", "everyone", "channel"):
             out |= known
+        elif low == "user":
+            out.add("user")
         else:
             agent = roster_lib.resolve_name(name, roster, aliases)
             if agent:

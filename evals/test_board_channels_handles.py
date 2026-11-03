@@ -174,6 +174,19 @@ def test_at_matt_in_a_channel_is_a_mention_of_the_user_and_wakes_nobody(team):
     assert inbox(team, "user") == [], "the user's inbox is the episode's finish line"
 
 
+def test_at_user_in_a_channel_is_a_mention_of_the_user_with_no_operator_named(team):
+    """Agents are told to address 'user'; in a channel they write @user. That
+    showed nothing until the roster named an operator: the red @ never came."""
+    doc = json.loads((team / "roster.json").read_text())
+    del doc["operator"]
+    (team / "roster.json").write_text(json.dumps(doc))
+    out = channels.post(FileTransport("at-Ada"), team, "billing", "@user this needs your call")
+    assert out["mentions_user"] and out["woke"] == []
+    assert bus(team)[-1]["mentions"] == ["user"]
+    text = persona.brief("manager", doc["agents"], team_dir=team)
+    assert "an @user in a channel shows them the post" in text
+
+
 def test_the_brief_says_who_the_operator_is_and_what_agents_are_called(team):
     doc = roster.load(team / "roster.json")
     text = persona.brief("manager", doc["agents"], team_dir=team)
