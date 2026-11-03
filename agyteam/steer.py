@@ -21,6 +21,9 @@ disk, and each one does only the last step:
                       that cannot wait refuses one call and says why
     any host          the team's own tool results, through mcp_base.serve
 
+The supervisor can leave a note too (leave_note): memories recalled for a
+turn after it had to start without them.
+
 Each note is shown once however many of those a runtime has. An agent with no
 turn in the supervisor's ledger gets nothing: this is about turns the team is
 running, not a person's own session with the plugin installed. Nothing here may
@@ -196,21 +199,44 @@ def take_notes(team_dir, agent: str, transport=None, urgent_only: bool = False) 
             notes = [_repeat_note(state)] if due else []
             if fresh:
                 notes.append(_mail_note(fresh))
+            left = [] if urgent_only else state.get("notes") or []
+            notes += left
             if not notes:
                 return ""
             state["told"] = sorted(told | {_mail_key(m) for m in fresh})
             if due:
                 state["due"] = 0
+            if left:
+                state["notes"] = []
             _save(path, state)
-        _record(agent, len(fresh), state["count"] if due else 0)
+        _record(agent, len(fresh), state["count"] if due else 0, len(left))
         return "\n\n".join(notes)
     except Exception:
         return ""
 
 
-def _record(agent: str, mail: int, repeat: int) -> None:
+def leave_note(team_dir, agent: str, turn_ts: str, text: str) -> bool:
+    """Put `text` in front of the agent at the next step of the turn that
+    began at `turn_ts`. False, and nothing kept, when that turn has ended."""
+    try:
+        turn = turn_of(team_dir, agent)
+        if not turn or turn.get("ts") != turn_ts:
+            return False
+        path = _path(team_dir, agent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with filelock.locked(path):
+            state = _load(path, turn)
+            state["notes"] = (state.get("notes") or []) + [text]
+            _save(path, state)
+        return True
+    except Exception:
+        return False
+
+
+def _record(agent: str, mail: int, repeat: int, left: int = 0) -> None:
     try:
         from . import observer
-        observer.load().record_event("steer", agent=agent, mail=mail, repeat=repeat)
+        extra = {"left": left} if left else {}
+        observer.load().record_event("steer", agent=agent, mail=mail, repeat=repeat, **extra)
     except Exception:
         pass

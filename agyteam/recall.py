@@ -166,7 +166,7 @@ API = "https://generativelanguage.googleapis.com/v1beta/"
 DEFAULTS = {"embed": "gemini-embedding-2", "judge": "gemini-3.8-flash", "dims": 768,
             "candidates": "auto", "max": 3, "body_chars": 1200, "key_env": "GEMINI_API_KEY",
             "timeout": 20, "judge_via": "auto", "agy_model": "gemini-3.8-flash-low",
-            "agy_binary": "agy"}
+            "agy_binary": "agy", "wait": 5}
 
 JUDGE_PROMPT = """An AI agent on a team is about to handle this message:
 
@@ -404,6 +404,20 @@ def _dot(a, b):
     return sum(x * y for x, y in zip(a, b))
 
 
+#: At most this many memories without a vector yet join the candidates.
+NEW_CANDIDATES = 3
+
+# One lock per cache file, shared by every AgentRecall on it: the supervisor
+# refreshes and learns from background threads while a wake reads.
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(str(path), threading.Lock())
+
+
 class AgentRecall:
     """One agent's memories, made searchable: a vector and triggers per
     memory, kept in <team_dir>/recall/<agent>.json and refreshed for the
@@ -416,7 +430,7 @@ class AgentRecall:
         self.backend = backend if backend is not None else backend_for(self.cfg)
         self._store = store
         self.path = self.team_dir / "recall" / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', agent)}.json"
-        self._lock = threading.Lock()
+        self._lock = _lock_for(self.path)
 
     def _open_store(self):
         if self._store is not None:
@@ -447,8 +461,10 @@ class AgentRecall:
 
     def refresh(self) -> dict:
         """Bring the cache up to date: triggers and a vector for each memory
-        that is new or changed; drop the ones that are gone. Off the hot
-        path when it can be (the supervisor calls it between turns)."""
+        that is new or changed; drop the ones that are gone. Writing
+        triggers is a model call per twenty memories, so the supervisor
+        does this in the background, after a turn and beside a wake, never
+        while a turn waits."""
         with self._lock:
             mems = self.memories()
             cache = self._cache()
@@ -509,15 +525,26 @@ class AgentRecall:
             try:
                 q = _norm(self.backend.embed([query[:6000]], "RETRIEVAL_QUERY")[0])
                 ranked = sorted(with_vec, key=lambda mid: -_dot(q, cache[mid]["vec"]))[:k]
+                # Saved since the index was refreshed, so no vector yet:
+                # found by words until the refresh after the turn catches up.
+                vectored = set(with_vec)
+                new = [m for mid, m in mems.items() if mid not in vectored]
                 return [{**mems[mid], "score": _dot(q, cache[mid]["vec"]), "how": "meaning"}
-                        for mid in ranked]
+                        for mid in ranked] + self._by_words(new, cache, query, NEW_CANDIDATES)
             except Exception:
                 pass
+        return self._by_words(list(mems.values()), cache, query, k)
+
+    @staticmethod
+    def _by_words(mems: list[dict], cache: dict, query: str, k: int) -> list[dict]:
+        if not mems:
+            return []
+        by_id = {m["id"]: m for m in mems}
         index = Index([{**m, "name": m["name"].replace("-", " "),
                         "triggers": (cache.get(m["id"]) or {}).get("triggers", []),
                         "learned": (cache.get(m["id"]) or {}).get("learned", [])}
-                       for m in mems.values()])
-        return [{**mems[r["id"]], "score": r["score"], "norm": r["norm"], "how": "words"}
+                       for m in mems])
+        return [{**by_id[r["id"]], "score": r["score"], "norm": r["norm"], "how": "words"}
                 for r in index.search(query, k)]
 
     def recall(self, query: str) -> dict:

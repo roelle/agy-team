@@ -77,6 +77,7 @@ from . import retro_store
 from . import roster as roster_lib
 from . import runner as runner_lib
 from . import scope
+from . import steer
 from . import distill_queue
 from . import receipts
 from . import recall as recall_lib
@@ -679,6 +680,8 @@ class Supervisor:
         self.draining: dict | None = None      # a restart request being honoured
         self._preparing: dict[str, dict] = {}  # turns waiting on their recall
         self._last_recall: dict[str, dict] = {}
+        self._late_recall: dict[str, dict] = {}  # recall still coming for a running turn
+        self._refreshing: set[str] = set()      # agents whose recall index is being refreshed
         self.restart_ready = False
         self._started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._purged_agents: set[str] = set()
@@ -1624,10 +1627,12 @@ class Supervisor:
             if deferred:
                 turn["deferred"] = deferred
             if recall_cfg:
-                # Recall asks models (to embed, to judge): done off the
-                # loop, and the turn begins when it is ready.
+                # Recall asks a model to judge: done off the loop, and the
+                # turn begins when it is ready, or after recall_cfg["wait"]
+                # seconds without it, and gets it at a later step.
                 self._preparing[agent] = {
                     "turn": turn, "deferred": deferred, "since": time.monotonic(),
+                    "wait": recall_cfg.get("wait", recall_lib.DEFAULTS["wait"]),
                     "future": self._recall_pool().submit(self._recall_block, agent, msgs, recall_cfg)}
                 continue
             receipts.open_turn(self.team_dir, agent)
@@ -1659,23 +1664,48 @@ class Supervisor:
     # --- recall: memories offered with the wake (agyteam/recall.py) --------
 
     def _recall_pool(self):
+        """For the judge a turn may be waiting on, and nothing else."""
         if getattr(self, "_pool", None) is None:
             from concurrent.futures import ThreadPoolExecutor
             self._pool = ThreadPoolExecutor(4, thread_name_prefix="recall")
         return self._pool
 
+    def _background(self, fn, *args):
+        """Model calls no turn waits for: writing a memory's cues, checking
+        mail for a miss. A pool of their own, so they never queue ahead of
+        a judge."""
+        if getattr(self, "_bg", None) is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._bg = ThreadPoolExecutor(2, thread_name_prefix="recall-bg")
+        return self._bg.submit(fn, *args)
+
+    def _refresh_soon(self, agent: str, cfg: dict) -> None:
+        """Bring the agent's recall index up to date in the background:
+        triggers and a vector for each memory it saved since."""
+        if agent in self._refreshing:
+            return
+        self._refreshing.add(agent)
+
+        def go():
+            try:
+                recall_lib.AgentRecall(self.team_dir, agent, cfg).refresh()
+            except Exception as e:
+                self._log(f"    {agent}: recall index not refreshed ({type(e).__name__}: {e})")
+            finally:
+                self._refreshing.discard(agent)
+        self._background(go)
+
     def _recall_block(self, agent: str, msgs, cfg: dict) -> str:
-        """What the wake carries from the agent's own memory, and whether the
-        mail restates a memory it had and was not shown (a miss, learned)."""
+        """What the wake carries from the agent's own memory. Only the judge
+        is on the turn's path: the index is refreshed, and the mail checked
+        for a miss (a memory it had and was not shown), beside it."""
         ar = recall_lib.AgentRecall(self.team_dir, agent, cfg)
-        try:
-            ar.refresh()
-        except Exception as e:
-            self._log(f"    {agent}: recall index not refreshed ({type(e).__name__}: {e})")
+        self._refresh_soon(agent, cfg)
         # The words of the mail, not its headers: ids and timestamps would
         # be learned as cues if this request turns out to be a miss.
         query = "\n\n".join(m.content for m in msgs)[:6000]
-        self._check_miss(agent, ar, msgs)
+        last = self._last_recall.get(agent)
+        self._background(self._check_miss, agent, cfg, msgs, last)
         try:
             res = ar.recall(query)
         except Exception as e:
@@ -1694,13 +1724,15 @@ class Supervisor:
             pass
         return recall_lib.render(res, cfg.get("body_chars", 1200))
 
-    def _check_miss(self, agent: str, ar, msgs) -> None:
+    def _check_miss(self, agent: str, cfg: dict, msgs, last: dict | None) -> None:
         """A correction that restates a memory the agent had, and was not
-        shown before the turn it is correcting, is a miss: record it, and
-        teach the memory the words of the request that preceded the mistake,
-        so a request like it brings the memory next time."""
-        last = self._last_recall.get(agent)
-        if not last or not ar.backend.available:
+        shown before the turn it is correcting (`last`), is a miss: record
+        it, and teach the memory the words of the request that preceded the
+        mistake, so a request like it brings the memory next time."""
+        if not last:
+            return
+        ar = recall_lib.AgentRecall(self.team_dir, agent, cfg)
+        if not ar.backend.available:
             return
         for m in msgs:
             if not (m.sender == "user" or m.kind == "review"):
@@ -1725,11 +1757,12 @@ class Supervisor:
                     pass
 
     def _start_prepared(self) -> list[str]:
-        """Begin the turns whose recall is ready (or has taken too long)."""
+        """Begin the turns whose recall is ready, or has taken longer than
+        the turn waits for it; that recall goes to the turn when it comes."""
         begun = []
         for agent, prep in list(self._preparing.items()):
-            fut, cfg_wait = prep["future"], 2 * recall_lib.DEFAULTS["timeout"] + 10
-            if not fut.done() and time.monotonic() - prep["since"] < cfg_wait:
+            fut = prep["future"]
+            if not fut.done() and time.monotonic() - prep["since"] < prep["wait"]:
                 continue
             del self._preparing[agent]
             block = ""
@@ -1738,6 +1771,9 @@ class Supervisor:
                     block = fut.result() or ""
                 except Exception:
                     block = ""
+            else:
+                self._late_recall[agent] = {"future": fut, "ts": prep["turn"]["ts"],
+                                            "since": prep["since"]}
             turn = prep["turn"]
             receipts.open_turn(self.team_dir, agent)
             try:
@@ -1752,6 +1788,26 @@ class Supervisor:
         if begun:
             self._save_ledger()
         return begun
+
+    def _deliver_late_recall(self) -> None:
+        """Recall that came after its turn began, put in front of the agent
+        at its next step, if that turn is still running."""
+        for agent, late in list(self._late_recall.items()):
+            if not late["future"].done():
+                continue
+            del self._late_recall[agent]
+            try:
+                block = (late["future"].result() or "").strip()
+            except Exception:
+                block = ""
+            if not block:
+                continue
+            delivered = steer.leave_note(self.team_dir, agent, late["ts"], block)
+            try:
+                self.observer.record_event("recall_late", agent=agent, delivered=delivered,
+                                           ms=int(1000 * (time.monotonic() - late["since"])))
+            except Exception:
+                pass
 
     def _reap(self) -> int:
         """Finish every turn that has ended. Returns how many."""
@@ -1776,6 +1832,9 @@ class Supervisor:
         if turn.get("distill"):
             return self._finish_distill_turn(agent, turn, reply)
         self._roster_touched.add(agent)
+        recall_cfg = recall_lib.config(self.team_dir)
+        if recall_cfg:              # index what it saved, before its next wake
+            self._refresh_soon(agent, recall_cfg)
         msgs = turn["msgs"]
         dur = time.monotonic() - turn["started"]
         failed = reply.startswith("[error:")
@@ -2026,6 +2085,7 @@ class Supervisor:
             self._schedule_memory_reviews()
             self._serve_distill_requests()
             begun = self._start_prepared() + self._begin_turns(respect_backoff)
+            self._deliver_late_recall()
             return begun, reaped
 
     def _drain(self, agents: list[str] | None = None) -> int:
@@ -3565,6 +3625,9 @@ class Supervisor:
         )
 
     def close(self):
+        for pool in (getattr(self, "_pool", None), getattr(self, "_bg", None)):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
         for agent, turn in list(self.inflight.items()):
             if not getattr(self.runner, "resumable", False):
                 try:

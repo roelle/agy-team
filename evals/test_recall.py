@@ -29,8 +29,9 @@ class Fake:
     memory shares the most words; triggers from a table."""
     available = True
 
-    def __init__(self, triggers=None, slow=0.0):
+    def __init__(self, triggers=None, slow=0.0, slow_for=None):
         self.triggers, self.slow = triggers or {}, slow
+        self.slow_for = slow_for or {}     # {prompt prefix: seconds}
         self.embedded, self.asked = 0, []
 
     def embed(self, texts, task):
@@ -44,7 +45,7 @@ class Fake:
         return out
 
     def ask(self, prompt):
-        time.sleep(self.slow)
+        time.sleep(next((t for k, t in self.slow_for.items() if prompt.startswith(k)), self.slow))
         self.asked.append(prompt[:40])
         if prompt.startswith("For each memory"):
             ids = [l[4:-5] for l in prompt.splitlines() if l.startswith("<id>")]
@@ -90,6 +91,15 @@ def test_the_index_refreshes_only_what_changed(team):
     save(team, "coder", "flaky-ci", "CI flakes on the network tests", "Retry them three times now.")
     ar.refresh()
     assert fake.embedded == 3
+
+
+def test_a_memory_saved_since_the_index_was_refreshed_is_still_found(team):
+    save(team, "coder", "flaky-ci", "CI flakes on the network tests", "Retry network tests twice.")
+    ar = recall.AgentRecall(team, "coder", backend=Fake())
+    ar.refresh()
+    save(team, "coder", "stats-ab", "A/B results need a power check", "Check sample size and variance.")
+    found = {c["id"]: c["how"] for c in ar.candidates("is the variance too high for this sample size?")}
+    assert found.get("stats-ab") == "words" and found.get("flaky-ci") == "meaning"
 
 
 def test_the_judge_picks_and_the_wake_says_it_is_a_lesson(team):
@@ -153,6 +163,7 @@ def test_a_correction_that_restates_an_unshown_memory_is_a_learned_miss(team, mo
         load_transport("user").send("coder", "You approved it without running the real binary "
                                              "end to end again. A mocked test is not proof.")
         sup.run_until_idle()
+        sup._bg.shutdown(wait=True)        # the miss check runs beside the wake
     finally:
         sup.close()
     events = [json.loads(l) for l in (team / "events.jsonl").read_text().splitlines()]
@@ -178,6 +189,116 @@ def test_recall_does_not_hold_up_the_dispatch_loop(team, monkeypatch):
         assert time.monotonic() - t0 < 0.5 and "coder" in sup._preparing
     finally:
         sup.close()
+
+
+def recall_on(team, **cfg):
+    doc = json.loads((team / "roster.json").read_text())
+    doc["memory_recall"] = cfg or True
+    (team / "roster.json").write_text(json.dumps(doc))
+
+
+class Steps(ScriptedRunner):
+    """A turn of many steps: each step takes what steer has for it, as a
+    runtime's hook does, until `steps` have passed."""
+    def __init__(self, team, steps=40):
+        super().__init__({})
+        self.team, self.steps, self.prompts, self.notes, self.at = team, steps, [], [], []
+
+    def wake(self, agent, message):
+        from agyteam import steer
+        self.at.append(time.monotonic())
+        self.prompts.append(message)
+        for _ in range(self.steps):
+            note = steer.take_notes(self.team, agent)
+            if note:
+                self.notes.append(note)
+            time.sleep(0.05)
+        return "ok"
+
+
+def events_of(team, kind):
+    return [e for e in (json.loads(l) for l in (team / "events.jsonl").read_text().splitlines())
+            if e.get("event") == kind]
+
+
+def test_a_slow_judge_does_not_hold_the_turn_and_its_answer_comes_at_a_later_step(team, monkeypatch):
+    recall_on(team, wait=0.2)
+    monkeypatch.setattr(recall, "Gemini", lambda cfg: Fake(slow_for={"An AI agent on a team": 3.0}))
+    save(team, "coder", "stats-ab", "A/B results need a power check",
+         "Check sample size and variance before calling a winner of an experiment.")
+    runner = Steps(team, steps=120)
+    load_transport("user").send("coder", "Did variant B win the experiment? Small sample, high variance.")
+    sup = Supervisor(AGENTS, runner, quiet=True, require_review=False)
+    try:
+        t0 = time.monotonic()
+        sup.run_until_idle()
+    finally:
+        sup.close()
+    assert runner.at[0] - t0 < 2.0, "the turn waited for the judge"
+    assert "From your memory" not in runner.prompts[0]
+    assert len(runner.notes) == 1 and "stats-ab" in runner.notes[0] and "From your memory" in runner.notes[0]
+    late = events_of(team, "recall_late")
+    assert late and late[0]["delivered"] is True
+
+
+def test_recall_that_comes_after_the_turn_ended_is_dropped(team, monkeypatch):
+    recall_on(team, wait=0.1)
+    monkeypatch.setattr(recall, "Gemini", lambda cfg: Fake(slow_for={"An AI agent on a team": 0.6}))
+    save(team, "coder", "stats-ab", "A/B results need a power check",
+         "Check sample size and variance before calling a winner of an experiment.")
+    runner = Steps(team, steps=1)
+    load_transport("user").send("coder", "Did variant B win the experiment? Small sample, high variance.")
+    sup = Supervisor(AGENTS, runner, quiet=True, require_review=False)
+    try:
+        sup.run_until_idle()
+        sup._late_recall["coder"]["future"].result(5)
+        sup._deliver_late_recall()
+    finally:
+        sup.close()
+    assert not runner.notes and events_of(team, "recall_late")[0]["delivered"] is False
+    assert not (team / "steer" / "coder.json").exists() or \
+        not json.loads((team / "steer" / "coder.json").read_text()).get("notes")
+
+
+def test_only_the_judge_is_on_the_turns_path(team, monkeypatch):
+    """Writing a memory's cues and checking mail for a miss are model calls
+    too; they run beside the wake, so a turn waits for one call, not three."""
+    recall_on(team, wait=10)
+    fake = Fake(slow_for={"For each memory": 6.0, "An AI agent was just told": 6.0})
+    monkeypatch.setattr(recall, "Gemini", lambda cfg: fake)
+    save(team, "coder", "stats-ab", "A/B results need a power check",
+         "Check sample size and variance before calling a winner of an experiment.")
+    runner = Steps(team, steps=1)
+    sup = Supervisor(AGENTS, runner, quiet=True, require_review=False)
+    try:
+        sup._last_recall["coder"] = {"query": "earlier", "shown": set()}
+        load_transport("user").send("coder", "Did variant B win the experiment? Small sample, high variance.")
+        t0 = time.monotonic()
+        sup.run_until_idle()
+    finally:
+        sup.close()
+    assert runner.at[0] - t0 < 4.0, f"the turn waited {runner.at[0] - t0:.1f}s"
+    assert "stats-ab" in runner.prompts[0]
+
+
+def test_what_an_agent_saved_is_indexed_after_its_turn(team, monkeypatch):
+    recall_on(team)
+    fake = Fake(triggers={"stats-ab": ["statistics"]})
+    monkeypatch.setattr(recall, "Gemini", lambda cfg: fake)
+
+    class Saves(ScriptedRunner):
+        def wake(self, agent, message):
+            save(team, agent, "stats-ab", "A/B results need a power check", "Check the variance.")
+            return "ok"
+    load_transport("user").send("coder", "hello")
+    sup = Supervisor(AGENTS, Saves({}), quiet=True, require_review=False)
+    try:
+        sup.run_until_idle()
+        sup._bg.shutdown(wait=True)
+    finally:
+        sup.close()
+    cache = json.loads((team / "recall" / "coder.json").read_text())
+    assert cache["stats-ab"]["triggers"] == ["statistics"] and cache["stats-ab"]["vec"]
 
 
 def test_recall_is_off_unless_the_roster_turns_it_on(team):

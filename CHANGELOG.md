@@ -7,6 +7,23 @@ the README for what counts as the public surface.
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-11-03
+
+### Changed
+- **Recall no longer makes a turn wait for three model calls.** Before a turn,
+  recall wrote cues for memories saved since last time, checked the mail for a
+  miss, and asked the judge, one after another, while the turn waited; with
+  the agy CLI judge that was 15-50 seconds. Now cues, vectors and the miss
+  check run in the background, after each turn and beside each wake, and only
+  the judge is on the turn's path.
+- **A turn waits for the judge at most 5 seconds** (`"wait"` under
+  `memory_recall`; it was `2 * timeout + 10`, 50 seconds by default). A slower
+  judge's choice reaches the agent at its next step, like mid-turn mail, and is
+  recorded as a `recall_late` event, with `delivered` false if the turn had
+  already ended. `"wait": 0` never waits.
+- A memory saved since the index was last refreshed is found by its words
+  until its vector is written; before, with embeddings on, it was not found.
+
 ## [3.25.0] - 2026-11-02
 
 ### Added
@@ -654,7 +671,8 @@ MCP memory server.
 ## [1.0] - 2026-09-08
 Milestone tag (pre-semver).
 
-[Unreleased]: https://github.com/roelle/agy-team/compare/v3.25.0...HEAD
+[Unreleased]: https://github.com/roelle/agy-team/compare/v3.26.0...HEAD
+[3.26.0]: https://github.com/roelle/agy-team/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/roelle/agy-team/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/roelle/agy-team/compare/v3.23.0...v3.24.0
 [3.23.0]: https://github.com/roelle/agy-team/compare/v3.22.0...v3.23.0

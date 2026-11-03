@@ -1076,9 +1076,16 @@ Check sample size and variance before calling a winner. ...
   With no judge at all, the agent is only given the names of the
   closest matches, never text it did not ask for. A judge that fails (a
   quota, a timeout) also falls back to names.
-- **It does not hold up the team.** Recall runs off the dispatch loop.
-  An agent's turn starts when its recall is ready, or after
-  `2 * timeout + 10` seconds without it.
+- **It does not hold up the team.** Only the judge is on a turn's path.
+  Cues, vectors and the miss check run in the background, so a turn no
+  longer waits 15-50 seconds for three model calls in a row. A turn
+  waits for the judge at most `"wait"` seconds (default 5, set under
+  `memory_recall`; 0 never waits). If the judge is slower, the turn
+  starts without it and the chosen memories reach the agent at its next
+  step, like mid-turn mail, or are dropped if the turn has ended. Either
+  way a `recall_late` event is recorded. A memory saved in a turn is
+  found by its words at once, and by its meaning once its cues are
+  written, seconds after the turn ends.
 - **Cues, and learning from misses.** Each memory gets triggers, written
   once by the model: the situations and words of a request where it
   would help. These are cached with its vector in
@@ -1658,7 +1665,7 @@ Releases follow [Semantic Versioning](https://semver.org/), tagged
 in [RELEASING.md](RELEASING.md). Pin a tag rather than `main`:
 
 ```bash
-pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.25.0"
+pip install "agyteam @ git+https://github.com/roelle/agy-team.git@v3.26.0"
 python -m agyteam.supervisor --version
 ```
 
